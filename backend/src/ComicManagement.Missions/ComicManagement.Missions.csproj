@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../ComicManagement.Shared/ComicManagement.Shared.csproj" />
+  </ItemGroup>
+</Project>

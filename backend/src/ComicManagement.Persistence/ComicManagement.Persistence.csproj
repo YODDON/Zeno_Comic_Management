@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../ComicManagement.Shared/ComicManagement.Shared.csproj" />
+    <ProjectReference Include="../ComicManagement.Identity/ComicManagement.Identity.csproj" />
+    <ProjectReference Include="../ComicManagement.Catalog/ComicManagement.Catalog.csproj" />
+    <ProjectReference Include="../ComicManagement.Reading/ComicManagement.Reading.csproj" />
+    <ProjectReference Include="../ComicManagement.Interaction/ComicManagement.Interaction.csproj" />
+    <ProjectReference Include="../ComicManagement.Billing/ComicManagement.Billing.csproj" />
+    <ProjectReference Include="../ComicManagement.Wallet/ComicManagement.Wallet.csproj" />
+    <ProjectReference Include="../ComicManagement.Membership/ComicManagement.Membership.csproj" />
+    <ProjectReference Include="../ComicManagement.Missions/ComicManagement.Missions.csproj" />
+    <ProjectReference Include="../ComicManagement.Administration/ComicManagement.Administration.csproj" />
+  </ItemGroup>
+</Project>
