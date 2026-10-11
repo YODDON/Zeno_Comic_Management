@@ -1,12 +1,16 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
+  ApiErrorState,
   EmptyState,
   ErrorState,
+  ForbiddenState,
   LoadingState,
   PendingState,
   SuccessState,
+  UnauthorizedState,
 } from "@/shared/ui/AsyncState";
+import { ApiError } from "@/shared/api/problem-details";
 
 describe("async state primitives", () => {
   it("announces loading, pending and success states", () => {
@@ -35,5 +39,21 @@ describe("async state primitives", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Không tải được");
     await user.click(screen.getByRole("button", { name: "Thử lại" }));
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("renders explicit unauthorized and forbidden states", () => {
+    const { rerender } = render(<UnauthorizedState />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Bạn chưa đăng nhập");
+
+    rerender(<ForbiddenState />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Không có quyền truy cập");
+  });
+
+  it.each([
+    [401, "Bạn chưa đăng nhập"],
+    [403, "Không có quyền truy cập"],
+  ])("maps API status %i to the matching access state", (status, expectedTitle) => {
+    render(<ApiErrorState error={new ApiError(status)} />);
+    expect(screen.getByRole("heading", { name: expectedTitle })).toBeVisible();
   });
 });

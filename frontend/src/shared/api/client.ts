@@ -30,8 +30,12 @@ async function readProblemDetails(response: Response): Promise<ProblemDetails | 
     return undefined;
   }
 
-  const parsed = problemDetailsSchema.safeParse(await response.json());
-  return parsed.success ? parsed.data : undefined;
+  try {
+    const parsed = problemDetailsSchema.safeParse(await response.json());
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function apiRequest<TResponse>(
