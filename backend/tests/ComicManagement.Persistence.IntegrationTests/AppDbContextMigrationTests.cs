@@ -12,6 +12,12 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 {
     private const string InitialMigration = "20261011120000_InitialSchemas";
 
+    private static readonly string[] ExpectedMigrations =
+    [
+        InitialMigration,
+        "20261011124604_AddOutboxInbox",
+    ];
+
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
         .WithDatabase("comic_management_tests")
         .WithUsername("postgres")
@@ -30,26 +36,36 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             .BuildServiceProvider(validateScopes: true);
         await using var scope = serviceProvider.CreateAsyncScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+
+        await migrator.MigrateAsync(InitialMigration);
+
+        Assert.Equal([InitialMigration], await context.Database.GetAppliedMigrationsAsync());
+        Assert.False(await TableExists(context, "infrastructure.outbox_messages"));
+        Assert.False(await TableExists(context, "infrastructure.processed_messages"));
 
         await context.Database.MigrateAsync();
 
         Assert.Equal(DatabaseSchemas.All.Order(), await GetApplicationSchemas(context));
-        Assert.Equal([InitialMigration], await context.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(ExpectedMigrations, await context.Database.GetAppliedMigrationsAsync());
+        Assert.True(await TableExists(context, "infrastructure.outbox_messages"));
+        Assert.True(await TableExists(context, "infrastructure.processed_messages"));
 
         await context.Database.MigrateAsync();
 
-        Assert.Equal([InitialMigration], await context.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(ExpectedMigrations, await context.Database.GetAppliedMigrationsAsync());
 
-        var migrator = context.GetService<IMigrator>();
         await migrator.MigrateAsync(Migration.InitialDatabase);
 
         Assert.Empty(await context.Database.GetAppliedMigrationsAsync());
         Assert.Equal([DatabaseSchemas.Infrastructure], await GetApplicationSchemas(context));
+        Assert.False(await TableExists(context, "infrastructure.outbox_messages"));
+        Assert.False(await TableExists(context, "infrastructure.processed_messages"));
 
         await context.Database.MigrateAsync();
 
         Assert.Equal(DatabaseSchemas.All.Order(), await GetApplicationSchemas(context));
-        Assert.Equal([InitialMigration], await context.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(ExpectedMigrations, await context.Database.GetAppliedMigrationsAsync());
     }
 
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)
@@ -76,5 +92,21 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         }
 
         return [.. schemas];
+    }
+
+    private static async Task<bool> TableExists(AppDbContext context, string qualifiedTableName)
+    {
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT to_regclass(@qualified_table_name) IS NOT NULL;";
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "qualified_table_name";
+        parameter.Value = qualifiedTableName;
+        command.Parameters.Add(parameter);
+
+        return (bool)(await command.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("Table existence query returned null."));
     }
 }

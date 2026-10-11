@@ -6,6 +6,9 @@ var databaseConnectionString = builder.Configuration.GetConnectionString("Databa
     ?? throw new InvalidOperationException("Connection string 'Database' is required.");
 
 builder.Services.AddPersistence(databaseConnectionString);
+builder.Services.Configure<OutboxOptions>(
+    builder.Configuration.GetSection(OutboxOptions.SectionName));
+builder.Services.AddOutboxWorker();
 
 var app = builder.Build();
 
