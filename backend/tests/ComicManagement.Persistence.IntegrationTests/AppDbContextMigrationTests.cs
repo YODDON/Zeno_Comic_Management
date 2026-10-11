@@ -16,6 +16,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
     [
         InitialMigration,
         "20261011124604_AddOutboxInbox",
+        "20261011194443_AddIdentityUsers",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -50,6 +51,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.Equal(ExpectedMigrations, await context.Database.GetAppliedMigrationsAsync());
         Assert.True(await TableExists(context, "infrastructure.outbox_messages"));
         Assert.True(await TableExists(context, "infrastructure.processed_messages"));
+        Assert.True(await TableExists(context, "identity.users"));
+        Assert.True(await TableExists(context, "identity.google_identities"));
 
         await context.Database.MigrateAsync();
 
@@ -61,6 +64,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.Equal([DatabaseSchemas.Infrastructure], await GetApplicationSchemas(context));
         Assert.False(await TableExists(context, "infrastructure.outbox_messages"));
         Assert.False(await TableExists(context, "infrastructure.processed_messages"));
+        Assert.False(await TableExists(context, "identity.users"));
+        Assert.False(await TableExists(context, "identity.google_identities"));
 
         await context.Database.MigrateAsync();
 

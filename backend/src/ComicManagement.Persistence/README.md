@@ -1,7 +1,7 @@
 # Persistence operations
 
 `ComicManagement.Persistence` owns the single `AppDbContext`, PostgreSQL migration stream,
-and the infrastructure outbox/inbox tables.
+Identity storage adapters, and the infrastructure outbox/inbox tables.
 
 ## Configuration
 
