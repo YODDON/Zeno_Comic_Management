@@ -57,6 +57,26 @@ describe("apiRequest", () => {
     });
   });
 
+  it.each(["", "{not-json"])(
+    "keeps the HTTP status when a JSON error body is empty or malformed",
+    async (body) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(body, {
+            status: 503,
+            headers: { "Content-Type": "application/problem+json" },
+          }),
+        ),
+      );
+
+      await expect(apiRequest("/api/v1/example")).rejects.toMatchObject({
+        name: "ApiError",
+        status: 503,
+      });
+    },
+  );
+
   it("rejects paths that are not rooted", async () => {
     await expect(apiRequest("api/v1/example")).rejects.toThrow("API path must start with '/'.");
   });

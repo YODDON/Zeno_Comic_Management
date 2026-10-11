@@ -11,3 +11,6 @@ frontend/.vite/
 frontend/artifacts/
 frontend/playwright-report/
 frontend/test-results/
+.dotnet/
+.dotnet-home/
+.nuget/

@@ -6,7 +6,8 @@ React/TypeScript shell for the Vietnamese Comic Management UI. F05 establishes:
 - user Dark/Light theme persisted in local storage;
 - an isolated Light-only Admin layout;
 - a same-origin API client with ProblemDetails, custom headers and idempotency-key support;
-- reusable Loading, Empty, Error, Pending and Success states.
+- reusable Loading, Empty, Error, Unauthorized, Forbidden, Pending and Success states;
+- responsive keyboard navigation and automated accessibility smoke checks.
 
 ## Local commands
 
