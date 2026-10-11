@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../ComicManagement.Workflows/ComicManagement.Workflows.csproj" />
+    <ProjectReference Include="../ComicManagement.Persistence/ComicManagement.Persistence.csproj" />
+    <ProjectReference Include="../ComicManagement.Identity/ComicManagement.Identity.csproj" />
+    <ProjectReference Include="../ComicManagement.Catalog/ComicManagement.Catalog.csproj" />
+    <ProjectReference Include="../ComicManagement.Reading/ComicManagement.Reading.csproj" />
+    <ProjectReference Include="../ComicManagement.Interaction/ComicManagement.Interaction.csproj" />
+    <ProjectReference Include="../ComicManagement.Billing/ComicManagement.Billing.csproj" />
+    <ProjectReference Include="../ComicManagement.Wallet/ComicManagement.Wallet.csproj" />
+    <ProjectReference Include="../ComicManagement.Membership/ComicManagement.Membership.csproj" />
+    <ProjectReference Include="../ComicManagement.Missions/ComicManagement.Missions.csproj" />
+    <ProjectReference Include="../ComicManagement.Administration/ComicManagement.Administration.csproj" />
+  </ItemGroup>
+</Project>

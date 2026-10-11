@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/backend/src/">
+    <Project Path="backend/src/ComicManagement.Administration/ComicManagement.Administration.csproj" />
+    <Project Path="backend/src/ComicManagement.Api/ComicManagement.Api.csproj" />
+    <Project Path="backend/src/ComicManagement.Billing/ComicManagement.Billing.csproj" />
+    <Project Path="backend/src/ComicManagement.Catalog/ComicManagement.Catalog.csproj" />
+    <Project Path="backend/src/ComicManagement.Identity/ComicManagement.Identity.csproj" />
+    <Project Path="backend/src/ComicManagement.Interaction/ComicManagement.Interaction.csproj" />
+    <Project Path="backend/src/ComicManagement.Membership/ComicManagement.Membership.csproj" />
+    <Project Path="backend/src/ComicManagement.Missions/ComicManagement.Missions.csproj" />
+    <Project Path="backend/src/ComicManagement.Persistence/ComicManagement.Persistence.csproj" />
+    <Project Path="backend/src/ComicManagement.Reading/ComicManagement.Reading.csproj" />
+    <Project Path="backend/src/ComicManagement.Shared/ComicManagement.Shared.csproj" />
+    <Project Path="backend/src/ComicManagement.Wallet/ComicManagement.Wallet.csproj" />
+    <Project Path="backend/src/ComicManagement.Workflows/ComicManagement.Workflows.csproj" />
+  </Folder>
+  <Folder Name="/backend/tests/">
+    <Project Path="backend/tests/ComicManagement.ArchitectureTests/ComicManagement.ArchitectureTests.csproj" />
+    <Project Path="backend/tests/ComicManagement.Shared.UnitTests/ComicManagement.Shared.UnitTests.csproj" />
+  </Folder>
+</Solution>
