@@ -16,6 +16,7 @@
   </Folder>
   <Folder Name="/backend/tests/">
     <Project Path="backend/tests/ComicManagement.ArchitectureTests/ComicManagement.ArchitectureTests.csproj" />
+    <Project Path="backend/tests/ComicManagement.Persistence.IntegrationTests/ComicManagement.Persistence.IntegrationTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Shared.UnitTests/ComicManagement.Shared.UnitTests.csproj" />
   </Folder>
 </Solution>
