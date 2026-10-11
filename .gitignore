@@ -4,3 +4,10 @@
 TestResults/
 *.user
 *.suo
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/.vite/
+frontend/artifacts/
+frontend/playwright-report/
+frontend/test-results/
