@@ -1,3 +1,4 @@
+using ComicManagement.Identity.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -18,6 +19,8 @@ public static class PersistenceServiceCollectionExtensions
         services.AddDbContext<AppDbContext>(options =>
             ConfigurePostgreSql(options, connectionString));
         services.TryAddSingleton<IClock, SystemClock>();
+        services.TryAddScoped<IGoogleIdentityStore, GoogleIdentityStore>();
+        services.TryAddScoped<ISessionStore, SessionStore>();
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();
         services.TryAddScoped<OutboxMessageDispatcher>();
         services.TryAddScoped<OutboxBatchProcessor>();

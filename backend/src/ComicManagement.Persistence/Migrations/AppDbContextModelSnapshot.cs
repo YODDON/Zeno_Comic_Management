@@ -22,6 +22,96 @@ namespace ComicManagement.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("ComicManagement.Identity.Users.GoogleIdentity", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("GoogleSubject")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)")
+                        .HasColumnName("google_subject");
+
+                    b.Property<DateTimeOffset>("LinkedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("linked_at");
+
+                    b.HasKey("UserId")
+                        .HasName("pk_google_identities");
+
+                    b.HasIndex("GoogleSubject")
+                        .IsUnique()
+                        .HasDatabaseName("uq_google_identities_google_subject");
+
+                    b.ToTable("google_identities", "identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_google_identities_google_subject_not_blank", "length(btrim(google_subject)) > 0");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Identity.Users.User", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AvatarUrl")
+                        .HasColumnType("text")
+                        .HasColumnName("avatar_url");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("Email")
+                        .HasMaxLength(320)
+                        .HasColumnType("character varying(320)")
+                        .HasColumnName("email");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("role");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_users");
+
+                    b.ToTable("users", "identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_users_display_name_not_blank", "length(btrim(display_name)) > 0");
+
+                            t.HasCheckConstraint("ck_users_role", "role IN ('User', 'Admin')");
+
+                            t.HasCheckConstraint("ck_users_status", "status IN ('Active', 'Disabled')");
+
+                            t.HasCheckConstraint("ck_users_version", "version >= 1");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Persistence.OutboxMessage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -103,6 +193,18 @@ namespace ComicManagement.Persistence.Migrations
                         .HasName("pk_processed_messages");
 
                     b.ToTable("processed_messages", "infrastructure");
+                });
+
+            modelBuilder.Entity("ComicManagement.Identity.Users.GoogleIdentity", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", "User")
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Identity.Users.GoogleIdentity", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_google_identities_users_user_id");
+
+                    b.Navigation("User");
                 });
 #pragma warning restore 612, 618
         }

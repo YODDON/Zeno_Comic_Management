@@ -1,9 +1,14 @@
+using ComicManagement.Identity.Users;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
 
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    internal DbSet<User> Users => Set<User>();
+
+    internal DbSet<GoogleIdentity> GoogleIdentities => Set<GoogleIdentity>();
+
     internal DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 
     internal DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
