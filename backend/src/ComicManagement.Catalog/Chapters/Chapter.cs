@@ -75,11 +75,75 @@ public sealed class Chapter
         };
     }
 
+    public void Publish(
+        bool hasValidPage,
+        long expectedVersion,
+        DateTimeOffset publishedAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        EnsureUtc(publishedAt, nameof(publishedAt));
+
+        if (!hasValidPage)
+        {
+            throw new CatalogRuleViolationException(
+                CatalogRuleViolation.PublicationPreconditionFailed,
+                "A chapter requires at least one valid page.");
+        }
+
+        if (PublicationStatus == ChapterPublicationStatuses.Published)
+        {
+            return;
+        }
+
+        PublicationStatus = ChapterPublicationStatuses.Published;
+        Touch(publishedAt);
+    }
+
+    public void Hide(
+        bool canHide,
+        long expectedVersion,
+        DateTimeOffset hiddenAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        EnsureUtc(hiddenAt, nameof(hiddenAt));
+
+        if (PublicationStatus == ChapterPublicationStatuses.Hidden)
+        {
+            return;
+        }
+
+        if (!canHide)
+        {
+            throw new CatalogRuleViolationException(
+                CatalogRuleViolation.PublicationPreconditionFailed,
+                "The last valid published chapter cannot be hidden while its comic is published.");
+        }
+
+        PublicationStatus = ChapterPublicationStatuses.Hidden;
+        Touch(hiddenAt);
+    }
+
     private static void EnsureUtc(DateTimeOffset value, string parameterName)
     {
         if (value.Offset != TimeSpan.Zero)
         {
             throw new ArgumentException("Timestamp must use the UTC offset.", parameterName);
         }
+    }
+
+    private void EnsureExpectedVersion(long expectedVersion)
+    {
+        if (expectedVersion != Version)
+        {
+            throw new CatalogRuleViolationException(
+                CatalogRuleViolation.ConcurrencyConflict,
+                "The chapter changed concurrently.");
+        }
+    }
+
+    private void Touch(DateTimeOffset changedAt)
+    {
+        Version = checked(Version + 1);
+        UpdatedAt = changedAt;
     }
 }

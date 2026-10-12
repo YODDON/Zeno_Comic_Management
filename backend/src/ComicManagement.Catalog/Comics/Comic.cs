@@ -88,6 +88,70 @@ public sealed class Comic
         };
     }
 
+    public void Publish(
+        bool hasValidPublishedChapter,
+        long expectedVersion,
+        DateTimeOffset publishedAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        EnsureUtc(publishedAt, nameof(publishedAt));
+
+        if (!hasValidPublishedChapter)
+        {
+            throw new CatalogRuleViolationException(
+                CatalogRuleViolation.PublicationPreconditionFailed,
+                "A comic requires at least one valid published chapter.");
+        }
+
+        if (PublicationStatus == ComicPublicationStatuses.Published)
+        {
+            return;
+        }
+
+        PublicationStatus = ComicPublicationStatuses.Published;
+        FirstPublishedAt ??= publishedAt;
+        Touch(publishedAt);
+    }
+
+    public void Hide(long expectedVersion, DateTimeOffset hiddenAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        EnsureUtc(hiddenAt, nameof(hiddenAt));
+
+        if (PublicationStatus == ComicPublicationStatuses.Hidden)
+        {
+            return;
+        }
+
+        PublicationStatus = ComicPublicationStatuses.Hidden;
+        Touch(hiddenAt);
+    }
+
+    public void ChangeSlug(
+        string slug,
+        long expectedVersion,
+        DateTimeOffset changedAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        EnsureUtc(changedAt, nameof(changedAt));
+        ValidateSlug(slug);
+
+        if (string.Equals(Slug, slug, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (FirstPublishedAt is not null)
+        {
+            throw new CatalogRuleViolationException(
+                CatalogRuleViolation.SlugLocked,
+                "A comic slug cannot change after its first publication.");
+        }
+
+        Slug = slug;
+        Touch(changedAt);
+    }
+
     private static void ValidateSlug(string slug)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(slug);
@@ -103,5 +167,21 @@ public sealed class Comic
         {
             throw new ArgumentException("Timestamp must use the UTC offset.", parameterName);
         }
+    }
+
+    private void EnsureExpectedVersion(long expectedVersion)
+    {
+        if (expectedVersion != Version)
+        {
+            throw new CatalogRuleViolationException(
+                CatalogRuleViolation.ConcurrencyConflict,
+                "The comic changed concurrently.");
+        }
+    }
+
+    private void Touch(DateTimeOffset changedAt)
+    {
+        Version = checked(Version + 1);
+        UpdatedAt = changedAt;
     }
 }

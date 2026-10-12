@@ -53,6 +53,43 @@ public sealed class CatalogModelTests
     }
 
     [Fact]
+    public void Comic_publish_requires_valid_chapter_and_locks_slug_forever()
+    {
+        var comic = CreateComic();
+
+        Assert.Throws<CatalogRuleViolationException>(() =>
+            comic.Publish(false, 1, Now.AddMinutes(1)));
+
+        comic.ChangeSlug("renamed-before-publish", 1, Now.AddMinutes(1));
+        comic.Publish(true, 2, Now.AddMinutes(2));
+        var firstPublishedAt = comic.FirstPublishedAt;
+
+        Assert.Equal(ComicPublicationStatuses.Published, comic.PublicationStatus);
+        Assert.Equal(Now.AddMinutes(2), firstPublishedAt);
+        Assert.Equal(3, comic.Version);
+
+        comic.Hide(3, Now.AddMinutes(3));
+        comic.Publish(true, 4, Now.AddMinutes(4));
+
+        Assert.Equal(firstPublishedAt, comic.FirstPublishedAt);
+        var exception = Assert.Throws<CatalogRuleViolationException>(() =>
+            comic.ChangeSlug("forbidden-after-publish", 5, Now.AddMinutes(5)));
+        Assert.Equal(CatalogRuleViolation.SlugLocked, exception.Violation);
+    }
+
+    [Fact]
+    public void Comic_publication_commands_reject_stale_versions()
+    {
+        var comic = CreateComic();
+
+        var exception = Assert.Throws<CatalogRuleViolationException>(() =>
+            comic.Publish(true, 2, Now.AddMinutes(1)));
+
+        Assert.Equal(CatalogRuleViolation.ConcurrencyConflict, exception.Violation);
+        Assert.Equal(ComicPublicationStatuses.Draft, comic.PublicationStatus);
+    }
+
+    [Fact]
     public void Taxonomy_and_links_reject_missing_required_values()
     {
         Assert.Throws<ArgumentException>(() => Genre.Create(Guid.Empty, "action", "Action"));

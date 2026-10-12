@@ -5,7 +5,10 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using ComicManagement.Catalog.Chapters;
+using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Media;
+using ComicManagement.Catalog.Publishing;
 using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
@@ -76,6 +79,119 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<UploadChapterPageHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageAssetStore>());
+    }
+
+    [Fact]
+    public async Task Production_composition_registers_the_catalog_publication_slice()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<CatalogPublicationHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ICatalogPublicationStore>());
+    }
+
+    [Fact]
+    public async Task Catalog_publication_requires_admin_csrf_and_returns_business_problem_details()
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        const string subject = "google-subject-c03-admin";
+        _factory.TokenEndpoint.SetProfile(
+            subject,
+            "Catalog Admin",
+            "catalog-admin@example.com",
+            null);
+
+        using var anonymousClient = CreateClient();
+        var anonymous = await anonymousClient.PostAsJsonAsync(
+            $"/api/v1/admin/comics/{comicId}/publish",
+            new { expectedVersion = 1 });
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        using var userClient = CreateClient();
+        await CompleteLoginAsync(userClient, await BeginLoginAsync(userClient, "/"));
+        var forbidden = await userClient.PostAsJsonAsync(
+            $"/api/v1/admin/comics/{comicId}/publish",
+            new { expectedVersion = 1 });
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var changed = await context.Users
+                .Where(user => context.GoogleIdentities.Any(identity =>
+                    identity.UserId == user.Id && identity.GoogleSubject == subject))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(user => user.Role, "Admin")
+                    .SetProperty(user => user.UpdatedAt, DateTimeOffset.UtcNow)
+                    .SetProperty(user => user.Version, user => user.Version + 1));
+            Assert.Equal(1, changed);
+
+            var now = DateTimeOffset.UtcNow;
+            context.Comics.Add(Comic.Create(
+                comicId,
+                $"c03-api-{comicId:N}",
+                "C03 API",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now));
+            context.Chapters.Add(Chapter.Create(
+                chapterId,
+                comicId,
+                "Chapter 1",
+                1,
+                0,
+                false,
+                now));
+            var page = ChapterPage.CreatePending(
+                Guid.NewGuid(),
+                chapterId,
+                1,
+                $"c03-api/{chapterId:N}/1",
+                $"sha256:{new string('a', 64)}",
+                now);
+            page.MarkReady(1200, 1800);
+            context.ChapterPages.Add(page);
+            await context.SaveChangesAsync();
+        }
+
+        using var adminClient = CreateClient();
+        await CompleteLoginAsync(adminClient, await BeginLoginAsync(adminClient, "/"));
+        var me = await adminClient.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        async Task<HttpResponseMessage> PostCommandAsync(string route, long expectedVersion)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, route)
+            {
+                Content = JsonContent.Create(new { expectedVersion }),
+            };
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            return await adminClient.SendAsync(request);
+        }
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await PostCommandAsync(
+                $"/api/v1/admin/chapters/{chapterId}/publish",
+                1)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await PostCommandAsync(
+                $"/api/v1/admin/comics/{comicId}/publish",
+                1)).StatusCode);
+
+        var lastChapter = await PostCommandAsync(
+            $"/api/v1/admin/chapters/{chapterId}/hide",
+            2);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, lastChapter.StatusCode);
+        var problem = await lastChapter.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(
+            "PUBLICATION_PRECONDITION_FAILED",
+            problem.GetProperty("errorCode").GetString());
     }
 
     [Fact]
@@ -625,6 +741,35 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.True(patch.GetProperty("responses").TryGetProperty("401", out _));
         Assert.True(patch.GetProperty("responses").TryGetProperty("403", out _));
         Assert.True(patch.GetProperty("responses").TryGetProperty("409", out _));
+    }
+
+    [Fact]
+    public async Task OpenApi_document_contains_catalog_publication_contracts()
+    {
+        using var client = CreateClient();
+
+        var response = await client.GetAsync("/openapi/v1.json");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+
+        foreach (var path in new[]
+                 {
+                     "/api/v1/admin/comics/{comicId}/publish",
+                     "/api/v1/admin/comics/{comicId}/hide",
+                     "/api/v1/admin/chapters/{chapterId}/publish",
+                     "/api/v1/admin/chapters/{chapterId}/hide",
+                 })
+        {
+            var post = paths.GetProperty(path).GetProperty("post");
+            Assert.True(post.GetProperty("responses").TryGetProperty("200", out _));
+            Assert.True(post.GetProperty("responses").TryGetProperty("400", out _));
+            Assert.True(post.GetProperty("responses").TryGetProperty("401", out _));
+            Assert.True(post.GetProperty("responses").TryGetProperty("403", out _));
+            Assert.True(post.GetProperty("responses").TryGetProperty("404", out _));
+            Assert.True(post.GetProperty("responses").TryGetProperty("409", out _));
+        }
     }
 
     [Fact]

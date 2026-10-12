@@ -45,6 +45,43 @@ public sealed class ChapterModelTests
     }
 
     [Fact]
+    public void Chapter_publish_and_hide_enforce_page_and_last_chapter_rules()
+    {
+        var chapter = CreateChapter();
+
+        var emptyChapter = Assert.Throws<CatalogRuleViolationException>(() =>
+            chapter.Publish(false, 1, Now.AddMinutes(1)));
+        Assert.Equal(
+            CatalogRuleViolation.PublicationPreconditionFailed,
+            emptyChapter.Violation);
+
+        chapter.Publish(true, 1, Now.AddMinutes(1));
+
+        var lastChapter = Assert.Throws<CatalogRuleViolationException>(() =>
+            chapter.Hide(false, 2, Now.AddMinutes(2)));
+        Assert.Equal(
+            CatalogRuleViolation.PublicationPreconditionFailed,
+            lastChapter.Violation);
+
+        chapter.Hide(true, 2, Now.AddMinutes(2));
+
+        Assert.Equal(ChapterPublicationStatuses.Hidden, chapter.PublicationStatus);
+        Assert.Equal(3, chapter.Version);
+    }
+
+    [Fact]
+    public void Chapter_publication_commands_reject_stale_versions()
+    {
+        var chapter = CreateChapter();
+
+        var exception = Assert.Throws<CatalogRuleViolationException>(() =>
+            chapter.Publish(true, 2, Now.AddMinutes(1)));
+
+        Assert.Equal(CatalogRuleViolation.ConcurrencyConflict, exception.Violation);
+        Assert.Equal(ChapterPublicationStatuses.Draft, chapter.PublicationStatus);
+    }
+
+    [Fact]
     public void Chapter_page_is_valid_only_after_a_pending_asset_is_marked_ready()
     {
         var page = ChapterPage.CreatePending(

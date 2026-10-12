@@ -9,5 +9,7 @@ Chapter may become Published under Draft Comic, but not visible. Comic Publish r
 ## API
 Public comic search/filter/sort, detail, chapter Load More 30, featured. Admin comics/chapters CRUD, publish/hide, upload page ordering, metadata/taxonomy, Featured GET/PUT with version. Chapter list response includes batched access projection instead of one HTTP query per chapter. Save reorder atomically, account for unique-position collisions.
 
+C03 implements the Admin publication commands as `POST /api/v1/admin/comics/{comicId}/publish`, `POST /api/v1/admin/comics/{comicId}/hide`, `POST /api/v1/admin/chapters/{chapterId}/publish`, and `POST /api/v1/admin/chapters/{chapterId}/hide`, each with `{expectedVersion}`. They require the Admin policy and authenticated unsafe requests require CSRF. Publication mutations use one PostgreSQL transaction and lock in `Comic -> Chapter` order before revalidating pages and the last-valid-chapter rule. Slug editing remains part of the later full editor, but the Catalog aggregate already rejects any changed slug once `first_published_at` is set.
+
 ## Acceptance
 Cannot publish Comic with zero valid Published Chapters; cannot publish empty Chapter; can publish Chapter while Comic Draft without public access; hide last valid Published Chapter rejected; paid assets never leaked in public metadata; Featured duplicates/max6/unpublished rejected; concurrent reorder conflicts rather than lost updates.
