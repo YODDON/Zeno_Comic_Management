@@ -21,6 +21,7 @@ public sealed class CloudinaryChapterPageAssetStoreTests
                 options.CloudName = "test-cloud";
                 options.ApiKey = "test-key";
                 options.ApiSecret = "test-secret";
+                options.MaximumChapterPageBytes = 10 * 1024 * 1024;
             })
             .BuildServiceProvider(validateScopes: true);
         await using var scope = serviceProvider.CreateAsyncScope();
@@ -160,6 +161,23 @@ public sealed class CloudinaryChapterPageAssetStoreTests
         Assert.Equal(ChapterPageAssetErrorCodes.ProviderRejected, exception.ErrorCode);
     }
 
+    [Fact]
+    public void Upload_validation_rejects_content_over_the_configured_limit()
+    {
+        var store = CreateStore(CreateUploadProxy(), CreateAdminProxy(), maximumChapterPageBytes: 2);
+        using var content = new MemoryStream([1, 2, 3]);
+
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            store.ValidateUpload(new ChapterPageAssetUpload(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                "page.png",
+                "image/png",
+                content)));
+
+        Assert.Contains("2 bytes", exception.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("ok")]
     [InlineData("not found")]
@@ -201,7 +219,8 @@ public sealed class CloudinaryChapterPageAssetStoreTests
 
     private static CloudinaryChapterPageAssetStore CreateStore(
         RecordingUploadProxy uploadProxy,
-        RecordingAdminProxy adminProxy) => new(
+        RecordingAdminProxy adminProxy,
+        long maximumChapterPageBytes = 10 * 1024 * 1024) => new(
             uploadProxy.Client,
             adminProxy.Client,
             Options.Create(new CloudinaryOptions
@@ -210,6 +229,7 @@ public sealed class CloudinaryChapterPageAssetStoreTests
                 ApiKey = "test-key",
                 ApiSecret = "test-secret",
                 ChapterPagePublicIdPrefix = "comic-management/chapter-pages",
+                MaximumChapterPageBytes = maximumChapterPageBytes,
             }));
 
     private static RecordingUploadProxy CreateUploadProxy()

@@ -19,10 +19,12 @@ internal sealed class ChapterPageUploadStore(AppDbContext dbContext) : IChapterP
         await dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"""
             INSERT INTO catalog.chapter_pages
-                (id, chapter_id, page_order, cloudinary_public_id, asset_status, width, height)
+                (id, chapter_id, page_order, cloudinary_public_id, asset_status,
+                 upload_fingerprint, upload_created_at, width, height)
             VALUES
                 ({pendingPage.Id}, {pendingPage.ChapterId}, {pendingPage.PageOrder},
-                 {pendingPage.CloudinaryPublicId}, {ChapterPageAssetStatuses.Pending}, 0, 0)
+                 {pendingPage.CloudinaryPublicId}, {ChapterPageAssetStatuses.Pending},
+                 {pendingPage.UploadFingerprint}, {pendingPage.UploadCreatedAt}, 0, 0)
             ON CONFLICT DO NOTHING;
             """,
             cancellationToken);
@@ -36,6 +38,10 @@ internal sealed class ChapterPageUploadStore(AppDbContext dbContext) : IChapterP
             !string.Equals(
                 persistedPage.CloudinaryPublicId,
                 pendingPage.CloudinaryPublicId,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                persistedPage.UploadFingerprint,
+                pendingPage.UploadFingerprint,
                 StringComparison.Ordinal))
         {
             throw new ChapterPageUploadConflictException(

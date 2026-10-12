@@ -3,6 +3,7 @@ namespace ComicManagement.Catalog.Chapters;
 public sealed class ChapterPage
 {
     public const int MaximumAssetStatusLength = 24;
+    public const int MaximumUploadFingerprintLength = 80;
 
     private ChapterPage()
     {
@@ -18,6 +19,10 @@ public sealed class ChapterPage
 
     public string AssetStatus { get; private set; } = string.Empty;
 
+    public string UploadFingerprint { get; private set; } = string.Empty;
+
+    public DateTimeOffset UploadCreatedAt { get; private set; }
+
     public int Width { get; private set; }
 
     public int Height { get; private set; }
@@ -29,7 +34,9 @@ public sealed class ChapterPage
         Guid id,
         Guid chapterId,
         int pageOrder,
-        string cloudinaryPublicId)
+        string cloudinaryPublicId,
+        string uploadFingerprint,
+        DateTimeOffset uploadCreatedAt)
     {
         if (id == Guid.Empty)
         {
@@ -42,6 +49,20 @@ public sealed class ChapterPage
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(cloudinaryPublicId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(uploadFingerprint);
+        if (uploadFingerprint.Length > MaximumUploadFingerprintLength ||
+            !uploadFingerprint.StartsWith("sha256:", StringComparison.Ordinal) ||
+            uploadFingerprint.Length != "sha256:".Length + 64 ||
+            uploadFingerprint["sha256:".Length..].Any(character =>
+                character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f')))
+        {
+            throw new ArgumentException("Upload fingerprint must be a lowercase SHA-256 value.", nameof(uploadFingerprint));
+        }
+
+        if (uploadCreatedAt.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException("Upload creation time must be UTC.", nameof(uploadCreatedAt));
+        }
 
         return new ChapterPage
         {
@@ -50,6 +71,8 @@ public sealed class ChapterPage
             PageOrder = pageOrder,
             CloudinaryPublicId = cloudinaryPublicId,
             AssetStatus = ChapterPageAssetStatuses.Pending,
+            UploadFingerprint = uploadFingerprint,
+            UploadCreatedAt = uploadCreatedAt,
             Width = 0,
             Height = 0,
         };

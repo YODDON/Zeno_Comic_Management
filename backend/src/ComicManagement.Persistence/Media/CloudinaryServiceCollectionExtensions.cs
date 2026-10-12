@@ -26,6 +26,9 @@ public static class CloudinaryServiceCollectionExtensions
                     !string.IsNullOrWhiteSpace(options.ChapterPagePublicIdPrefix) &&
                     options.ChapterPagePublicIdPrefix.Trim('/').Length > 0,
                 "ChapterPagePublicIdPrefix is required.")
+            .Validate(
+                options => options.MaximumChapterPageBytes > 0,
+                "MaximumChapterPageBytes must be positive.")
             .ValidateOnStart();
 
         services.TryAddSingleton(serviceProvider =>

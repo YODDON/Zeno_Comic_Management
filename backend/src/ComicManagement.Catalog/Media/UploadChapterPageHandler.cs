@@ -1,4 +1,5 @@
 using ComicManagement.Catalog.Chapters;
+using ComicManagement.Shared.Time;
 
 namespace ComicManagement.Catalog.Media;
 
@@ -26,7 +27,8 @@ public sealed class ChapterPageUploadConflictException(string message) : Excepti
 
 public sealed class UploadChapterPageHandler(
     IChapterPageAssetStore assetStore,
-    IChapterPageUploadStore pageStore)
+    IChapterPageUploadStore pageStore,
+    IClock clock)
 {
     public async Task<ChapterPage> HandleAsync(
         UploadChapterPageCommand command,
@@ -40,12 +42,16 @@ public sealed class UploadChapterPageHandler(
             command.FileName,
             command.ContentType,
             command.Content);
+        assetStore.ValidateUpload(upload);
+        var uploadFingerprint = await upload.ComputeFingerprintAsync(cancellationToken);
         var publicId = assetStore.GetPublicId(command.ChapterId, command.PageId);
         var pendingPage = ChapterPage.CreatePending(
             command.PageId,
             command.ChapterId,
             command.PageOrder,
-            publicId);
+            publicId,
+            uploadFingerprint,
+            clock.UtcNow);
         var persistedPage = await pageStore.GetOrCreatePendingAsync(pendingPage, cancellationToken);
 
         if (persistedPage.IsValid)

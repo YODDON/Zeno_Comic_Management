@@ -117,6 +117,16 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("page_order");
 
+                    b.Property<DateTimeOffset>("UploadCreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("upload_created_at");
+
+                    b.Property<string>("UploadFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("upload_fingerprint");
+
                     b.Property<int>("Width")
                         .HasColumnType("integer")
                         .HasColumnName("width");
@@ -127,6 +137,9 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasIndex("CloudinaryPublicId")
                         .IsUnique()
                         .HasDatabaseName("ux_chapter_pages_cloudinary_public_id");
+
+                    b.HasIndex("AssetStatus", "UploadCreatedAt")
+                        .HasDatabaseName("ix_chapter_pages_asset_status_upload_created_at");
 
                     b.HasIndex("ChapterId", "PageOrder")
                         .IsUnique()
@@ -139,6 +152,8 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_chapter_pages_asset_status", "asset_status IN ('Pending', 'Ready')");
 
                             t.HasCheckConstraint("ck_chapter_pages_cloudinary_public_id_not_blank", "length(btrim(cloudinary_public_id)) > 0");
+
+                            t.HasCheckConstraint("ck_chapter_pages_upload_fingerprint", "upload_fingerprint ~ '^(sha256:[0-9a-f]{64}|legacy:[0-9a-f-]{36})$'");
                         });
                 });
 

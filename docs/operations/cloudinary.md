@@ -1,7 +1,12 @@
 # Cloudinary Media & Protected Reader — VERIFICATION REQUIRED
 
 ## Asset classes
-Comic covers/featured artwork public assets; chapter pages may be Free or locked by Paid/VIP entitlement. Admin multi-upload/reorder, store asset public ID, dimensions, status; avoid orphan assets if DB save fails. Persist a `Pending` chapter-page intent with its deterministic provider public ID before calling Cloudinary. After authenticated asset identity and dimensions are confirmed, transition it to `Ready`. A retry recovers the deterministic asset through provider metadata and completes the same intent; it never creates another page row.
+Comic covers/featured artwork public assets; chapter pages may be Free or locked by Paid/VIP entitlement. Admin multi-upload/reorder, store asset public ID, dimensions, status; avoid orphan assets if DB save fails. Validate the configured byte limit and calculate the content SHA-256 before persisting a `Pending` chapter-page intent with its deterministic provider public ID. After authenticated asset identity and dimensions are confirmed, transition it to `Ready`. A retry with the same fingerprint recovers the deterministic asset through provider metadata and completes the same intent; different content for the same page identity is rejected and never reaches Cloudinary.
+
+## Runtime configuration and pending recovery
+Production composition reads `Cloudinary__CloudName`, `Cloudinary__ApiKey`, `Cloudinary__ApiSecret`, optional `Cloudinary__ChapterPagePublicIdPrefix`, and required positive `Cloudinary__MaximumChapterPageBytes`. The maximum is an operator-owned deployment limit until product/provider testing approves a fixed policy; secrets must come from environment/secret storage and never source control.
+
+`Pending` rows are deliberately retained across ambiguous provider or database failures. Retry with the original page ID and identical content first. Operators can identify abandoned intents through the `(asset_status,upload_created_at)` index; do not delete the row or provider asset independently until the provider state has been reconciled. The Admin cleanup UX/API remains part of the later full editor task.
 
 ## Critical constraint
 Cloudinary ordinary signed URL does **NOT** automatically imply expiration. `private` original assets may not protect derived transformations in every configuration. Paid/VIP pages require proven restricted/time-limited access strategy supported by actual Cloudinary account and transformations. Never publish paid page URLs as static public assets. Signed-only without expiry is not sufficient to claim short-lived entitlement revocation.

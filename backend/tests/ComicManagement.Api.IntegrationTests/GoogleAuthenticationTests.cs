@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using ComicManagement.Catalog.Media;
 using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
@@ -66,6 +67,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         await _factory.DisposeAsync();
         await _postgres.DisposeAsync();
         Directory.Delete(_securityDirectory, recursive: true);
+    }
+
+    [Fact]
+    public async Task Production_composition_registers_the_chapter_page_upload_slice()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<UploadChapterPageHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageAssetStore>());
     }
 
     [Fact]
@@ -1156,6 +1166,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     "Authentication:Google:ClientSecret",
                     "test-client-secret")
                 .UseSetting("Authentication:SessionLifetime", "01:00:00")
+                .UseSetting("Cloudinary:CloudName", "test-cloud")
+                .UseSetting("Cloudinary:ApiKey", "test-key")
+                .UseSetting("Cloudinary:ApiSecret", "test-secret")
+                .UseSetting("Cloudinary:MaximumChapterPageBytes", "10485760")
                 .UseSetting("Authentication:DataProtectionKeysPath", _keysPath)
                 .UseSetting(
                     "Authentication:DataProtectionCertificatePath",

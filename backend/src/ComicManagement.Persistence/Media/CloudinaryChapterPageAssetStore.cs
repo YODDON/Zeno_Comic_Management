@@ -15,6 +15,17 @@ internal sealed class CloudinaryChapterPageAssetStore(
 
     private readonly CloudinaryOptions _options = options.Value;
 
+    public void ValidateUpload(ChapterPageAssetUpload upload)
+    {
+        ArgumentNullException.ThrowIfNull(upload);
+        if (upload.ContentLength > _options.MaximumChapterPageBytes)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(upload),
+                $"Chapter page exceeds the configured maximum of {_options.MaximumChapterPageBytes} bytes.");
+        }
+    }
+
     public string GetPublicId(Guid chapterId, Guid pageId)
     {
         if (chapterId == Guid.Empty)
@@ -39,6 +50,7 @@ internal sealed class CloudinaryChapterPageAssetStore(
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(upload);
+        ValidateUpload(upload);
 
         var expectedPublicId = GetPublicId(upload.ChapterId, upload.PageId);
         var parameters = new ImageUploadParams

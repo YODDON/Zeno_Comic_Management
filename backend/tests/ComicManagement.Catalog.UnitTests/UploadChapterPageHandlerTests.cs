@@ -1,18 +1,21 @@
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Media;
+using ComicManagement.Shared.Time;
 using Xunit;
 
 namespace ComicManagement.Catalog.UnitTests;
 
 public sealed class UploadChapterPageHandlerTests
 {
+    private static readonly DateTimeOffset Now = new(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
+
     [Fact]
     public async Task Handler_persists_pending_intent_before_external_upload_and_marks_it_ready()
     {
         var calls = new List<string>();
         var assetStore = new FakeAssetStore(calls);
         var pageStore = new FakePageStore(calls);
-        var handler = new UploadChapterPageHandler(assetStore, pageStore);
+        var handler = CreateHandler(assetStore, pageStore);
 
         var page = await handler.HandleAsync(CreateCommand());
 
@@ -27,7 +30,7 @@ public sealed class UploadChapterPageHandlerTests
         var calls = new List<string>();
         var assetStore = new FakeAssetStore(calls);
         var pageStore = new FakePageStore(calls) { ReturnReadyPage = true };
-        var handler = new UploadChapterPageHandler(assetStore, pageStore);
+        var handler = CreateHandler(assetStore, pageStore);
 
         var page = await handler.HandleAsync(CreateCommand());
 
@@ -42,7 +45,7 @@ public sealed class UploadChapterPageHandlerTests
         var calls = new List<string>();
         var assetStore = new FakeAssetStore(calls) { FailUpload = true };
         var pageStore = new FakePageStore(calls);
-        var handler = new UploadChapterPageHandler(assetStore, pageStore);
+        var handler = CreateHandler(assetStore, pageStore);
 
         await Assert.ThrowsAsync<ChapterPageAssetException>(() => handler.HandleAsync(CreateCommand()));
 
@@ -55,7 +58,7 @@ public sealed class UploadChapterPageHandlerTests
     public async Task Invalid_upload_is_rejected_before_a_pending_intent_is_persisted()
     {
         var calls = new List<string>();
-        var handler = new UploadChapterPageHandler(
+        var handler = CreateHandler(
             new FakeAssetStore(calls),
             new FakePageStore(calls));
         var command = CreateCommand() with { ContentType = "application/pdf" };
@@ -64,6 +67,41 @@ public sealed class UploadChapterPageHandlerTests
 
         Assert.Empty(calls);
     }
+
+    [Fact]
+    public async Task Provider_upload_policy_is_enforced_before_a_pending_intent_is_persisted()
+    {
+        var calls = new List<string>();
+        var handler = CreateHandler(
+            new FakeAssetStore(calls) { RejectValidation = true },
+            new FakePageStore(calls));
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => handler.HandleAsync(CreateCommand()));
+
+        Assert.Empty(calls);
+    }
+
+    [Fact]
+    public async Task Different_content_for_the_same_page_is_rejected_before_provider_retry()
+    {
+        var calls = new List<string>();
+        var assetStore = new FakeAssetStore(calls) { FailUpload = true };
+        var pageStore = new FakePageStore(calls);
+        var handler = CreateHandler(assetStore, pageStore);
+        var command = CreateCommand();
+
+        await Assert.ThrowsAsync<ChapterPageAssetException>(() => handler.HandleAsync(command));
+        assetStore.FailUpload = false;
+
+        await Assert.ThrowsAsync<ChapterPageUploadConflictException>(() =>
+            handler.HandleAsync(command with { Content = new MemoryStream([9, 9, 9]) }));
+
+        Assert.Equal(1, assetStore.UploadCount);
+    }
+
+    private static UploadChapterPageHandler CreateHandler(
+        IChapterPageAssetStore assetStore,
+        IChapterPageUploadStore pageStore) => new(assetStore, pageStore, new StubClock(Now));
 
     private static UploadChapterPageCommand CreateCommand() => new(
         Guid.NewGuid(),
@@ -77,7 +115,17 @@ public sealed class UploadChapterPageHandlerTests
     {
         public int UploadCount { get; private set; }
 
-        public bool FailUpload { get; init; }
+        public bool FailUpload { get; set; }
+
+        public bool RejectValidation { get; init; }
+
+        public void ValidateUpload(ChapterPageAssetUpload upload)
+        {
+            if (RejectValidation)
+            {
+                throw new ArgumentOutOfRangeException(nameof(upload));
+            }
+        }
 
         public string GetPublicId(Guid chapterId, Guid pageId) =>
             $"comic-management/chapter-pages/{chapterId:N}/{pageId:N}";
@@ -116,7 +164,17 @@ public sealed class UploadChapterPageHandlerTests
             CancellationToken cancellationToken = default)
         {
             calls.Add("persist-pending");
-            Page ??= pendingPage;
+            if (Page is null)
+            {
+                Page = pendingPage;
+            }
+            else if (!string.Equals(
+                         Page.UploadFingerprint,
+                         pendingPage.UploadFingerprint,
+                         StringComparison.Ordinal))
+            {
+                throw new ChapterPageUploadConflictException("Upload fingerprint changed.");
+            }
             if (ReturnReadyPage && !Page.IsValid)
             {
                 Page.MarkReady(1200, 1800);
@@ -137,5 +195,10 @@ public sealed class UploadChapterPageHandlerTests
             Page.MarkReady(asset.Width, asset.Height);
             return Task.FromResult(Page);
         }
+    }
+
+    private sealed class StubClock(DateTimeOffset utcNow) : IClock
+    {
+        public DateTimeOffset UtcNow { get; } = utcNow;
     }
 }

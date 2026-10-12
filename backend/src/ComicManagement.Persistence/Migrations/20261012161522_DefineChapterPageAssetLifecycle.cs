@@ -73,13 +73,13 @@ namespace ComicManagement.Persistence.Migrations
                 name: "ck_chapter_pages_height",
                 schema: "catalog",
                 table: "chapter_pages",
-                sql: "height > 0");
+                sql: "height >= 0");
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_chapter_pages_width",
                 schema: "catalog",
                 table: "chapter_pages",
-                sql: "width > 0");
+                sql: "width >= 0");
         }
     }
 }
