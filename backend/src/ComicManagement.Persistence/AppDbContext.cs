@@ -1,3 +1,4 @@
+using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Taxonomy;
 using ComicManagement.Identity.Users;
@@ -12,6 +13,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<GoogleIdentity> GoogleIdentities => Set<GoogleIdentity>();
 
     internal DbSet<Comic> Comics => Set<Comic>();
+
+    internal DbSet<Chapter> Chapters => Set<Chapter>();
+
+    internal DbSet<ChapterPage> ChapterPages => Set<ChapterPage>();
 
     internal DbSet<Genre> Genres => Set<Genre>();
 
