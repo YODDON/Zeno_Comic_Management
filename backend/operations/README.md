@@ -43,7 +43,9 @@ it according to the operations audit policy. This external record is the I02 aud
 append-only in-application Administration audit log is owned by the later Administration task and
 must not be created early by this procedure.
 
-After commit, verify that the old session receives `401`, sign in again with Google, check that
-`GET /api/v1/me` reports `Admin`, and verify one Admin-only read endpoint. If any check fails, stop
-and follow the incident/change rollback process; do not add a role-management API or edit another
-user. Remove the temporary database role and attach the verification results to the ticket.
+After commit, verify that the old session receives `401`, sign in again with Google, and check that
+`GET /api/v1/me` reports `Admin`. These are the complete production verification steps available
+in I02; the Admin-only probe exists only in the integration-test assembly and must never be exposed
+as a production endpoint. If any check fails, stop and follow the incident/change rollback process;
+do not add a role-management API or edit another user. Remove the temporary database role and
+attach the verification results to the ticket.

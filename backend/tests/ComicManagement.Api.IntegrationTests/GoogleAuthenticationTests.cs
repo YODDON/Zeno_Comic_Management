@@ -505,6 +505,91 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Concurrent_first_admin_attempts_allow_exactly_one_admin()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-first-admin-race-one",
+            "First Admin Candidate One",
+            "first-admin-race-one@example.com",
+            null);
+        using var firstClient = CreateClient();
+        await CompleteLoginAsync(firstClient, await BeginLoginAsync(firstClient, "/"));
+        var firstProfile = await (await firstClient.GetAsync("/api/v1/me"))
+            .Content
+            .ReadFromJsonAsync<JsonElement>();
+        var firstUserId = firstProfile.GetProperty("id").GetGuid();
+
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-first-admin-race-two",
+            "First Admin Candidate Two",
+            "first-admin-race-two@example.com",
+            null);
+        using var secondClient = CreateClient();
+        await CompleteLoginAsync(secondClient, await BeginLoginAsync(secondClient, "/"));
+        var secondProfile = await (await secondClient.GetAsync("/api/v1/me"))
+            .Content
+            .ReadFromJsonAsync<JsonElement>();
+        var secondUserId = secondProfile.GetProperty("id").GetGuid();
+
+        await using var blockerConnection = new NpgsqlConnection(
+            _postgres.GetConnectionString());
+        await blockerConnection.OpenAsync();
+        await using var blockerTransaction = await blockerConnection.BeginTransactionAsync();
+        await using (var blockerCommand = new NpgsqlCommand(
+            "SELECT pg_advisory_xact_lock(" +
+            "hashtextextended('comic-management:first-admin-provisioning', 0));",
+            blockerConnection,
+            blockerTransaction))
+        {
+            await blockerCommand.ExecuteNonQueryAsync();
+        }
+
+        await using var firstScope = _factory.Services.CreateAsyncScope();
+        await using var secondScope = _factory.Services.CreateAsyncScope();
+        var firstContext = firstScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var secondContext = secondScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var attempts = new[]
+        {
+            ExecuteProvisioningAttemptAsync(
+                firstContext,
+                LoadProvisioningScript(firstUserId)),
+            ExecuteProvisioningAttemptAsync(
+                secondContext,
+                LoadProvisioningScript(secondUserId)),
+        };
+
+        await WaitForAdvisoryLockWaitersAsync(
+            blockerConnection,
+            blockerTransaction,
+            expectedWaiters: 2);
+        await blockerTransaction.CommitAsync();
+
+        var failures = await Task.WhenAll(attempts);
+        Assert.Single(failures, failure => failure is null);
+        var rejectedAttempt = Assert.Single(failures, failure => failure is not null)!;
+        Assert.True(
+            rejectedAttempt.SqlState is "40001" or "P0001",
+            $"Unexpected SQLSTATE: {rejectedAttempt.SqlState}.");
+
+        await using var verificationScope = _factory.Services.CreateAsyncScope();
+        var verificationContext = verificationScope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+        var candidates = await verificationContext.Users
+            .Where(user => user.Id == firstUserId || user.Id == secondUserId)
+            .Select(user => new { user.Id, user.Role, user.Version })
+            .ToListAsync();
+
+        var provisioned = Assert.Single(
+            candidates,
+            candidate => candidate.Role == "Admin");
+        Assert.Equal(2, provisioned.Version);
+        var unchanged = Assert.Single(
+            candidates,
+            candidate => candidate.Role == "User");
+        Assert.Equal(1, unchanged.Version);
+    }
+
+    [Fact]
     public async Task Persisted_encrypted_key_ring_accepts_session_in_a_new_app_instance()
     {
         _factory.TokenEndpoint.SetProfile(
@@ -726,6 +811,57 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .Replace(":'change_ticket'", "'I02-TEST'", StringComparison.Ordinal)
             .Replace(":'operator_id'", "'test-operator'", StringComparison.Ordinal)
             .Replace(":'reviewer_id'", "'test-reviewer'", StringComparison.Ordinal);
+    }
+
+    private static async Task<PostgresException?> ExecuteProvisioningAttemptAsync(
+        AppDbContext context,
+        string script)
+    {
+        try
+        {
+            await context.Database.ExecuteSqlRawAsync(script);
+            return null;
+        }
+        catch (PostgresException exception)
+        {
+            return exception;
+        }
+    }
+
+    private static async Task WaitForAdvisoryLockWaitersAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        int expectedWaiters)
+    {
+        const int maximumAttempts = 100;
+        for (var attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            await using var command = new NpgsqlCommand(
+                """
+                SELECT count(*)
+                FROM pg_locks
+                WHERE locktype = 'advisory'
+                  AND database = (
+                    SELECT oid
+                    FROM pg_database
+                    WHERE datname = current_database())
+                  AND NOT granted;
+                """,
+                connection,
+                transaction);
+            var waitingCount = Convert.ToInt32(
+                await command.ExecuteScalarAsync(),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (waitingCount >= expectedWaiters)
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(50));
+        }
+
+        throw new TimeoutException(
+            $"Expected {expectedWaiters} provisioning transactions to wait for the advisory lock.");
     }
 
     private sealed record LoginFlow(string CallbackUrl);
