@@ -1,9 +1,12 @@
 using System.Threading.RateLimiting;
 using System.Security.Cryptography.X509Certificates;
+using ComicManagement.Api.Authorization;
+using ComicManagement.Identity.Users;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 
 namespace ComicManagement.Api.Authentication;
@@ -23,6 +26,23 @@ internal static class IdentityAuthenticationServiceCollectionExtensions
         services.AddExceptionHandler<ApiExceptionHandler>();
         services.AddScoped<GoogleOpenIdConnectEvents>();
         services.AddScoped<SessionCookieEvents>();
+        services.AddScoped<AuthenticatedAntiforgeryFilter>();
+        services.Configure<MvcOptions>(options =>
+            options.Filters.AddService<AuthenticatedAntiforgeryFilter>());
+
+        services.AddAuthorization(options =>
+        {
+            options.AddPolicy(
+                AuthorizationPolicies.User,
+                policy => policy
+                    .RequireAuthenticatedUser()
+                    .RequireRole(IdentityRoles.User, IdentityRoles.Admin));
+            options.AddPolicy(
+                AuthorizationPolicies.Admin,
+                policy => policy
+                    .RequireAuthenticatedUser()
+                    .RequireRole(IdentityRoles.Admin));
+        });
 
         services.AddAntiforgery(options =>
         {

@@ -1,4 +1,4 @@
-# Identity I01 operations
+# Identity operations
 
 I01 implements server-side Google OpenID Connect as the approved Google OAuth login,
 an encrypted application cookie, persistent Google `sub` binding, and the authenticated
@@ -20,8 +20,15 @@ state, nonce, issuer, audience, signature, lifetime and the exact case-sensitive
 are not saved in the application cookie. Existing cookies are revalidated against PostgreSQL on
 every request so a disabled account is denied immediately.
 
-I01 applies antiforgery validation only to its logout mutation. General mutation CSRF integration,
-role policies and Admin provisioning remain in I02. `PATCH /api/v1/me` belongs to I03.
+I02 applies centralized antiforgery validation to every authenticated `POST`, `PUT`, `PATCH` and
+`DELETE` controller action. Anonymous provider-facing requests remain outside session CSRF and
+must apply their documented provider authentication. The API exposes reusable User and Admin
+authorization policies; the User policy admits both active roles while the Admin policy requires
+the `Admin` role. There is no web API or UI for changing roles.
+
+The controlled, one-time first-Admin procedure is documented in
+`backend/operations/README.md` and implemented by `backend/operations/provision-first-admin.sql`.
+It is deliberately an out-of-band, reviewed database operation. `PATCH /api/v1/me` belongs to I03.
 
 ## Required configuration
 
@@ -52,6 +59,9 @@ The automated API test uses a local signed OIDC token endpoint and PostgreSQL. I
 state/nonce/full PKCE exchange, negative token validation, callback replay rejection, secure
 cookie attributes, safe return URLs, duplicate subject handling, `/me`, CSRF-protected logout,
 server-side session revocation, trusted forwarded headers/rate-limit partitioning, disabled-account
-revocation and encrypted key reuse across app instances. The production Google client, HTTPS
+revocation, centralized mutation CSRF, User/Admin authorization responses and encrypted key reuse
+across app instances. The production Google client, HTTPS
 redirect registration, browser cookie behavior through Caddy, production certificate rotation and
-key-volume permissions remain **Verification Required**.
+key-volume permissions remain **Verification Required**. The first-Admin SQL procedure also needs
+a production operations dry run with the real least-privilege database role before that gate can
+be marked verified.

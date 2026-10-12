@@ -10,6 +10,7 @@ using ComicManagement.Identity.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +20,7 @@ using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
+using Npgsql;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -342,6 +344,252 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Unauthenticated_admin_route_returns_unauthorized_problem_details()
+    {
+        using var client = CreateClient();
+
+        var response = await client.GetAsync("/api/v1/i02-test/admin");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Null(response.Headers.Location);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_REQUIRED", problem.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task User_is_forbidden_from_admin_route_and_admin_is_authorized_after_new_login()
+    {
+        const string subject = "google-subject-role-policy";
+        _factory.TokenEndpoint.SetProfile(
+            subject,
+            "Role Policy User",
+            "role-policy@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/"));
+
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await client.GetAsync("/api/v1/i02-test/user")).StatusCode);
+
+        var forbidden = await client.GetAsync("/api/v1/i02-test/admin");
+        Assert.Equal(HttpStatusCode.Forbidden, forbidden.StatusCode);
+        Assert.Null(forbidden.Headers.Location);
+        var forbiddenProblem = await forbidden.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("FORBIDDEN", forbiddenProblem.GetProperty("errorCode").GetString());
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var changed = await context.Users
+                .Where(user => context.GoogleIdentities.Any(identity =>
+                    identity.UserId == user.Id && identity.GoogleSubject == subject))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(user => user.Role, "Admin")
+                    .SetProperty(user => user.UpdatedAt, DateTimeOffset.UtcNow)
+                    .SetProperty(user => user.Version, user => user.Version + 1));
+            Assert.Equal(1, changed);
+        }
+
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await client.GetAsync("/api/v1/i02-test/admin")).StatusCode);
+
+        using var adminClient = CreateClient();
+        await CompleteLoginAsync(adminClient, await BeginLoginAsync(adminClient, "/"));
+
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await adminClient.GetAsync("/api/v1/i02-test/admin")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.NoContent,
+            (await adminClient.GetAsync("/api/v1/i02-test/user")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Authenticated_mutations_require_global_csrf_validation()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-global-csrf",
+            "Global CSRF User",
+            "global-csrf@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/"));
+
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        var unsafeMethods = new[]
+        {
+            HttpMethod.Post,
+            HttpMethod.Put,
+            HttpMethod.Patch,
+            HttpMethod.Delete,
+        };
+
+        foreach (var method in unsafeMethods)
+        {
+            using var rejectedRequest = new HttpRequestMessage(
+                method,
+                "/api/v1/i02-test/mutation");
+            var rejected = await client.SendAsync(rejectedRequest);
+
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            var problem = await rejected.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(
+                "VALIDATION_FAILED",
+                problem.GetProperty("errorCode").GetString());
+
+            using var acceptedRequest = new HttpRequestMessage(
+                method,
+                "/api/v1/i02-test/mutation");
+            acceptedRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            Assert.Equal(
+                HttpStatusCode.NoContent,
+                (await client.SendAsync(acceptedRequest)).StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Anonymous_mutation_is_not_subject_to_session_csrf()
+    {
+        using var client = CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/v1/i02-test/public-mutation",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task First_admin_provisioning_script_is_single_use_and_revokes_old_session()
+    {
+        const string subject = "google-subject-first-admin-script";
+        _factory.TokenEndpoint.SetProfile(
+            subject,
+            "First Admin Candidate",
+            "first-admin@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/"));
+
+        var me = await client.GetAsync("/api/v1/me");
+        var profile = await me.Content.ReadFromJsonAsync<JsonElement>();
+        var targetUserId = profile.GetProperty("id").GetGuid();
+        var script = LoadProvisioningScript(targetUserId);
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await context.Database.ExecuteSqlRawAsync(script);
+            context.ChangeTracker.Clear();
+
+            var provisioned = await context.Users
+                .SingleAsync(user => user.Id == targetUserId);
+            Assert.Equal("Admin", provisioned.Role);
+            Assert.Equal(2, provisioned.Version);
+
+            var repeatedProvision = await Assert.ThrowsAsync<PostgresException>(
+                () => context.Database.ExecuteSqlRawAsync(script));
+            Assert.Equal("P0001", repeatedProvision.SqlState);
+            Assert.Contains(
+                "First Admin already exists",
+                repeatedProvision.MessageText,
+                StringComparison.Ordinal);
+        }
+
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await client.GetAsync("/api/v1/i02-test/admin")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Concurrent_first_admin_attempts_allow_exactly_one_admin()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-first-admin-race-one",
+            "First Admin Candidate One",
+            "first-admin-race-one@example.com",
+            null);
+        using var firstClient = CreateClient();
+        await CompleteLoginAsync(firstClient, await BeginLoginAsync(firstClient, "/"));
+        var firstProfile = await (await firstClient.GetAsync("/api/v1/me"))
+            .Content
+            .ReadFromJsonAsync<JsonElement>();
+        var firstUserId = firstProfile.GetProperty("id").GetGuid();
+
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-first-admin-race-two",
+            "First Admin Candidate Two",
+            "first-admin-race-two@example.com",
+            null);
+        using var secondClient = CreateClient();
+        await CompleteLoginAsync(secondClient, await BeginLoginAsync(secondClient, "/"));
+        var secondProfile = await (await secondClient.GetAsync("/api/v1/me"))
+            .Content
+            .ReadFromJsonAsync<JsonElement>();
+        var secondUserId = secondProfile.GetProperty("id").GetGuid();
+
+        await using var blockerConnection = new NpgsqlConnection(
+            _postgres.GetConnectionString());
+        await blockerConnection.OpenAsync();
+        await using var blockerTransaction = await blockerConnection.BeginTransactionAsync();
+        await using (var blockerCommand = new NpgsqlCommand(
+            "SELECT pg_advisory_xact_lock(" +
+            "hashtextextended('comic-management:first-admin-provisioning', 0));",
+            blockerConnection,
+            blockerTransaction))
+        {
+            await blockerCommand.ExecuteNonQueryAsync();
+        }
+
+        await using var firstScope = _factory.Services.CreateAsyncScope();
+        await using var secondScope = _factory.Services.CreateAsyncScope();
+        var firstContext = firstScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var secondContext = secondScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var attempts = new[]
+        {
+            ExecuteProvisioningAttemptAsync(
+                firstContext,
+                LoadProvisioningScript(firstUserId)),
+            ExecuteProvisioningAttemptAsync(
+                secondContext,
+                LoadProvisioningScript(secondUserId)),
+        };
+
+        await WaitForAdvisoryLockWaitersAsync(
+            blockerConnection,
+            blockerTransaction,
+            expectedWaiters: 2);
+        await blockerTransaction.CommitAsync();
+
+        var failures = await Task.WhenAll(attempts);
+        Assert.Single(failures, failure => failure is null);
+        var rejectedAttempt = Assert.Single(failures, failure => failure is not null)!;
+        Assert.True(
+            rejectedAttempt.SqlState is "40001" or "P0001",
+            $"Unexpected SQLSTATE: {rejectedAttempt.SqlState}.");
+
+        await using var verificationScope = _factory.Services.CreateAsyncScope();
+        var verificationContext = verificationScope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+        var candidates = await verificationContext.Users
+            .Where(user => user.Id == firstUserId || user.Id == secondUserId)
+            .Select(user => new { user.Id, user.Role, user.Version })
+            .ToListAsync();
+
+        var provisioned = Assert.Single(
+            candidates,
+            candidate => candidate.Role == "Admin");
+        Assert.Equal(2, provisioned.Version);
+        var unchanged = Assert.Single(
+            candidates,
+            candidate => candidate.Role == "User");
+        Assert.Equal(1, unchanged.Version);
+    }
+
+    [Fact]
     public async Task Persisted_encrypted_key_ring_accepts_session_in_a_new_app_instance()
     {
         _factory.TokenEndpoint.SetProfile(
@@ -546,6 +794,76 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         HttpClient client,
         LoginFlow flow) => client.GetAsync(flow.CallbackUrl);
 
+    private static string LoadProvisioningScript(Guid targetUserId)
+    {
+        var scriptPath = Path.Combine(
+            AppContext.BaseDirectory,
+            "Operations",
+            "provision-first-admin.sql");
+        var sqlLines = File.ReadAllLines(scriptPath)
+            .Where(line => !line.TrimStart().StartsWith('\\'));
+
+        return string.Join(Environment.NewLine, sqlLines)
+            .Replace(
+                ":'target_user_id'",
+                $"'{targetUserId:D}'",
+                StringComparison.Ordinal)
+            .Replace(":'change_ticket'", "'I02-TEST'", StringComparison.Ordinal)
+            .Replace(":'operator_id'", "'test-operator'", StringComparison.Ordinal)
+            .Replace(":'reviewer_id'", "'test-reviewer'", StringComparison.Ordinal);
+    }
+
+    private static async Task<PostgresException?> ExecuteProvisioningAttemptAsync(
+        AppDbContext context,
+        string script)
+    {
+        try
+        {
+            await context.Database.ExecuteSqlRawAsync(script);
+            return null;
+        }
+        catch (PostgresException exception)
+        {
+            return exception;
+        }
+    }
+
+    private static async Task WaitForAdvisoryLockWaitersAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        int expectedWaiters)
+    {
+        const int maximumAttempts = 100;
+        for (var attempt = 0; attempt < maximumAttempts; attempt++)
+        {
+            await using var command = new NpgsqlCommand(
+                """
+                SELECT count(*)
+                FROM pg_locks
+                WHERE locktype = 'advisory'
+                  AND database = (
+                    SELECT oid
+                    FROM pg_database
+                    WHERE datname = current_database())
+                  AND NOT granted;
+                """,
+                connection,
+                transaction);
+            var waitingCount = Convert.ToInt32(
+                await command.ExecuteScalarAsync(),
+                System.Globalization.CultureInfo.InvariantCulture);
+            if (waitingCount >= expectedWaiters)
+            {
+                return;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(50));
+        }
+
+        throw new TimeoutException(
+            $"Expected {expectedWaiters} provisioning transactions to wait for the advisory lock.");
+    }
+
     private sealed record LoginFlow(string CallbackUrl);
 
     private sealed class AuthenticationApplicationFactory(
@@ -591,6 +909,18 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 .UseSetting("ReverseProxy:KnownNetworks:1", "::/0");
             builder.ConfigureServices(services =>
             {
+                services.AddControllers()
+                    .ConfigureApplicationPartManager(manager =>
+                    {
+                        var testPart = new AssemblyPart(
+                            typeof(I02AuthorizationProbeController).Assembly);
+                        if (!manager.ApplicationParts.Any(part =>
+                                part.Name == testPart.Name))
+                        {
+                            manager.ApplicationParts.Add(testPart);
+                        }
+                    });
+
                 services.PostConfigure<OpenIdConnectOptions>("Google", options =>
                 {
                     var configuration = TokenEndpoint.CreateConfiguration();

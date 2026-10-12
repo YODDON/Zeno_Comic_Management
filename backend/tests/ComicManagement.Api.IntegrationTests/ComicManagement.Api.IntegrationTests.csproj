@@ -17,4 +17,9 @@
     <ProjectReference Include="../../src/ComicManagement.Api/ComicManagement.Api.csproj" />
     <ProjectReference Include="../../src/ComicManagement.Persistence/ComicManagement.Persistence.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../../operations/provision-first-admin.sql"
+          Link="Operations/provision-first-admin.sql"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
