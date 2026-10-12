@@ -22,6 +22,339 @@ namespace ComicManagement.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ChapterLabel")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("chapter_label");
+
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long?>("PriceOverrideCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("price_override_coins");
+
+                    b.Property<string>("PublicationStatus")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("publication_status");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<bool?>("VipOverride")
+                        .HasColumnType("boolean")
+                        .HasColumnName("vip_override");
+
+                    b.HasKey("Id")
+                        .HasName("pk_chapters");
+
+                    b.HasIndex("ComicId", "SortOrder")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chapters_comic_id_sort_order");
+
+                    b.ToTable("chapters", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_chapters_label_not_blank", "length(btrim(chapter_label)) > 0");
+
+                            t.HasCheckConstraint("ck_chapters_price_override_coins", "price_override_coins IS NULL OR price_override_coins >= 0");
+
+                            t.HasCheckConstraint("ck_chapters_publication_status", "publication_status IN ('Draft', 'Published', 'Hidden')");
+
+                            t.HasCheckConstraint("ck_chapters_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Chapters.ChapterPage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AssetStatus")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("asset_status");
+
+                    b.Property<Guid>("ChapterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("chapter_id");
+
+                    b.Property<string>("CloudinaryPublicId")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("cloudinary_public_id");
+
+                    b.Property<int>("Height")
+                        .HasColumnType("integer")
+                        .HasColumnName("height");
+
+                    b.Property<int>("PageOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("page_order");
+
+                    b.Property<int>("Width")
+                        .HasColumnType("integer")
+                        .HasColumnName("width");
+
+                    b.HasKey("Id")
+                        .HasName("pk_chapter_pages");
+
+                    b.HasIndex("ChapterId", "PageOrder")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chapter_pages_chapter_id_page_order");
+
+                    b.ToTable("chapter_pages", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_chapter_pages_asset_status_not_blank", "length(btrim(asset_status)) > 0");
+
+                            t.HasCheckConstraint("ck_chapter_pages_cloudinary_public_id_not_blank", "length(btrim(cloudinary_public_id)) > 0");
+
+                            t.HasCheckConstraint("ck_chapter_pages_height", "height > 0");
+
+                            t.HasCheckConstraint("ck_chapter_pages_width", "width > 0");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Comics.Comic", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CoverAssetId")
+                        .HasColumnType("text")
+                        .HasColumnName("cover_asset_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("DefaultPriceCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("default_price_coins");
+
+                    b.Property<bool>("DefaultVipEligible")
+                        .HasColumnType("boolean")
+                        .HasColumnName("default_vip_eligible");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("FirstPublishedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_published_at");
+
+                    b.Property<string>("PublicationStatus")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("publication_status");
+
+                    b.Property<string>("SeriesStatus")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("series_status");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("slug");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("title");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_comics");
+
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ux_comics_slug");
+
+                    b.ToTable("comics", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_comics_default_price_coins", "default_price_coins >= 0");
+
+                            t.HasCheckConstraint("ck_comics_publication_status", "publication_status IN ('Draft', 'Published', 'Hidden')");
+
+                            t.HasCheckConstraint("ck_comics_series_status", "series_status IN ('Ongoing', 'Completed', 'Hiatus')");
+
+                            t.HasCheckConstraint("ck_comics_slug_not_blank", "length(btrim(slug)) > 0");
+
+                            t.HasCheckConstraint("ck_comics_title_not_blank", "length(btrim(title)) > 0");
+
+                            t.HasCheckConstraint("ck_comics_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.Author", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.HasKey("Id")
+                        .HasName("pk_authors");
+
+                    b.ToTable("authors", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_authors_name_not_blank", "length(btrim(name)) > 0");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.ComicAuthor", b =>
+                {
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<Guid>("AuthorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("author_id");
+
+                    b.HasKey("ComicId", "AuthorId")
+                        .HasName("pk_comic_authors");
+
+                    b.HasIndex("AuthorId")
+                        .HasDatabaseName("ix_comic_authors_author_id");
+
+                    b.ToTable("comic_authors", "catalog");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.ComicGenre", b =>
+                {
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<Guid>("GenreId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("genre_id");
+
+                    b.HasKey("ComicId", "GenreId")
+                        .HasName("pk_comic_genres");
+
+                    b.HasIndex("GenreId")
+                        .HasDatabaseName("ix_comic_genres_genre_id");
+
+                    b.ToTable("comic_genres", "catalog");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.ComicTranslationGroup", b =>
+                {
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<Guid>("TranslationGroupId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("translation_group_id");
+
+                    b.HasKey("ComicId", "TranslationGroupId")
+                        .HasName("pk_comic_translation_groups");
+
+                    b.HasIndex("TranslationGroupId")
+                        .HasDatabaseName("ix_comic_translation_groups_translation_group_id");
+
+                    b.ToTable("comic_translation_groups", "catalog");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.Genre", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("slug");
+
+                    b.HasKey("Id")
+                        .HasName("pk_genres");
+
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ux_genres_slug");
+
+                    b.ToTable("genres", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_genres_name_not_blank", "length(btrim(name)) > 0");
+
+                            t.HasCheckConstraint("ck_genres_slug_not_blank", "length(btrim(slug)) > 0");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.TranslationGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.HasKey("Id")
+                        .HasName("pk_translation_groups");
+
+                    b.ToTable("translation_groups", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_translation_groups_name_not_blank", "length(btrim(name)) > 0");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Identity.Users.GoogleIdentity", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -193,6 +526,77 @@ namespace ComicManagement.Persistence.Migrations
                         .HasName("pk_processed_messages");
 
                     b.ToTable("processed_messages", "infrastructure");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_chapters_comics");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Chapters.ChapterPage", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Chapters.Chapter", null)
+                        .WithMany()
+                        .HasForeignKey("ChapterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_chapter_pages_chapters");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.ComicAuthor", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Taxonomy.Author", null)
+                        .WithMany()
+                        .HasForeignKey("AuthorId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_authors_authors");
+
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_authors_comics");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.ComicGenre", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_genres_comics");
+
+                    b.HasOne("ComicManagement.Catalog.Taxonomy.Genre", null)
+                        .WithMany()
+                        .HasForeignKey("GenreId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_genres_genres");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.ComicTranslationGroup", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_translation_groups_comics");
+
+                    b.HasOne("ComicManagement.Catalog.Taxonomy.TranslationGroup", null)
+                        .WithMany()
+                        .HasForeignKey("TranslationGroupId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_translation_groups_translation_groups");
                 });
 
             modelBuilder.Entity("ComicManagement.Identity.Users.GoogleIdentity", b =>

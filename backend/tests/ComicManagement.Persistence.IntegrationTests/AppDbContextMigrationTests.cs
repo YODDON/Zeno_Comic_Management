@@ -17,6 +17,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         InitialMigration,
         "20261011124604_AddOutboxInbox",
         "20261011194443_AddIdentityUsers",
+        "20261012112702_AddCatalogTaxonomyAndComics",
+        "20261012151245_AddCatalogChaptersAndPages",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -53,6 +55,15 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "infrastructure.processed_messages"));
         Assert.True(await TableExists(context, "identity.users"));
         Assert.True(await TableExists(context, "identity.google_identities"));
+        Assert.True(await TableExists(context, "catalog.comics"));
+        Assert.True(await TableExists(context, "catalog.genres"));
+        Assert.True(await TableExists(context, "catalog.authors"));
+        Assert.True(await TableExists(context, "catalog.translation_groups"));
+        Assert.True(await TableExists(context, "catalog.comic_genres"));
+        Assert.True(await TableExists(context, "catalog.comic_authors"));
+        Assert.True(await TableExists(context, "catalog.comic_translation_groups"));
+        Assert.True(await TableExists(context, "catalog.chapters"));
+        Assert.True(await TableExists(context, "catalog.chapter_pages"));
 
         await context.Database.MigrateAsync();
 
@@ -66,6 +77,10 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.False(await TableExists(context, "infrastructure.processed_messages"));
         Assert.False(await TableExists(context, "identity.users"));
         Assert.False(await TableExists(context, "identity.google_identities"));
+        Assert.False(await TableExists(context, "catalog.comics"));
+        Assert.False(await TableExists(context, "catalog.genres"));
+        Assert.False(await TableExists(context, "catalog.chapters"));
+        Assert.False(await TableExists(context, "catalog.chapter_pages"));
 
         await context.Database.MigrateAsync();
 
