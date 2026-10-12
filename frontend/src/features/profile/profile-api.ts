@@ -36,3 +36,7 @@ export async function updateDisplayName(displayName: string): Promise<Profile> {
     }),
   );
 }
+
+export async function logout(): Promise<void> {
+  await apiRequest<void>("/api/v1/auth/google/logout", { method: "POST" });
+}

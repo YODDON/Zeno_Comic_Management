@@ -51,6 +51,10 @@ describe("profile display name", () => {
 
     expect(await screen.findByRole("heading", { name: "Hồ sơ của bạn" })).toBeVisible();
     expect(screen.getByText("reader@example.com")).toBeVisible();
+    expect(screen.getByRole("link", { name: /Xem ví/ })).toHaveAttribute("href", "/wallet");
+    expect(screen.getByRole("link", { name: /Quyền lợi VIP/ })).toHaveAttribute("href", "/vip");
+    expect(screen.getByRole("button", { name: "Sáng" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Tối" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByLabelText(/vai trò/i)).not.toBeInTheDocument();
     const input = screen.getByRole("textbox", { name: "Tên hiển thị" });
     await user.clear(input);
@@ -159,5 +163,40 @@ describe("profile display name", () => {
 
     expect(await screen.findByRole("heading", { name: "Bạn chưa đăng nhập" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Đăng nhập lại với Google" })).toBeVisible();
+    expect(screen.queryByText(originalProfile.displayName)).not.toBeInTheDocument();
+    expect(screen.queryByText(originalProfile.email)).not.toBeInTheDocument();
+  });
+
+  it("persists the profile theme choice and logs out with CSRF", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse(originalProfile, 200, { "X-CSRF-TOKEN": "profile-csrf" }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValue(
+        jsonResponse(
+          { title: "Authentication required", status: 401, errorCode: "AUTH_REQUIRED" },
+          401,
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await router.navigate("/profile");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Hồ sơ của bạn" });
+
+    await user.click(screen.getByRole("button", { name: "Sáng" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "light");
+    expect(window.localStorage.getItem("zeno-theme")).toBe("light");
+
+    await user.click(screen.getByRole("button", { name: "Đăng xuất" }));
+
+    expect(router.state.location.pathname).toBe("/");
+    const [, logoutInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const logoutHeaders = new Headers(logoutInit.headers);
+    expect(logoutInit.method).toBe("POST");
+    expect(logoutHeaders.get("X-CSRF-TOKEN")).toBe("profile-csrf");
+    expect(screen.queryByText(originalProfile.email)).not.toBeInTheDocument();
   });
 });

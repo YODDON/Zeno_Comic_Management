@@ -552,6 +552,72 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Profile_update_refreshes_current_cookie_and_revokes_older_cookie_copies()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-profile-session-version",
+            "Session Version User",
+            "profile-session@example.com",
+            null);
+        using var client = CreateClient();
+        var callback = await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/profile"));
+        var oldSessionCookie = callback.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal))
+            .Split(';', 2)[0];
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/me")
+        {
+            Content = JsonContent.Create(new { displayName = "Updated Session User" }),
+        };
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        var update = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+        Assert.Contains(
+            update.Headers.GetValues("Set-Cookie"),
+            value => value.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/me")).StatusCode);
+
+        using var oldSessionClient = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = false,
+        });
+        oldSessionClient.DefaultRequestHeaders.Add("Cookie", oldSessionCookie);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await oldSessionClient.GetAsync("/api/v1/me")).StatusCode);
+    }
+
+    [Fact]
+    public async Task OpenApi_document_contains_the_profile_contract()
+    {
+        using var client = CreateClient();
+
+        var response = await client.GetAsync("/openapi/v1.json");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var profilePath = document.GetProperty("paths").GetProperty("/api/v1/me");
+        Assert.True(profilePath.TryGetProperty("get", out _));
+        Assert.True(profilePath.TryGetProperty("patch", out var patch));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("200", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("400", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("403", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("409", out _));
+    }
+
+    [Fact]
     public async Task Profile_update_requires_authentication_and_csrf()
     {
         using var anonymousClient = CreateClient();

@@ -33,6 +33,26 @@ export const router = createBrowserRouter([
         ),
       },
       { path: "profile", element: <ProfilePage /> },
+      {
+        path: "wallet",
+        element: (
+          <RoutePlaceholderPage
+            eyebrow="Ví"
+            title="Ví sẽ xuất hiện ở đây"
+            description="Liên kết hồ sơ đã sẵn sàng; số dư và lịch sử giao dịch thuộc các task Wallet sau I03."
+          />
+        ),
+      },
+      {
+        path: "vip",
+        element: (
+          <RoutePlaceholderPage
+            eyebrow="VIP"
+            title="Gói VIP sẽ xuất hiện ở đây"
+            description="Liên kết hồ sơ đã sẵn sàng; checkout và quyền lợi VIP không được triển khai trong I03."
+          />
+        ),
+      },
       { path: "*", element: <NotFoundPage /> },
     ],
   },

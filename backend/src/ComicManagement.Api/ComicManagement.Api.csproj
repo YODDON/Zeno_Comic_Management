@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../ComicManagement.Workflows/ComicManagement.Workflows.csproj" />

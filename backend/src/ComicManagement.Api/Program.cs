@@ -15,6 +15,7 @@ var authenticationSettings = IdentityAuthenticationSettings.FromConfiguration(
     builder.Environment.ContentRootPath);
 
 builder.Services.AddControllers();
+builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
 builder.Services.AddScoped<GoogleSignInHandler>();
@@ -65,6 +66,7 @@ app.UseRouting();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapOpenApi();
 app.MapControllers();
 
 app.Run();

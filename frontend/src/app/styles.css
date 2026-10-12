@@ -823,6 +823,72 @@ svg {
   font-weight: 650;
 }
 
+.profile-supporting-sections {
+  position: relative;
+  display: grid;
+  gap: 1rem;
+  border-top: 1px solid var(--border);
+  margin-top: 1.75rem;
+  padding-top: 1.75rem;
+}
+
+.profile-supporting-section {
+  display: grid;
+  gap: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--background);
+  padding: 1rem;
+}
+
+.profile-supporting-section h2,
+.profile-supporting-section p {
+  margin: 0;
+}
+
+.profile-supporting-section h2 {
+  font-family: "Newsreader Variable", Georgia, serif;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.profile-section-kicker {
+  margin-bottom: 0.3rem !important;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.profile-section-description {
+  margin-top: 0.45rem !important;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.profile-action-links,
+.profile-theme-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.profile-action-links > *,
+.profile-theme-options > * {
+  flex: 1 1 8rem;
+}
+
+.profile-logout-button {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  color: var(--danger);
+}
+
+.profile-logout-button:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
 @keyframes state-spin {
   to {
     rotate: 360deg;
@@ -872,6 +938,15 @@ svg {
     flex-direction: row;
     align-items: center;
     justify-content: space-between;
+  }
+
+  .profile-supporting-section {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .profile-supporting-section > .field-error {
+    grid-column: 1 / -1;
   }
 
   .admin-shell {

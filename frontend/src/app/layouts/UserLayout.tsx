@@ -72,6 +72,7 @@ export function UserLayout() {
                 className={({ isActive }) => cn("mobile-nav-link", isActive && "nav-link-active")}
                 end={item.end}
                 key={item.to}
+                onClick={() => setMobileMenuOpen(false)}
                 to={item.to}
               >
                 {item.to === "/comics" ? <BookOpen aria-hidden="true" /> : null}

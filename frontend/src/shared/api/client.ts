@@ -5,6 +5,7 @@ const apiBaseUrl = configuredBaseUrl.replace(/\/$/, "");
 const csrfHeaderName = "X-CSRF-TOKEN";
 const safeMethods = new Set(["GET", "HEAD", "OPTIONS", "TRACE"]);
 let csrfToken: string | undefined;
+const unauthorizedListeners = new Set<() => void>();
 
 type RequestBody = BodyInit | Record<string, unknown> | unknown[];
 
@@ -87,7 +88,7 @@ export async function apiRequest<TResponse>(
 
   if (!response.ok) {
     if (response.status === 401) {
-      clearApiSessionState();
+      clearAuthenticatedApiState();
     }
     throw new ApiError(response.status, await readProblemDetails(response));
   }
@@ -101,4 +102,14 @@ export async function apiRequest<TResponse>(
 
 export function clearApiSessionState() {
   csrfToken = undefined;
+}
+
+export function clearAuthenticatedApiState() {
+  clearApiSessionState();
+  unauthorizedListeners.forEach((listener) => listener());
+}
+
+export function subscribeToApiUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener);
+  return () => unauthorizedListeners.delete(listener);
 }

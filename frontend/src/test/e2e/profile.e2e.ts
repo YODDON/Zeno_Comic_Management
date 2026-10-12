@@ -32,6 +32,13 @@ test("profile display name is accessible, responsive, and keyboard editable", as
   await page.goto("/profile");
   await expect(page.getByRole("heading", { name: "Hồ sơ của bạn" })).toBeVisible();
   await expect(page.getByText("reader@example.com")).toBeVisible();
+  await expect(page.getByRole("link", { name: /Xem ví/ })).toHaveAttribute("href", "/wallet");
+  await expect(page.getByRole("link", { name: /Quyền lợi VIP/ })).toHaveAttribute("href", "/vip");
+
+  await page.getByRole("button", { name: "Sáng", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "Tối", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
   const accessibility = await new AxeBuilder({ page }).analyze();
   expect(accessibility.violations).toEqual([]);
@@ -49,10 +56,13 @@ test("profile display name is accessible, responsive, and keyboard editable", as
   await expect(input).toHaveValue("But danh ban phim");
 
   if (testInfo.project.name === "mobile-chrome") {
+    await page.goto("/");
     const menuButton = page.getByRole("button", { name: "Mở menu" });
     await menuButton.click();
     await expect(page.getByRole("link", { name: "But danh ban phim" })).toBeVisible();
-    await page.getByRole("button", { name: "Đóng menu" }).click();
+    await page.getByRole("link", { name: "But danh ban phim" }).click();
+    await expect(page.getByRole("button", { name: "Mở menu" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Hồ sơ của bạn" })).toBeVisible();
   } else {
     await expect(
       page.getByRole("navigation", { name: "Điều hướng chính" })

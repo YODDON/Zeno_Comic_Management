@@ -1,4 +1,8 @@
-import { apiRequest, clearApiSessionState } from "@/shared/api/client";
+import {
+  apiRequest,
+  clearApiSessionState,
+  subscribeToApiUnauthorized,
+} from "@/shared/api/client";
 
 describe("apiRequest", () => {
   afterEach(() => {
@@ -100,6 +104,8 @@ describe("apiRequest", () => {
   });
 
   it("clears the CSRF token after an unauthorized response", async () => {
+    const unauthorizedListener = vi.fn();
+    const unsubscribe = subscribeToApiUnauthorized(unauthorizedListener);
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -119,12 +125,14 @@ describe("apiRequest", () => {
 
     await apiRequest("/api/v1/me");
     await expect(apiRequest("/api/v1/private")).rejects.toMatchObject({ status: 401 });
+    expect(unauthorizedListener).toHaveBeenCalledOnce();
     await apiRequest("/api/v1/example", { method: "POST" });
 
     const headers = new Headers(
       (fetchMock.mock.calls[2] as [string, RequestInit])[1].headers,
     );
     expect(headers.has("X-CSRF-TOKEN")).toBe(false);
+    unsubscribe();
   });
 
   it.each(["", "{not-json"])(

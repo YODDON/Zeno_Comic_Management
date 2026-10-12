@@ -1,10 +1,26 @@
-import { BadgeCheck, Mail, PencilLine, UserRound } from "lucide-react";
+import {
+  BadgeCheck,
+  Crown,
+  LogOut,
+  Mail,
+  MoonStar,
+  PencilLine,
+  Sun,
+  UserRound,
+  WalletCards,
+} from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { ZodError } from "zod";
+import { useTheme } from "@/app/theme/theme-context";
 import { displayNameSchema, type Profile } from "@/features/profile/profile-api";
-import { useProfileQuery, useUpdateDisplayName } from "@/features/profile/use-profile";
+import {
+  useLogout,
+  useProfileQuery,
+  useUpdateDisplayName,
+} from "@/features/profile/use-profile";
 import { ApiError } from "@/shared/api/problem-details";
-import { ApiErrorState, LoadingState } from "@/shared/ui/AsyncState";
+import { ApiErrorState, LoadingState, UnauthorizedState } from "@/shared/ui/AsyncState";
 import { Button } from "@/shared/ui/Button";
 
 export function ProfilePage() {
@@ -36,11 +52,30 @@ export function ProfilePage() {
     );
   }
 
+  if (!profileQuery.data) {
+    return (
+      <div className="shell-container page-section">
+        <UnauthorizedState
+          action={
+            <Button asChild="link">
+              <a href="/api/v1/auth/google/login?returnUrl=%2Fprofile">
+                Đăng nhập lại với Google
+              </a>
+            </Button>
+          }
+        />
+      </div>
+    );
+  }
+
   return <ProfileDetails profile={profileQuery.data} />;
 }
 
 function ProfileDetails({ profile }: { profile: Profile }) {
   const inputId = useId();
+  const navigate = useNavigate();
+  const { setTheme, theme } = useTheme();
+  const logoutMutation = useLogout();
   const updateMutation = useUpdateDisplayName();
   const [displayName, setDisplayName] = useState(profile.displayName);
   const [validationError, setValidationError] = useState<string>();
@@ -65,6 +100,15 @@ function ProfileDetails({ profile }: { profile: Profile }) {
       if (error instanceof ZodError) {
         setValidationError("Phản hồi từ máy chủ không hợp lệ. Vui lòng thử lại.");
       }
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logoutMutation.mutateAsync();
+      await navigate("/", { replace: true });
+    } catch {
+      // The mutation error is presented next to the action below.
     }
   }
 
@@ -166,6 +210,70 @@ function ProfileDetails({ profile }: { profile: Profile }) {
             </Button>
           </div>
         </form>
+
+        <div className="profile-supporting-sections">
+          <section aria-labelledby="profile-links-title" className="profile-supporting-section">
+            <div>
+              <p className="profile-section-kicker">Tài khoản</p>
+              <h2 id="profile-links-title">Truy cập nhanh</h2>
+            </div>
+            <div className="profile-action-links">
+              <Button asChild="link" variant="outline">
+                <Link to="/wallet"><WalletCards aria-hidden="true" /> Xem ví</Link>
+              </Button>
+              <Button asChild="link" variant="outline">
+                <Link to="/vip"><Crown aria-hidden="true" /> Quyền lợi VIP</Link>
+              </Button>
+            </div>
+          </section>
+
+          <section aria-labelledby="profile-theme-title" className="profile-supporting-section">
+            <div>
+              <p className="profile-section-kicker">Tùy chọn trình duyệt</p>
+              <h2 id="profile-theme-title">Giao diện đọc</h2>
+            </div>
+            <div aria-label="Chọn giao diện" className="profile-theme-options" role="group">
+              <Button
+                aria-pressed={theme === "light"}
+                onClick={() => setTheme("light")}
+                variant={theme === "light" ? "primary" : "outline"}
+              >
+                <Sun aria-hidden="true" /> Sáng
+              </Button>
+              <Button
+                aria-pressed={theme === "dark"}
+                onClick={() => setTheme("dark")}
+                variant={theme === "dark" ? "primary" : "outline"}
+              >
+                <MoonStar aria-hidden="true" /> Tối
+              </Button>
+            </div>
+          </section>
+
+          <section aria-labelledby="profile-session-title" className="profile-supporting-section">
+            <div>
+              <p className="profile-section-kicker">Phiên đăng nhập</p>
+              <h2 id="profile-session-title">Đăng xuất khỏi các thiết bị</h2>
+              <p className="profile-section-description">
+                Đăng xuất sẽ thu hồi tất cả bản sao phiên hiện tại của tài khoản này.
+              </p>
+            </div>
+            <Button
+              className="profile-logout-button"
+              disabled={logoutMutation.isPending}
+              onClick={() => void handleLogout()}
+              variant="outline"
+            >
+              <LogOut aria-hidden="true" />
+              {logoutMutation.isPending ? "Đang đăng xuất…" : "Đăng xuất"}
+            </Button>
+            {logoutMutation.isError ? (
+              <p aria-live="assertive" className="field-error" role="alert">
+                Không thể đăng xuất. Vui lòng thử lại.
+              </p>
+            ) : null}
+          </section>
+        </div>
       </div>
 
     </section>
