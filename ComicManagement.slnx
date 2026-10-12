@@ -17,6 +17,7 @@
   <Folder Name="/backend/tests/">
     <Project Path="backend/tests/ComicManagement.Api.IntegrationTests/ComicManagement.Api.IntegrationTests.csproj" />
     <Project Path="backend/tests/ComicManagement.ArchitectureTests/ComicManagement.ArchitectureTests.csproj" />
+    <Project Path="backend/tests/ComicManagement.Catalog.UnitTests/ComicManagement.Catalog.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Identity.UnitTests/ComicManagement.Identity.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Persistence.IntegrationTests/ComicManagement.Persistence.IntegrationTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Shared.UnitTests/ComicManagement.Shared.UnitTests.csproj" />
