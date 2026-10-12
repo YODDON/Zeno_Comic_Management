@@ -1,9 +1,10 @@
-import { BookOpen, Library, Menu, X } from "lucide-react";
+import { BookOpen, Library, Menu, UserRound, X } from "lucide-react";
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { ThemeToggle } from "@/app/theme/ThemeToggle";
 import { Button } from "@/shared/ui/Button";
 import { cn } from "@/shared/lib/cn";
+import { useProfileQuery } from "@/features/profile/use-profile";
 
 const userNavigation = [
   { to: "/", label: "Trang chủ", end: true },
@@ -13,6 +14,14 @@ const userNavigation = [
 
 export function UserLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const profileQuery = useProfileQuery();
+  const navigation = [
+    ...userNavigation,
+    {
+      to: "/profile",
+      label: profileQuery.data?.displayName ?? "Hồ sơ",
+    },
+  ];
 
   return (
     <div className="user-shell min-h-screen">
@@ -27,7 +36,7 @@ export function UserLayout() {
           </NavLink>
 
           <nav aria-label="Điều hướng chính" className="desktop-navigation">
-            {userNavigation.map((item) => (
+            {navigation.map((item) => (
               <NavLink
                 className={({ isActive }) => cn("nav-link", isActive && "nav-link-active")}
                 end={item.end}
@@ -58,15 +67,17 @@ export function UserLayout() {
 
         {mobileMenuOpen ? (
           <nav aria-label="Điều hướng di động" className="mobile-navigation" id="mobile-navigation">
-            {userNavigation.map((item) => (
+            {navigation.map((item) => (
               <NavLink
                 className={({ isActive }) => cn("mobile-nav-link", isActive && "nav-link-active")}
                 end={item.end}
                 key={item.to}
+                onClick={() => setMobileMenuOpen(false)}
                 to={item.to}
               >
                 {item.to === "/comics" ? <BookOpen aria-hidden="true" /> : null}
                 {item.to === "/library" ? <Library aria-hidden="true" /> : null}
+                {item.to === "/profile" ? <UserRound aria-hidden="true" /> : null}
                 {item.label}
               </NavLink>
             ))}

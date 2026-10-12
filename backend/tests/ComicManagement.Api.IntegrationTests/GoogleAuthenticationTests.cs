@@ -7,6 +7,8 @@ using System.Text;
 using System.Text.Json;
 using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
+using ComicManagement.Identity.Profiles;
+using ComicManagement.Identity.Users;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -463,6 +465,268 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Profile_display_name_update_is_persisted_without_overposting_identity_fields()
+    {
+        const string subject = "google-subject-profile-update";
+        _factory.TokenEndpoint.SetProfile(
+            subject,
+            "Tên ban đầu",
+            "profile@example.com",
+            "https://example.com/profile.png");
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/profile"));
+
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/me")
+        {
+            Content = JsonContent.Create(new
+            {
+                displayName = "  Tên hiển thị mới 😀  ",
+                email = "attacker@example.com",
+                role = "Admin",
+            }),
+        };
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(response.Headers.GetValues("X-CSRF-TOKEN"));
+        var updated = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Tên hiển thị mới 😀", updated.GetProperty("displayName").GetString());
+        Assert.Equal("profile@example.com", updated.GetProperty("email").GetString());
+        Assert.Equal("User", updated.GetProperty("role").GetString());
+
+        var refreshed = await client.GetAsync("/api/v1/me");
+        Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
+        var refreshedProfile = await refreshed.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(
+            "Tên hiển thị mới 😀",
+            refreshedProfile.GetProperty("displayName").GetString());
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persisted = await context.GoogleIdentities
+            .Where(identity => identity.GoogleSubject == subject)
+            .Select(identity => new
+            {
+                identity.User.DisplayName,
+                identity.User.Email,
+                identity.User.Role,
+                identity.User.Version,
+            })
+            .SingleAsync();
+        Assert.Equal("Tên hiển thị mới 😀", persisted.DisplayName);
+        Assert.Equal("profile@example.com", persisted.Email);
+        Assert.Equal("User", persisted.Role);
+        Assert.Equal(2, persisted.Version);
+    }
+
+    [Fact]
+    public async Task Unchanged_profile_name_does_not_reissue_the_session_cookie()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-profile-noop",
+            "No-op Name",
+            "profile-noop@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/profile"));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/me")
+        {
+            Content = JsonContent.Create(new { displayName = "  No-op Name  " }),
+        };
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(
+            response.Headers.TryGetValues("Set-Cookie", out var cookies) &&
+            cookies.Any(cookie => cookie.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task Profile_update_refreshes_current_cookie_and_revokes_older_cookie_copies()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-profile-session-version",
+            "Session Version User",
+            "profile-session@example.com",
+            null);
+        using var client = CreateClient();
+        var callback = await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/profile"));
+        var oldSessionCookie = callback.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal))
+            .Split(';', 2)[0];
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/me")
+        {
+            Content = JsonContent.Create(new { displayName = "Updated Session User" }),
+        };
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        var update = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, update.StatusCode);
+        Assert.Contains(
+            update.Headers.GetValues("Set-Cookie"),
+            value => value.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal));
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/v1/me")).StatusCode);
+
+        using var oldSessionClient = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = false,
+        });
+        oldSessionClient.DefaultRequestHeaders.Add("Cookie", oldSessionCookie);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await oldSessionClient.GetAsync("/api/v1/me")).StatusCode);
+    }
+
+    [Fact]
+    public async Task OpenApi_document_contains_the_profile_contract()
+    {
+        using var client = CreateClient();
+
+        var response = await client.GetAsync("/openapi/v1.json");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var profilePath = document.GetProperty("paths").GetProperty("/api/v1/me");
+        Assert.True(profilePath.TryGetProperty("get", out _));
+        Assert.True(profilePath.TryGetProperty("patch", out var patch));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("200", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("400", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("401", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("403", out _));
+        Assert.True(patch.GetProperty("responses").TryGetProperty("409", out _));
+    }
+
+    [Fact]
+    public async Task Profile_update_requires_authentication_and_csrf()
+    {
+        using var anonymousClient = CreateClient();
+        var anonymousResponse = await anonymousClient.PatchAsJsonAsync(
+            "/api/v1/me",
+            new { displayName = "Anonymous" });
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousResponse.StatusCode);
+
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-profile-csrf",
+            "CSRF User",
+            "profile-csrf@example.com",
+            null);
+        using var authenticatedClient = CreateClient();
+        await CompleteLoginAsync(
+            authenticatedClient,
+            await BeginLoginAsync(authenticatedClient, "/profile"));
+
+        var missingCsrfResponse = await authenticatedClient.PatchAsJsonAsync(
+            "/api/v1/me",
+            new { displayName = "Missing CSRF" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, missingCsrfResponse.StatusCode);
+        var problem = await missingCsrfResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("VALIDATION_FAILED", problem.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task Invalid_or_malformed_profile_update_returns_validation_problem()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-profile-validation",
+            "Validation User",
+            "profile-validation@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/profile"));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var invalidRequest = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/me")
+        {
+            Content = JsonContent.Create(new
+            {
+                displayName = string.Concat(Enumerable.Repeat("\U0001F600", 121)),
+            }),
+        };
+        invalidRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        var invalidResponse = await client.SendAsync(invalidRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidResponse.StatusCode);
+        var invalidProblem = await invalidResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("VALIDATION_FAILED", invalidProblem.GetProperty("errorCode").GetString());
+        Assert.True(invalidProblem.GetProperty("errors").TryGetProperty("displayName", out _));
+
+        using var malformedRequest = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/me")
+        {
+            Content = new StringContent("{", Encoding.UTF8, "application/json"),
+        };
+        malformedRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        var malformedResponse = await client.SendAsync(malformedRequest);
+        Assert.Equal(HttpStatusCode.BadRequest, malformedResponse.StatusCode);
+        var malformedProblem = await malformedResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("VALIDATION_FAILED", malformedProblem.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task Profile_concurrency_conflict_returns_problem_details_and_does_not_persist()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            forceProfileConflicts: true);
+        factory.TokenEndpoint.SetProfile(
+            "google-subject-profile-concurrency",
+            "Original concurrent name",
+            "profile-concurrency@example.com",
+            null);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = true,
+        });
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/profile", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        using var request = new HttpRequestMessage(HttpMethod.Patch, "/api/v1/me")
+        {
+            Content = JsonContent.Create(new { displayName = "Losing update" }),
+        };
+        request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("CONCURRENCY_CONFLICT", problem.GetProperty("errorCode").GetString());
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persistedName = await context.Users
+            .Select(user => user.DisplayName)
+            .SingleAsync(name => name == "Original concurrent name");
+        Assert.Equal("Original concurrent name", persistedName);
+    }
+
+    [Fact]
     public async Task First_admin_provisioning_script_is_single_use_and_revokes_old_session()
     {
         const string subject = "google-subject-first-admin-script";
@@ -870,7 +1134,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         string connectionString,
         string securityDirectory,
         int loginPermitLimit = 1000,
-        bool forceIdentityConflicts = false) : WebApplicationFactory<Program>
+        bool forceIdentityConflicts = false,
+        bool forceProfileConflicts = false) : WebApplicationFactory<Program>
     {
         private readonly string _keysPath = Path.Combine(securityDirectory, "keys");
         private readonly string _certificatePath = Path.Combine(
@@ -935,6 +1200,12 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     services.RemoveAll<IGoogleIdentityStore>();
                     services.AddScoped<IGoogleIdentityStore, AlwaysConflictIdentityStore>();
                 }
+
+                if (forceProfileConflicts)
+                {
+                    services.RemoveAll<IUserProfileStore>();
+                    services.AddScoped<IUserProfileStore, AlwaysConflictUserProfileStore>();
+                }
             });
         }
 
@@ -964,6 +1235,19 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         public Task<IdentityStoreSaveOutcome> SaveChangesAsync(
             CancellationToken cancellationToken) =>
             Task.FromResult(IdentityStoreSaveOutcome.ConcurrencyConflict);
+    }
+
+    private sealed class AlwaysConflictUserProfileStore(AppDbContext dbContext) :
+        IUserProfileStore
+    {
+        public Task<User?> FindByIdAsync(
+            Guid userId,
+            CancellationToken cancellationToken) => dbContext.Users
+            .SingleOrDefaultAsync(user => user.Id == userId, cancellationToken);
+
+        public Task<UserProfileSaveOutcome> SaveChangesAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(UserProfileSaveOutcome.ConcurrencyConflict);
     }
 
     private sealed class FakeGoogleTokenEndpoint : HttpMessageHandler

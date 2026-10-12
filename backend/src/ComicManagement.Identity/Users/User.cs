@@ -81,6 +81,24 @@ public sealed class User
         Version = checked(Version + 1);
     }
 
+    public bool UpdateDisplayName(
+        string displayName,
+        DateTimeOffset updatedAt)
+    {
+        ValidateDisplayName(displayName);
+        EnsureUtc(updatedAt, nameof(updatedAt));
+
+        if (!string.Equals(DisplayName, displayName, StringComparison.Ordinal))
+        {
+            DisplayName = displayName;
+            UpdatedAt = updatedAt;
+            Version = checked(Version + 1);
+            return true;
+        }
+
+        return false;
+    }
+
     private static void ValidateDisplayName(string displayName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(displayName);

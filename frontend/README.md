@@ -26,3 +26,9 @@ Vite exposes them to browser code.
 
 F05 does not implement authentication, domain queries or financial workflows. SePay and
 Cloudinary provider behavior remains Verification Required.
+
+I03 adds the authenticated `/profile` screen and the `GET/PATCH /api/v1/me` client slice. The
+Google email/avatar are read-only; only `displayName` is submitted. The profile cache updates the
+header immediately after a successful save, while CSRF tokens are held only in memory and attached
+to unsafe same-origin requests. Vitest covers validation/error parsing and Playwright covers the
+responsive keyboard flow plus automated accessibility checks.

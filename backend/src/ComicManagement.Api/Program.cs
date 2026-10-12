@@ -1,5 +1,6 @@
 using ComicManagement.Api.Authentication;
 using ComicManagement.Identity.Authentication;
+using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
 using ComicManagement.Shared.Identity;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -14,10 +15,12 @@ var authenticationSettings = IdentityAuthenticationSettings.FromConfiguration(
     builder.Environment.ContentRootPath);
 
 builder.Services.AddControllers();
+builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
 builder.Services.AddScoped<GoogleSignInHandler>();
 builder.Services.AddScoped<LogoutHandler>();
+builder.Services.AddScoped<UpdateDisplayNameHandler>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddIdentityAuthentication(authenticationSettings);
 builder.Services.Configure<OutboxOptions>(
@@ -63,6 +66,7 @@ app.UseRouting();
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
+app.MapOpenApi();
 app.MapControllers();
 
 app.Run();
