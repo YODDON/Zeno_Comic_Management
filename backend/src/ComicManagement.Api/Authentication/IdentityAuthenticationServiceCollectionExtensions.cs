@@ -1,4 +1,5 @@
 using System.Threading.RateLimiting;
+using System.Security.Cryptography.X509Certificates;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.DataProtection;
@@ -17,11 +18,30 @@ internal static class IdentityAuthenticationServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(settings);
 
         services.AddHttpContextAccessor();
+        services.AddSingleton(settings);
+        services.AddSingleton<ApiProblemWriter>();
+        services.AddExceptionHandler<ApiExceptionHandler>();
         services.AddScoped<GoogleOpenIdConnectEvents>();
         services.AddScoped<SessionCookieEvents>();
 
+        services.AddAntiforgery(options =>
+        {
+            options.HeaderName = AuthenticationConstants.AntiforgeryHeaderName;
+            options.Cookie.Name = AuthenticationConstants.AntiforgeryCookieName;
+            options.Cookie.HttpOnly = true;
+            options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+            options.Cookie.SameSite = SameSiteMode.Strict;
+            options.Cookie.Path = "/";
+            options.Cookie.IsEssential = true;
+        });
+
+        var dataProtectionCertificate = X509CertificateLoader.LoadPkcs12FromFile(
+            settings.DataProtectionCertificatePath,
+            settings.DataProtectionCertificatePassword);
+
         services.AddDataProtection()
             .PersistKeysToFileSystem(new DirectoryInfo(settings.DataProtectionKeysPath))
+            .ProtectKeysWithCertificate(dataProtectionCertificate)
             .SetApplicationName("ComicManagement");
 
         services
@@ -29,7 +49,7 @@ internal static class IdentityAuthenticationServiceCollectionExtensions
             {
                 options.DefaultAuthenticateScheme = AuthenticationConstants.SessionScheme;
                 options.DefaultSignInScheme = AuthenticationConstants.SessionScheme;
-                options.DefaultChallengeScheme = AuthenticationConstants.GoogleScheme;
+                options.DefaultChallengeScheme = AuthenticationConstants.SessionScheme;
             })
             .AddCookie(AuthenticationConstants.SessionScheme, options =>
             {
@@ -97,12 +117,15 @@ internal static class IdentityAuthenticationServiceCollectionExtensions
                             System.Globalization.CultureInfo.InvariantCulture);
                 }
 
-                return new ValueTask(ApiProblemWriter.WriteAsync(
-                    context.HttpContext,
-                    StatusCodes.Status429TooManyRequests,
-                    "RATE_LIMITED",
-                    "Too many requests",
-                    "Try signing in again later."));
+                var problemWriter = context.HttpContext.RequestServices
+                    .GetRequiredService<ApiProblemWriter>();
+
+                return new ValueTask(problemWriter.WriteAsync(
+                        context.HttpContext,
+                        StatusCodes.Status429TooManyRequests,
+                        "RATE_LIMITED",
+                        "Too many requests",
+                        "Try signing in again later."));
             };
 
             options.AddPolicy(

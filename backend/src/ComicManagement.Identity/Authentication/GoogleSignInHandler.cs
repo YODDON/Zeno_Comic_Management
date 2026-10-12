@@ -66,8 +66,7 @@ public sealed class GoogleSignInHandler(
             }
         }
 
-        throw new InvalidOperationException(
-            "The Google identity could not be saved after concurrent updates.");
+        throw new IdentityConcurrencyException();
     }
 
     private static GoogleUserProfile Normalize(GoogleUserProfile profile)

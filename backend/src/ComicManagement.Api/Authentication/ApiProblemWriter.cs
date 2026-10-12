@@ -1,8 +1,10 @@
+using System.Text.Json;
+
 namespace ComicManagement.Api.Authentication;
 
-internal static class ApiProblemWriter
+internal sealed class ApiProblemWriter(IdentityAuthenticationSettings settings)
 {
-    internal static Task WriteAsync(
+    internal Task WriteAsync(
         HttpContext httpContext,
         int status,
         string errorCode,
@@ -15,13 +17,17 @@ internal static class ApiProblemWriter
         return httpContext.Response.WriteAsJsonAsync(
             new
             {
-                type = $"/errors/{errorCode}",
+                type = new Uri(
+                    settings.ErrorDocumentationBaseUri,
+                    Uri.EscapeDataString(errorCode)).AbsoluteUri,
                 title,
                 status,
                 errorCode,
                 traceId = httpContext.TraceIdentifier,
                 detail,
             },
+            new JsonSerializerOptions(JsonSerializerDefaults.Web),
+            contentType: "application/problem+json",
             cancellationToken: httpContext.RequestAborted);
     }
 }

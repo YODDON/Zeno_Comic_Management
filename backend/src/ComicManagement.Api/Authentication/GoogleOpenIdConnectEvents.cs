@@ -6,7 +6,8 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 namespace ComicManagement.Api.Authentication;
 
 internal sealed class GoogleOpenIdConnectEvents(
-    GoogleSignInHandler signInHandler) : OpenIdConnectEvents
+    GoogleSignInHandler signInHandler,
+    ApiProblemWriter problemWriter) : OpenIdConnectEvents
 {
     public override async Task TokenValidated(TokenValidatedContext context)
     {
@@ -46,7 +47,8 @@ internal sealed class GoogleOpenIdConnectEvents(
             context.Fail(exception);
         }
         catch (Exception exception) when (
-            exception is ArgumentException or InvalidOperationException)
+            (exception is ArgumentException || exception is InvalidOperationException) &&
+            exception is not IdentityConcurrencyException)
         {
             context.Fail(new InvalidGoogleIdentityException(exception));
         }
@@ -58,7 +60,7 @@ internal sealed class GoogleOpenIdConnectEvents(
 
         if (context.Failure is AccountDisabledException)
         {
-            return ApiProblemWriter.WriteAsync(
+            return problemWriter.WriteAsync(
                 context.HttpContext,
                 StatusCodes.Status403Forbidden,
                 "FORBIDDEN",
@@ -66,7 +68,28 @@ internal sealed class GoogleOpenIdConnectEvents(
                 "This account is disabled.");
         }
 
-        return ApiProblemWriter.WriteAsync(
+        if (ContainsException<IdentityConcurrencyException>(context.Failure))
+        {
+            return problemWriter.WriteAsync(
+                context.HttpContext,
+                StatusCodes.Status409Conflict,
+                "CONCURRENCY_CONFLICT",
+                "Conflict",
+                "The sign-in state changed concurrently. Start sign-in again.");
+        }
+
+        if (ContainsException<HttpRequestException>(context.Failure) ||
+            ContainsException<TaskCanceledException>(context.Failure))
+        {
+            return problemWriter.WriteAsync(
+                context.HttpContext,
+                StatusCodes.Status503ServiceUnavailable,
+                "PROVIDER_UNAVAILABLE",
+                "Provider unavailable",
+                "Google authentication is temporarily unavailable.");
+        }
+
+        return problemWriter.WriteAsync(
             context.HttpContext,
             StatusCodes.Status401Unauthorized,
             "AUTH_REQUIRED",
@@ -78,4 +101,20 @@ internal sealed class GoogleOpenIdConnectEvents(
 
     private sealed class InvalidGoogleIdentityException(Exception innerException) :
         InvalidOperationException("Google identity validation failed.", innerException);
+
+    private static bool ContainsException<TException>(Exception? exception)
+        where TException : Exception
+    {
+        while (exception is not null)
+        {
+            if (exception is TException)
+            {
+                return true;
+            }
+
+            exception = exception.InnerException;
+        }
+
+        return false;
+    }
 }

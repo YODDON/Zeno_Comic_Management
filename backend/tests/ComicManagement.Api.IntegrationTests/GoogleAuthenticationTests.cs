@@ -2,9 +2,11 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using ComicManagement.Persistence;
+using ComicManagement.Identity.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -12,6 +14,7 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
@@ -23,6 +26,8 @@ namespace ComicManagement.Api.IntegrationTests;
 
 public sealed class GoogleAuthenticationTests : IAsyncLifetime
 {
+    private const string CertificatePassword = "i01-test-certificate-password";
+
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
         .WithDatabase("comic_management_api_tests")
         .WithUsername("postgres")
@@ -30,11 +35,20 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         .Build();
 
     private AuthenticationApplicationFactory _factory = null!;
+    private readonly string _securityDirectory = Path.Combine(
+        Path.GetTempPath(),
+        $"comic-management-i01-{Guid.NewGuid():N}");
 
     public async Task InitializeAsync()
     {
+        Directory.CreateDirectory(_securityDirectory);
+        CreateDataProtectionCertificate(
+            Path.Combine(_securityDirectory, "data-protection.pfx"),
+            CertificatePassword);
         await _postgres.StartAsync();
-        _factory = new AuthenticationApplicationFactory(_postgres.GetConnectionString());
+        _factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
 
         await using var scope = _factory.Services.CreateAsyncScope();
         await scope.ServiceProvider
@@ -47,6 +61,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     {
         await _factory.DisposeAsync();
         await _postgres.DisposeAsync();
+        Directory.Delete(_securityDirectory, recursive: true);
     }
 
     [Fact]
@@ -60,6 +75,9 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.Null(response.Headers.Location);
         var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("AUTH_REQUIRED", problem.GetProperty("errorCode").GetString());
+        Assert.Equal(
+            "https://docs.example.test/errors/AUTH_REQUIRED",
+            problem.GetProperty("type").GetString());
         Assert.False(string.IsNullOrWhiteSpace(problem.GetProperty("traceId").GetString()));
     }
 
@@ -95,6 +113,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.Equal("user-b@example.com", me.GetProperty("email").GetString());
         Assert.Equal("User", me.GetProperty("role").GetString());
         Assert.Equal("Active", me.GetProperty("status").GetString());
+        Assert.True(_factory.TokenEndpoint.LastPkceExchangeWasValid);
     }
 
     [Fact]
@@ -255,6 +274,215 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.Equal("/", callback.Headers.Location?.OriginalString);
     }
 
+    [Fact]
+    public async Task Logout_requires_csrf_and_revokes_all_copies_of_the_session()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-logout",
+            "Logout User",
+            "logout@example.com",
+            null);
+        using var client = CreateClient();
+        var callback = await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/"));
+        var stolenSessionCookie = callback.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal))
+            .Split(';', 2)[0];
+
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        using var logoutRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/auth/google/logout");
+        logoutRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+
+        var logout = await client.SendAsync(logoutRequest);
+
+        Assert.Equal(HttpStatusCode.NoContent, logout.StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await client.GetAsync("/api/v1/me")).StatusCode);
+
+        using var stolenClient = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = false,
+        });
+        stolenClient.DefaultRequestHeaders.Add("Cookie", stolenSessionCookie);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await stolenClient.GetAsync("/api/v1/me")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Logout_without_csrf_is_rejected_without_revoking_session()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-logout-csrf",
+            "CSRF User",
+            "csrf@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/"));
+
+        var logout = await client.PostAsync(
+            "/api/v1/auth/google/logout",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.BadRequest, logout.StatusCode);
+        var problem = await logout.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("VALIDATION_FAILED", problem.GetProperty("errorCode").GetString());
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await client.GetAsync("/api/v1/me")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Persisted_encrypted_key_ring_accepts_session_in_a_new_app_instance()
+    {
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-restart",
+            "Restart User",
+            "restart@example.com",
+            null);
+        using var client = CreateClient();
+        var callback = await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/"));
+        var sessionCookie = callback.Headers.GetValues("Set-Cookie")
+            .Single(value => value.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal))
+            .Split(';', 2)[0];
+
+        await using var restartedFactory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
+        using var restartedClient = restartedFactory.CreateClient(
+            new WebApplicationFactoryClientOptions
+            {
+                AllowAutoRedirect = false,
+                BaseAddress = new Uri("https://localhost"),
+                HandleCookies = false,
+            });
+        restartedClient.DefaultRequestHeaders.Add("Cookie", sessionCookie);
+
+        var response = await restartedClient.GetAsync("/api/v1/me");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var keyDocument = Directory.GetFiles(
+                Path.Combine(_securityDirectory, "keys"),
+                "key-*.xml")
+            .Select(File.ReadAllText)
+            .Single();
+        Assert.Contains("encryptedSecret", keyDocument, StringComparison.Ordinal);
+        Assert.DoesNotContain("<masterKey", keyDocument, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(TokenFault.WrongIssuer)]
+    [InlineData(TokenFault.WrongAudience)]
+    [InlineData(TokenFault.Expired)]
+    [InlineData(TokenFault.InvalidSignature)]
+    [InlineData(TokenFault.UnverifiedEmail)]
+    [InlineData(TokenFault.MissingSubject)]
+    public async Task Invalid_google_identity_token_is_rejected(TokenFault fault)
+    {
+        _factory.TokenEndpoint.SetProfile(
+            $"google-subject-{fault}",
+            "Invalid Token User",
+            "invalid-token@example.com",
+            null);
+        _factory.TokenEndpoint.Fault = fault;
+        using var client = CreateClient();
+
+        var callback = await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/"));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, callback.StatusCode);
+        Assert.DoesNotContain(
+            callback.Headers.GetValues("Set-Cookie"),
+            value => value.StartsWith(
+                "__Host-ComicManagement.Session=",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Google_network_failure_returns_provider_unavailable()
+    {
+        _factory.TokenEndpoint.ProviderUnavailable = true;
+        using var client = CreateClient();
+
+        var callback = await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/"));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, callback.StatusCode);
+        var problem = await callback.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("PROVIDER_UNAVAILABLE", problem.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task Exhausted_identity_concurrency_returns_conflict()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            forceIdentityConflicts: true);
+        factory.TokenEndpoint.SetProfile(
+            "google-subject-concurrency-error",
+            "Concurrency User",
+            "concurrency-error@example.com",
+            null);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = true,
+        });
+
+        var callback = await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/", factory.TokenEndpoint));
+
+        Assert.Equal(HttpStatusCode.Conflict, callback.StatusCode);
+        var problem = await callback.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("CONCURRENCY_CONFLICT", problem.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task Forwarded_scheme_builds_https_callback_and_rate_limit_uses_client_ip()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            loginPermitLimit: 1);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("http://internal-api"),
+            HandleCookies = false,
+        });
+
+        var first = await SendForwardedLoginAsync(client, "198.51.100.10");
+        var sameIp = await SendForwardedLoginAsync(client, "198.51.100.10");
+        var anotherIp = await SendForwardedLoginAsync(client, "198.51.100.11");
+
+        Assert.Equal(HttpStatusCode.Redirect, first.StatusCode);
+        var authorizationQuery = QueryHelpers.ParseQuery(first.Headers.Location!.Query);
+        Assert.StartsWith(
+            "https://internal-api/",
+            Assert.Single(authorizationQuery["redirect_uri"]),
+            StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.TooManyRequests, sameIp.StatusCode);
+        Assert.Equal(HttpStatusCode.Redirect, anotherIp.StatusCode);
+    }
+
     private HttpClient CreateClient() => _factory.CreateClient(
         new WebApplicationFactoryClientOptions
         {
@@ -263,7 +491,13 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             HandleCookies = true,
         });
 
-    private async Task<LoginFlow> BeginLoginAsync(HttpClient client, string returnUrl)
+    private Task<LoginFlow> BeginLoginAsync(HttpClient client, string returnUrl) =>
+        BeginLoginAsync(client, returnUrl, _factory.TokenEndpoint);
+
+    private static async Task<LoginFlow> BeginLoginAsync(
+        HttpClient client,
+        string returnUrl,
+        FakeGoogleTokenEndpoint tokenEndpoint)
     {
         var response = await client.GetAsync(
             $"/api/v1/auth/google/login?returnUrl={Uri.EscapeDataString(returnUrl)}");
@@ -277,7 +511,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             ?? throw new InvalidOperationException("OIDC state is missing.");
         var nonce = Assert.Single(query["nonce"])
             ?? throw new InvalidOperationException("OIDC nonce is missing.");
-        _factory.TokenEndpoint.Nonce = nonce;
+        tokenEndpoint.Nonce = nonce;
 
         var challengeCookies = response.Headers.GetValues("Set-Cookie").ToArray();
         Assert.Contains(challengeCookies, value =>
@@ -290,9 +524,22 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             value.Contains("secure", StringComparison.OrdinalIgnoreCase));
         Assert.True(query.ContainsKey("code_challenge"));
         Assert.Equal("S256", Assert.Single(query["code_challenge_method"]));
+        tokenEndpoint.CodeChallenge = Assert.Single(query["code_challenge"])!;
 
         return new LoginFlow(
             $"/api/v1/auth/google/callback?code=test-code&state={Uri.EscapeDataString(state)}");
+    }
+
+    private static Task<HttpResponseMessage> SendForwardedLoginAsync(
+        HttpClient client,
+        string clientIp)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "/api/v1/auth/google/login");
+        request.Headers.Add("X-Forwarded-For", clientIp);
+        request.Headers.Add("X-Forwarded-Proto", "https");
+        return client.SendAsync(request);
     }
 
     private static Task<HttpResponseMessage> CompleteLoginAsync(
@@ -302,11 +549,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     private sealed record LoginFlow(string CallbackUrl);
 
     private sealed class AuthenticationApplicationFactory(
-        string connectionString) : WebApplicationFactory<Program>
+        string connectionString,
+        string securityDirectory,
+        int loginPermitLimit = 1000,
+        bool forceIdentityConflicts = false) : WebApplicationFactory<Program>
     {
-        private readonly string _keysPath = Path.Combine(
-            Path.GetTempPath(),
-            $"comic-management-i01-{Guid.NewGuid():N}");
+        private readonly string _keysPath = Path.Combine(securityDirectory, "keys");
+        private readonly string _certificatePath = Path.Combine(
+            securityDirectory,
+            "data-protection.pfx");
 
         internal FakeGoogleTokenEndpoint TokenEndpoint { get; } = new();
 
@@ -323,9 +574,23 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     "test-client-secret")
                 .UseSetting("Authentication:SessionLifetime", "01:00:00")
                 .UseSetting("Authentication:DataProtectionKeysPath", _keysPath)
-                .UseSetting("Authentication:LoginRateLimit:PermitLimit", "1000")
-                .UseSetting("Authentication:LoginRateLimit:Window", "00:01:00");
+                .UseSetting(
+                    "Authentication:DataProtectionCertificatePath",
+                    _certificatePath)
+                .UseSetting(
+                    "Authentication:DataProtectionCertificatePassword",
+                    CertificatePassword)
+                .UseSetting(
+                    "Api:ErrorDocumentationBaseUri",
+                    "https://docs.example.test/errors")
+                .UseSetting(
+                    "Authentication:LoginRateLimit:PermitLimit",
+                    loginPermitLimit.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                .UseSetting("Authentication:LoginRateLimit:Window", "00:01:00")
+                .UseSetting("ReverseProxy:KnownNetworks:0", "0.0.0.0/0")
+                .UseSetting("ReverseProxy:KnownNetworks:1", "::/0");
             builder.ConfigureServices(services =>
+            {
                 services.PostConfigure<OpenIdConnectOptions>("Google", options =>
                 {
                     var configuration = TokenEndpoint.CreateConfiguration();
@@ -333,19 +598,42 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     options.ConfigurationManager =
                         new StaticConfigurationManager<OpenIdConnectConfiguration>(configuration);
                     options.Backchannel = new HttpClient(TokenEndpoint);
-                }));
+                });
+
+                if (forceIdentityConflicts)
+                {
+                    services.RemoveAll<IGoogleIdentityStore>();
+                    services.AddScoped<IGoogleIdentityStore, AlwaysConflictIdentityStore>();
+                }
+            });
         }
 
         protected override void Dispose(bool disposing)
         {
             base.Dispose(disposing);
             TokenEndpoint.Dispose();
-
-            if (disposing && Directory.Exists(_keysPath))
-            {
-                Directory.Delete(_keysPath, recursive: true);
-            }
         }
+    }
+
+    private sealed class AlwaysConflictIdentityStore : IGoogleIdentityStore
+    {
+        public Task<ComicManagement.Identity.Users.User?> FindByGoogleSubjectAsync(
+            string googleSubject,
+            CancellationToken cancellationToken) => Task.FromResult<ComicManagement.Identity.Users.User?>(null);
+
+        public Task<ComicManagement.Identity.Users.User?> FindUserByIdAsync(
+            Guid userId,
+            CancellationToken cancellationToken) => Task.FromResult<ComicManagement.Identity.Users.User?>(null);
+
+        public void Add(
+            ComicManagement.Identity.Users.User user,
+            ComicManagement.Identity.Users.GoogleIdentity googleIdentity)
+        {
+        }
+
+        public Task<IdentityStoreSaveOutcome> SaveChangesAsync(
+            CancellationToken cancellationToken) =>
+            Task.FromResult(IdentityStoreSaveOutcome.ConcurrencyConflict);
     }
 
     private sealed class FakeGoogleTokenEndpoint : HttpMessageHandler
@@ -358,7 +646,9 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             new("https://accounts.google.test/token");
 
         private readonly RSA _rsa = RSA.Create(2048);
+        private readonly RSA _untrustedRsa = RSA.Create(2048);
         private readonly RsaSecurityKey _signingKey;
+        private readonly RsaSecurityKey _untrustedSigningKey;
         private string _subject = "test-subject";
         private string _displayName = "Test User";
         private string? _email = "test@example.com";
@@ -370,9 +660,21 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             {
                 KeyId = "test-google-key",
             };
+            _untrustedSigningKey = new RsaSecurityKey(_untrustedRsa)
+            {
+                KeyId = "untrusted-google-key",
+            };
         }
 
         internal string Nonce { get; set; } = string.Empty;
+
+        internal string CodeChallenge { get; set; } = string.Empty;
+
+        internal bool LastPkceExchangeWasValid { get; private set; }
+
+        internal TokenFault Fault { get; set; }
+
+        internal bool ProviderUnavailable { get; set; }
 
         internal void SetProfile(
             string subject,
@@ -398,7 +700,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             return configuration;
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
@@ -406,16 +708,39 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
             if (request.RequestUri != TokenEndpoint)
             {
-                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            }
+
+            if (ProviderUnavailable)
+            {
+                throw new HttpRequestException("Simulated Google outage.");
+            }
+
+            var tokenRequest = QueryHelpers.ParseQuery(
+                await request.Content!.ReadAsStringAsync(cancellationToken));
+            var codeVerifier = Assert.Single(tokenRequest["code_verifier"]);
+            LastPkceExchangeWasValid = string.Equals(
+                CodeChallenge,
+                WebEncoders.Base64UrlEncode(SHA256.HashData(
+                    Encoding.ASCII.GetBytes(codeVerifier!))),
+                StringComparison.Ordinal);
+
+            if (!LastPkceExchangeWasValid)
+            {
+                return new HttpResponseMessage(HttpStatusCode.BadRequest);
             }
 
             var claims = new Dictionary<string, object>
             {
-                ["sub"] = _subject,
                 ["name"] = _displayName,
-                ["email_verified"] = true,
+                ["email_verified"] = Fault != TokenFault.UnverifiedEmail,
                 ["nonce"] = Nonce,
             };
+
+            if (Fault != TokenFault.MissingSubject)
+            {
+                claims["sub"] = _subject;
+            }
 
             if (_email is not null)
             {
@@ -428,16 +753,23 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             }
 
             var now = DateTime.UtcNow;
+            var expired = Fault == TokenFault.Expired;
             var idToken = new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor
             {
-                Issuer = Issuer,
-                Audience = ClientId,
+                Issuer = Fault == TokenFault.WrongIssuer
+                    ? "https://attacker.example"
+                    : Issuer,
+                Audience = Fault == TokenFault.WrongAudience
+                    ? "another-client"
+                    : ClientId,
                 Claims = claims,
-                IssuedAt = now,
-                NotBefore = now.AddMinutes(-1),
-                Expires = now.AddMinutes(5),
+                IssuedAt = expired ? now.AddMinutes(-10) : now,
+                NotBefore = expired ? now.AddMinutes(-10) : now.AddMinutes(-1),
+                Expires = expired ? now.AddMinutes(-5) : now.AddMinutes(5),
                 SigningCredentials = new SigningCredentials(
-                    _signingKey,
+                    Fault == TokenFault.InvalidSignature
+                        ? _untrustedSigningKey
+                        : _signingKey,
                     SecurityAlgorithms.RsaSha256),
             });
 
@@ -449,10 +781,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 id_token = idToken,
             });
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json"),
-            });
+            };
         }
 
         protected override void Dispose(bool disposing)
@@ -461,7 +793,39 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             if (disposing)
             {
                 _rsa.Dispose();
+                _untrustedRsa.Dispose();
             }
         }
+    }
+
+    public enum TokenFault
+    {
+        None = 0,
+        WrongIssuer = 1,
+        WrongAudience = 2,
+        Expired = 3,
+        InvalidSignature = 4,
+        UnverifiedEmail = 5,
+        MissingSubject = 6,
+    }
+
+    private static void CreateDataProtectionCertificate(string path, string password)
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=ComicManagement I01 Tests",
+            rsa,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(
+            X509KeyUsageFlags.KeyEncipherment | X509KeyUsageFlags.DataEncipherment,
+            critical: true));
+
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            DateTimeOffset.UtcNow.AddDays(1));
+        File.WriteAllBytes(
+            path,
+            certificate.Export(X509ContentType.Pkcs12, password));
     }
 }

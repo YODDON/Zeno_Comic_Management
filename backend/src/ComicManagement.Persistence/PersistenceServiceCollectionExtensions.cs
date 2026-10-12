@@ -20,6 +20,7 @@ public static class PersistenceServiceCollectionExtensions
             ConfigurePostgreSql(options, connectionString));
         services.TryAddSingleton<IClock, SystemClock>();
         services.TryAddScoped<IGoogleIdentityStore, GoogleIdentityStore>();
+        services.TryAddScoped<ISessionStore, SessionStore>();
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();
         services.TryAddScoped<OutboxMessageDispatcher>();
         services.TryAddScoped<OutboxBatchProcessor>();

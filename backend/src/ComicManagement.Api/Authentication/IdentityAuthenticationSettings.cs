@@ -5,6 +5,9 @@ internal sealed record IdentityAuthenticationSettings(
     string GoogleClientSecret,
     TimeSpan SessionLifetime,
     string DataProtectionKeysPath,
+    string DataProtectionCertificatePath,
+    string DataProtectionCertificatePassword,
+    Uri ErrorDocumentationBaseUri,
     int LoginPermitLimit,
     TimeSpan LoginRateLimitWindow)
 {
@@ -15,6 +18,9 @@ internal sealed record IdentityAuthenticationSettings(
         var clientId = configuration["Authentication:Google:ClientId"];
         var clientSecret = configuration["Authentication:Google:ClientSecret"];
         var keysPath = configuration["Authentication:DataProtectionKeysPath"];
+        var certificatePath = configuration["Authentication:DataProtectionCertificatePath"];
+        var certificatePassword = configuration["Authentication:DataProtectionCertificatePassword"];
+        var errorDocumentationBaseUri = configuration["Api:ErrorDocumentationBaseUri"];
 
         if (string.IsNullOrWhiteSpace(clientId))
         {
@@ -43,6 +49,27 @@ internal sealed record IdentityAuthenticationSettings(
                 "Authentication:DataProtectionKeysPath is required.");
         }
 
+        if (string.IsNullOrWhiteSpace(certificatePath))
+        {
+            throw new InvalidOperationException(
+                "Authentication:DataProtectionCertificatePath is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(certificatePassword))
+        {
+            throw new InvalidOperationException(
+                "Authentication:DataProtectionCertificatePassword is required.");
+        }
+
+        if (!Uri.TryCreate(errorDocumentationBaseUri, UriKind.Absolute, out var errorBaseUri) ||
+            errorBaseUri.Scheme != Uri.UriSchemeHttps ||
+            !string.IsNullOrEmpty(errorBaseUri.Query) ||
+            !string.IsNullOrEmpty(errorBaseUri.Fragment))
+        {
+            throw new InvalidOperationException(
+                "Api:ErrorDocumentationBaseUri must be an absolute HTTPS URI without a query or fragment.");
+        }
+
         if (!int.TryParse(
                 configuration["Authentication:LoginRateLimit:PermitLimit"],
                 out var permitLimit) ||
@@ -65,12 +92,30 @@ internal sealed record IdentityAuthenticationSettings(
         var absoluteKeysPath = Path.IsPathFullyQualified(keysPath)
             ? Path.GetFullPath(keysPath)
             : Path.GetFullPath(keysPath, contentRootPath);
+        var absoluteCertificatePath = Path.IsPathFullyQualified(certificatePath)
+            ? Path.GetFullPath(certificatePath)
+            : Path.GetFullPath(certificatePath, contentRootPath);
+
+        if (!File.Exists(absoluteCertificatePath))
+        {
+            throw new InvalidOperationException(
+                "Authentication:DataProtectionCertificatePath must identify an existing PKCS#12 certificate.");
+        }
+
+        var normalizedErrorBaseUri = new Uri(
+            errorBaseUri.AbsoluteUri.EndsWith("/", StringComparison.Ordinal)
+                ? errorBaseUri.AbsoluteUri
+                : $"{errorBaseUri.AbsoluteUri}/",
+            UriKind.Absolute);
 
         return new IdentityAuthenticationSettings(
             clientId,
             clientSecret,
             sessionLifetime,
             absoluteKeysPath,
+            absoluteCertificatePath,
+            certificatePassword,
+            normalizedErrorBaseUri,
             permitLimit,
             rateLimitWindow);
     }

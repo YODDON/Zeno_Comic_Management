@@ -110,6 +110,26 @@ public sealed class GoogleSignInHandlerTests
     }
 
     [Fact]
+    public async Task Repeated_concurrency_conflicts_return_a_typed_failure()
+    {
+        var store = new StubIdentityStore
+        {
+            AlwaysConflict = true,
+        };
+        var handler = new GoogleSignInHandler(store, new StubClock(Now));
+
+        await Assert.ThrowsAsync<IdentityConcurrencyException>(() => handler.HandleAsync(
+            new GoogleUserProfile(
+                "conflicting-subject",
+                "Concurrent User",
+                "concurrent@example.com",
+                null),
+            CancellationToken.None));
+
+        Assert.Equal(3, store.SaveAttempts);
+    }
+
+    [Fact]
     public async Task Display_name_is_limited_by_unicode_scalar_values()
     {
         var store = new StubIdentityStore();
@@ -149,6 +169,8 @@ public sealed class GoogleSignInHandlerTests
         internal IdentityStoreSaveOutcome NextSaveOutcome { get; set; } =
             IdentityStoreSaveOutcome.Succeeded;
 
+        internal bool AlwaysConflict { get; init; }
+
         internal int SaveAttempts { get; private set; }
 
         public Task<User?> FindByGoogleSubjectAsync(
@@ -184,6 +206,13 @@ public sealed class GoogleSignInHandlerTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             SaveAttempts++;
+
+            if (AlwaysConflict)
+            {
+                User = null;
+                GoogleSubject = null;
+                return Task.FromResult(IdentityStoreSaveOutcome.ConcurrencyConflict);
+            }
 
             var outcome = NextSaveOutcome;
             NextSaveOutcome = IdentityStoreSaveOutcome.Succeeded;

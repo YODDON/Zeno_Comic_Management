@@ -5,6 +5,8 @@ internal static class AuthenticationConstants
     internal const string SessionScheme = "ComicManagement.Session";
     internal const string GoogleScheme = "Google";
     internal const string LoginRateLimitPolicy = "authentication-login";
+    internal const string AntiforgeryHeaderName = "X-CSRF-TOKEN";
+    internal const string AntiforgeryCookieName = "__Host-ComicManagement.Antiforgery";
     internal const string CallbackPath = "/api/v1/auth/google/callback";
     internal const string DisabledAccountItem = "ComicManagement.DisabledAccount";
 }

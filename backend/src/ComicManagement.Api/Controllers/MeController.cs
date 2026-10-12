@@ -2,13 +2,14 @@ using System.Security.Claims;
 using ComicManagement.Api.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Antiforgery;
 
 namespace ComicManagement.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/me")]
-[Authorize(AuthenticationSchemes = AuthenticationConstants.SessionScheme)]
-public sealed class MeController : ControllerBase
+[Authorize]
+public sealed class MeController(IAntiforgery antiforgery) : ControllerBase
 {
     [HttpGet]
     [ProducesResponseType<MeResponse>(StatusCodes.Status200OK)]
@@ -16,6 +17,11 @@ public sealed class MeController : ControllerBase
     [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public ActionResult<MeResponse> Get()
     {
+        var antiforgeryTokens = antiforgery.GetAndStoreTokens(HttpContext);
+        Response.Headers[AuthenticationConstants.AntiforgeryHeaderName] =
+            antiforgeryTokens.RequestToken;
+        Response.Headers.CacheControl = "no-store";
+
         var id = Guid.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
         return Ok(new MeResponse(

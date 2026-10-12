@@ -7,7 +7,8 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 namespace ComicManagement.Api.Authentication;
 
 internal sealed class SessionCookieEvents(
-    IGoogleIdentityStore identityStore) : CookieAuthenticationEvents
+    IGoogleIdentityStore identityStore,
+    ApiProblemWriter problemWriter) : CookieAuthenticationEvents
 {
     public override async Task ValidatePrincipal(CookieValidatePrincipalContext context)
     {
@@ -33,15 +34,7 @@ internal sealed class SessionCookieEvents(
 
         if (!string.Equals(currentVersion, expectedVersion, StringComparison.Ordinal))
         {
-            context.ReplacePrincipal(LocalPrincipalFactory.Create(new AuthenticatedUser(
-                user.Id,
-                user.DisplayName,
-                user.Email,
-                user.AvatarUrl,
-                user.Role,
-                user.Status,
-                user.Version)));
-            context.ShouldRenew = true;
+            await RejectAsync(context, disabled: false);
         }
     }
 
@@ -49,7 +42,7 @@ internal sealed class SessionCookieEvents(
     {
         if (context.HttpContext.Items.ContainsKey(AuthenticationConstants.DisabledAccountItem))
         {
-            return ApiProblemWriter.WriteAsync(
+            return problemWriter.WriteAsync(
                 context.HttpContext,
                 StatusCodes.Status403Forbidden,
                 "FORBIDDEN",
@@ -57,7 +50,7 @@ internal sealed class SessionCookieEvents(
                 "This account is disabled.");
         }
 
-        return ApiProblemWriter.WriteAsync(
+        return problemWriter.WriteAsync(
             context.HttpContext,
             StatusCodes.Status401Unauthorized,
             "AUTH_REQUIRED",
@@ -66,7 +59,7 @@ internal sealed class SessionCookieEvents(
     }
 
     public override Task RedirectToAccessDenied(
-        RedirectContext<CookieAuthenticationOptions> context) => ApiProblemWriter.WriteAsync(
+        RedirectContext<CookieAuthenticationOptions> context) => problemWriter.WriteAsync(
             context.HttpContext,
             StatusCodes.Status403Forbidden,
             "FORBIDDEN",
