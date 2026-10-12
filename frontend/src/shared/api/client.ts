@@ -2,6 +2,9 @@ import { ApiError, problemDetailsSchema, type ProblemDetails } from "@/shared/ap
 
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim() ?? "";
 const apiBaseUrl = configuredBaseUrl.replace(/\/$/, "");
+const csrfHeaderName = "X-CSRF-TOKEN";
+const safeMethods = new Set(["GET", "HEAD", "OPTIONS", "TRACE"]);
+let csrfToken: string | undefined;
 
 type RequestBody = BodyInit | Record<string, unknown> | unknown[];
 
@@ -49,6 +52,11 @@ export async function apiRequest<TResponse>(
   const { body, headers: customHeaders, idempotencyKey, ...requestInit } = options;
   const headers = new Headers(customHeaders);
   headers.set("Accept", "application/json");
+  const method = requestInit.method?.toUpperCase() ?? "GET";
+
+  if (!safeMethods.has(method) && csrfToken && !headers.has(csrfHeaderName)) {
+    headers.set(csrfHeaderName, csrfToken);
+  }
 
   if (idempotencyKey) {
     headers.set("Idempotency-Key", idempotencyKey);
@@ -72,7 +80,15 @@ export async function apiRequest<TResponse>(
     headers,
   });
 
+  const responseCsrfToken = response.headers.get(csrfHeaderName)?.trim();
+  if (responseCsrfToken) {
+    csrfToken = responseCsrfToken;
+  }
+
   if (!response.ok) {
+    if (response.status === 401) {
+      clearApiSessionState();
+    }
     throw new ApiError(response.status, await readProblemDetails(response));
   }
 
@@ -81,4 +97,8 @@ export async function apiRequest<TResponse>(
   }
 
   return (await response.json()) as TResponse;
+}
+
+export function clearApiSessionState() {
+  csrfToken = undefined;
 }

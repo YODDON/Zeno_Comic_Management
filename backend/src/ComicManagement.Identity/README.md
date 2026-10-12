@@ -14,6 +14,10 @@ Email and avatar are provider attributes; email is never used as the identity ke
   token returned in the `X-CSRF-TOKEN` response header by `GET /api/v1/me`. Logout increments
   the user's session version, invalidating every copy of an older session cookie.
 - `GET /api/v1/me` returns `{id,displayName,email,avatarUrl,role,status}` for an active session.
+- `PATCH /api/v1/me` accepts only `{displayName}`, requires the session antiforgery token, and
+  returns the same profile shape. It trims the name, validates a maximum of 120 Unicode scalar
+  values, uses the user version for optimistic concurrency, and refreshes the current cookie
+  claims without extending the original session lifetime.
 
 Only local return URLs are accepted. The callback uses authorization code + PKCE and validates
 state, nonce, issuer, audience, signature, lifetime and the exact case-sensitive `sub`. Tokens
@@ -28,7 +32,7 @@ the `Admin` role. There is no web API or UI for changing roles.
 
 The controlled, one-time first-Admin procedure is documented in
 `backend/operations/README.md` and implemented by `backend/operations/provision-first-admin.sql`.
-It is deliberately an out-of-band, reviewed database operation. `PATCH /api/v1/me` belongs to I03.
+It is deliberately an out-of-band, reviewed database operation.
 
 ## Required configuration
 
@@ -60,7 +64,8 @@ state/nonce/full PKCE exchange, negative token validation, callback replay rejec
 cookie attributes, safe return URLs, duplicate subject handling, `/me`, CSRF-protected logout,
 server-side session revocation, trusted forwarded headers/rate-limit partitioning, disabled-account
 revocation, centralized mutation CSRF, User/Admin authorization responses and encrypted key reuse
-across app instances. The production Google client, HTTPS
+across app instances. I03 additionally verifies profile validation, immutable provider/role fields,
+session continuity, mutation CSRF and concurrency-conflict mapping. The production Google client, HTTPS
 redirect registration, browser cookie behavior through Caddy, production certificate rotation and
 key-volume permissions remain **Verification Required**. The first-Admin SQL procedure also needs
 a production operations dry run with the real least-privilege database role before that gate can

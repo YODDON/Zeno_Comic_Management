@@ -4,6 +4,7 @@ import { UserLayout } from "@/app/layouts/UserLayout";
 import { AdminFoundationPage } from "@/pages/AdminFoundationPage";
 import { HomePage } from "@/pages/HomePage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
+import { ProfilePage } from "@/pages/ProfilePage";
 import { RoutePlaceholderPage } from "@/pages/RoutePlaceholderPage";
 
 export const router = createBrowserRouter([
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
           />
         ),
       },
+      { path: "profile", element: <ProfilePage /> },
       { path: "*", element: <NotFoundPage /> },
     ],
   },

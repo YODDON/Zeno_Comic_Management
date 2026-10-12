@@ -29,6 +29,31 @@ internal static class IdentityAuthenticationServiceCollectionExtensions
         services.AddScoped<AuthenticatedAntiforgeryFilter>();
         services.Configure<MvcOptions>(options =>
             options.Filters.AddService<AuthenticatedAntiforgeryFilter>());
+        services.Configure<ApiBehaviorOptions>(options =>
+        {
+            options.InvalidModelStateResponseFactory = context =>
+            {
+                var problemWriter = context.HttpContext.RequestServices
+                    .GetRequiredService<ApiProblemWriter>();
+                var problem = problemWriter.Create(
+                    context.HttpContext,
+                    StatusCodes.Status400BadRequest,
+                    "VALIDATION_FAILED",
+                    "Validation failed",
+                    "The request body is invalid.");
+                problem.Extensions["errors"] = context.ModelState
+                    .Where(entry => entry.Value?.Errors.Count > 0)
+                    .ToDictionary(
+                        entry => entry.Key,
+                        entry => entry.Value!.Errors
+                            .Select(error => string.IsNullOrWhiteSpace(error.ErrorMessage)
+                                ? "The supplied value is invalid."
+                                : error.ErrorMessage)
+                            .ToArray());
+
+                return new BadRequestObjectResult(problem);
+            };
+        });
 
         services.AddAuthorization(options =>
         {

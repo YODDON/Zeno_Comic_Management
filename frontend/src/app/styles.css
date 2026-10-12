@@ -612,6 +612,217 @@ svg {
   letter-spacing: 0.15em;
 }
 
+.profile-page {
+  width: min(100% - 2rem, 48rem);
+}
+
+.profile-heading {
+  margin-bottom: 2rem;
+}
+
+.profile-heading h1 {
+  margin: 0;
+  font-family: "Newsreader Variable", Georgia, serif;
+  font-size: clamp(3rem, 9vw, 5.8rem);
+  font-weight: 530;
+  letter-spacing: -0.06em;
+  line-height: 0.94;
+}
+
+.profile-heading > p:last-child {
+  max-width: 40rem;
+  margin: 1.2rem 0 0;
+  color: var(--text-muted);
+  line-height: 1.75;
+}
+
+.profile-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 1.5rem;
+  background: var(--surface);
+  box-shadow: 0 1.25rem 3rem color-mix(in srgb, #000 12%, transparent);
+  padding: clamp(1.25rem, 5vw, 2.5rem);
+}
+
+.profile-card::before {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(color-mix(in srgb, var(--text) 12%, transparent) 0.7px, transparent 0.7px);
+  background-size: 8px 8px;
+  content: "";
+  mask-image: linear-gradient(115deg, #000, transparent 43%);
+  pointer-events: none;
+}
+
+.profile-identity,
+.profile-form {
+  position: relative;
+}
+
+.profile-identity {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1.5rem;
+}
+
+.profile-identity > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.profile-identity strong {
+  overflow: hidden;
+  font-family: "Newsreader Variable", Georgia, serif;
+  font-size: clamp(1.65rem, 5vw, 2.2rem);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-avatar {
+  width: 4.5rem;
+  height: 4.5rem;
+  flex: 0 0 auto;
+  border: 3px solid var(--surface);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border-strong);
+  object-fit: cover;
+}
+
+.profile-avatar-fallback {
+  display: grid;
+  place-items: center;
+  background: var(--surface-raised);
+  color: var(--accent);
+}
+
+.profile-avatar-fallback svg {
+  width: 2rem;
+  height: 2rem;
+}
+
+.profile-registration {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.67rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+}
+
+.profile-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--success);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.profile-status svg {
+  width: 0.95rem;
+}
+
+.profile-form {
+  display: grid;
+  gap: 1.5rem;
+  padding-top: 1.75rem;
+}
+
+.form-field {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.form-field label {
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.form-field input {
+  width: 100%;
+  min-height: 3rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.75rem;
+  outline: none;
+  background: var(--background);
+  color: var(--text);
+  padding: 0.7rem 0.85rem;
+  font: inherit;
+}
+
+.form-field input:focus-visible {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent);
+}
+
+.form-field input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.field-help,
+.field-error {
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.field-help {
+  color: var(--text-muted);
+}
+
+.field-error {
+  min-height: 1.15rem;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.readonly-field {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  border-left: 3px solid var(--signal);
+  background: var(--surface-raised);
+  padding: 0.9rem 1rem;
+}
+
+.readonly-field > svg {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.readonly-field span {
+  display: grid;
+  min-width: 0;
+  gap: 0.2rem;
+}
+
+.readonly-field small {
+  color: var(--text-muted);
+}
+
+.readonly-field strong {
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+}
+
+.profile-form-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.save-message {
+  min-height: 1.3rem;
+  color: var(--success);
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
 @keyframes state-spin {
   to {
     rotate: 360deg;
@@ -654,6 +865,12 @@ svg {
 
   .footer-row {
     flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .profile-form-footer {
+    flex-direction: row;
+    align-items: center;
     justify-content: space-between;
   }
 
