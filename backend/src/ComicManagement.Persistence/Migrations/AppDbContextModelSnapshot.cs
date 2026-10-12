@@ -124,19 +124,21 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_chapter_pages");
 
+                    b.HasIndex("CloudinaryPublicId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chapter_pages_cloudinary_public_id");
+
                     b.HasIndex("ChapterId", "PageOrder")
                         .IsUnique()
                         .HasDatabaseName("ux_chapter_pages_chapter_id_page_order");
 
                     b.ToTable("chapter_pages", "catalog", t =>
                         {
-                            t.HasCheckConstraint("ck_chapter_pages_asset_status_not_blank", "length(btrim(asset_status)) > 0");
+                            t.HasCheckConstraint("ck_chapter_pages_asset_dimensions", "(asset_status = 'Pending' AND width = 0 AND height = 0) OR (asset_status = 'Ready' AND width > 0 AND height > 0)");
+
+                            t.HasCheckConstraint("ck_chapter_pages_asset_status", "asset_status IN ('Pending', 'Ready')");
 
                             t.HasCheckConstraint("ck_chapter_pages_cloudinary_public_id_not_blank", "length(btrim(cloudinary_public_id)) > 0");
-
-                            t.HasCheckConstraint("ck_chapter_pages_height", "height > 0");
-
-                            t.HasCheckConstraint("ck_chapter_pages_width", "width > 0");
                         });
                 });
 

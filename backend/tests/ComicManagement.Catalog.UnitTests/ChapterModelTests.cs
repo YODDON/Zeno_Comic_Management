@@ -45,28 +45,31 @@ public sealed class ChapterModelTests
     }
 
     [Fact]
-    public void Chapter_page_requires_provider_identity_status_and_positive_dimensions()
+    public void Chapter_page_is_valid_only_after_a_pending_asset_is_marked_ready()
     {
-        var page = ChapterPage.Create(
+        var page = ChapterPage.CreatePending(
             Guid.NewGuid(),
             Guid.NewGuid(),
             1,
-            "comic-management/chapter/page",
-            "Ready",
-            1200,
-            1800);
+            "comic-management/chapter/page");
 
+        Assert.Equal(ChapterPageAssetStatuses.Pending, page.AssetStatus);
+        Assert.False(page.IsValid);
+        Assert.Equal(0, page.Width);
+        Assert.Equal(0, page.Height);
+
+        page.MarkReady(1200, 1800);
+
+        Assert.Equal(ChapterPageAssetStatuses.Ready, page.AssetStatus);
+        Assert.True(page.IsValid);
         Assert.Equal(1200, page.Width);
         Assert.Equal(1800, page.Height);
 
         Assert.Throws<ArgumentException>(() => CreatePage(id: Guid.Empty));
         Assert.Throws<ArgumentException>(() => CreatePage(chapterId: Guid.Empty));
         Assert.Throws<ArgumentException>(() => CreatePage(publicId: " "));
-        Assert.Throws<ArgumentException>(() => CreatePage(assetStatus: " "));
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
-            CreatePage(assetStatus: new string('a', ChapterPage.MaximumAssetStatusLength + 1)));
-        Assert.Throws<ArgumentOutOfRangeException>(() => CreatePage(width: 0));
-        Assert.Throws<ArgumentOutOfRangeException>(() => CreatePage(height: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => CreatePage().MarkReady(0, 100));
+        Assert.Throws<ArgumentOutOfRangeException>(() => CreatePage().MarkReady(100, 0));
     }
 
     [Fact]
@@ -93,17 +96,11 @@ public sealed class ChapterModelTests
     private static ChapterPage CreatePage(
         Guid? id = null,
         Guid? chapterId = null,
-        string publicId = "comic-management/chapter/page",
-        string assetStatus = "Ready",
-        int width = 1200,
-        int height = 1800) => ChapterPage.Create(
+        string publicId = "comic-management/chapter/page") => ChapterPage.CreatePending(
             id ?? Guid.NewGuid(),
             chapterId ?? Guid.NewGuid(),
             1,
-            publicId,
-            assetStatus,
-            width,
-            height);
+            publicId);
 
     private static ChapterPageAssetUpload CreateUpload(
         string contentType = "image/webp",

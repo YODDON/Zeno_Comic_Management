@@ -22,14 +22,14 @@ public sealed class ChapterPage
 
     public int Height { get; private set; }
 
-    public static ChapterPage Create(
+    public bool IsValid =>
+        AssetStatus == ChapterPageAssetStatuses.Ready && Width > 0 && Height > 0;
+
+    public static ChapterPage CreatePending(
         Guid id,
         Guid chapterId,
         int pageOrder,
-        string cloudinaryPublicId,
-        string assetStatus,
-        int width,
-        int height)
+        string cloudinaryPublicId)
     {
         if (id == Guid.Empty)
         {
@@ -42,12 +42,21 @@ public sealed class ChapterPage
         }
 
         ArgumentException.ThrowIfNullOrWhiteSpace(cloudinaryPublicId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(assetStatus);
-        if (assetStatus.Length > MaximumAssetStatusLength)
-        {
-            throw new ArgumentOutOfRangeException(nameof(assetStatus));
-        }
 
+        return new ChapterPage
+        {
+            Id = id,
+            ChapterId = chapterId,
+            PageOrder = pageOrder,
+            CloudinaryPublicId = cloudinaryPublicId,
+            AssetStatus = ChapterPageAssetStatuses.Pending,
+            Width = 0,
+            Height = 0,
+        };
+    }
+
+    public void MarkReady(int width, int height)
+    {
         if (width <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(width));
@@ -58,15 +67,8 @@ public sealed class ChapterPage
             throw new ArgumentOutOfRangeException(nameof(height));
         }
 
-        return new ChapterPage
-        {
-            Id = id,
-            ChapterId = chapterId,
-            PageOrder = pageOrder,
-            CloudinaryPublicId = cloudinaryPublicId,
-            AssetStatus = assetStatus,
-            Width = width,
-            Height = height,
-        };
+        AssetStatus = ChapterPageAssetStatuses.Ready;
+        Width = width;
+        Height = height;
     }
 }

@@ -12,6 +12,6 @@ Publication transitions, valid-chapter checks and slug locking after first publi
 
 ## C02 chapter pages and upload boundary
 
-`Chapter` stores a freeform label separately from numeric ordering, nullable price/VIP overrides, publication status and optimistic-concurrency version. `ChapterPage` stores stable ordering, the Cloudinary public ID, provider-independent asset status and intrinsic dimensions.
+`Chapter` stores a freeform label separately from numeric ordering, nullable price/VIP overrides, publication status and optimistic-concurrency version. `ChapterPage` stores stable ordering, the Cloudinary public ID, provider-independent asset status and intrinsic dimensions. `Pending` represents the durable intent written before the provider call; only `Ready` with positive dimensions is a valid publication page.
 
-`IChapterPageAssetStore` is the Catalog-owned port for uploading an image and compensating deletion. The Persistence Cloudinary adapter uploads chapter pages as `authenticated` assets with deterministic public IDs and never returns a provider delivery URL. Protected/time-limited delivery remains Verification Required; C02 does not claim that uploaded assets can yet be served securely to paid/VIP readers.
+`IChapterPageAssetStore` is the Catalog-owned provider port. `UploadChapterPageHandler` persists the `Pending` intent before the external call, then marks it `Ready`; retries recover an already-created deterministic asset instead of duplicating it. The Persistence Cloudinary adapter uploads chapter pages as `authenticated` assets and never returns a provider delivery URL. Protected/time-limited delivery remains Verification Required; C02 does not claim that uploaded assets can yet be served securely to paid/VIP readers.

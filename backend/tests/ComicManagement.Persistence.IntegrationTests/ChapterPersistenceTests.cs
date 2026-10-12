@@ -1,5 +1,6 @@
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
+using ComicManagement.Catalog.Media;
 using ComicManagement.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -47,14 +48,13 @@ public sealed class ChapterPersistenceTests : IAsyncLifetime
             false,
             now));
         context.Chapters.Add(Chapter.Create(chapterId, comicId, "Chapter 1", 1, null, null, now));
-        context.ChapterPages.Add(ChapterPage.Create(
+        var page = ChapterPage.CreatePending(
             pageId,
             chapterId,
             1,
-            "comic-management/chapter/page-1",
-            "Ready",
-            1200,
-            1800));
+            "comic-management/chapter/page-1");
+        page.MarkReady(1200, 1800);
+        context.ChapterPages.Add(page);
         await context.SaveChangesAsync();
 
         Assert.Equal(1, await context.Chapters.CountAsync());
@@ -83,17 +83,23 @@ public sealed class ChapterPersistenceTests : IAsyncLifetime
             PostgresErrorCodes.UniqueViolation,
             () => InsertPage(context, Guid.NewGuid(), chapterId, 1, "duplicate-order", "Ready", 100, 100));
         await AssertPostgresViolation(
+            PostgresErrorCodes.UniqueViolation,
+            () => InsertPage(context, Guid.NewGuid(), chapterId, 2, "comic-management/chapter/page-1", "Ready", 100, 100));
+        await AssertPostgresViolation(
             PostgresErrorCodes.CheckViolation,
             () => InsertPage(context, Guid.NewGuid(), chapterId, 2, " ", "Ready", 100, 100));
         await AssertPostgresViolation(
             PostgresErrorCodes.CheckViolation,
-            () => InsertPage(context, Guid.NewGuid(), chapterId, 2, "page-2", " ", 100, 100));
+            () => InsertPage(context, Guid.NewGuid(), chapterId, 2, "page-2", "Uploading", 100, 100));
         await AssertPostgresViolation(
             PostgresErrorCodes.CheckViolation,
             () => InsertPage(context, Guid.NewGuid(), chapterId, 2, "page-2", "Ready", 0, 100));
         await AssertPostgresViolation(
             PostgresErrorCodes.CheckViolation,
             () => InsertPage(context, Guid.NewGuid(), chapterId, 2, "page-2", "Ready", 100, 0));
+        await AssertPostgresViolation(
+            PostgresErrorCodes.CheckViolation,
+            () => InsertPage(context, Guid.NewGuid(), chapterId, 2, "page-2", "Pending", 100, 100));
         await AssertPostgresViolation(
             PostgresErrorCodes.ForeignKeyViolation,
             () => InsertPage(context, Guid.NewGuid(), Guid.NewGuid(), 1, "missing-chapter", "Ready", 100, 100));
@@ -106,6 +112,73 @@ public sealed class ChapterPersistenceTests : IAsyncLifetime
             PostgresErrorCodes.RestrictViolation,
             () => context.Database.ExecuteSqlInterpolatedAsync(
                 $"DELETE FROM catalog.comics WHERE id = {comicId};"));
+    }
+
+    [Fact]
+    public async Task Pending_upload_intent_is_concurrency_safe_and_ready_transition_is_idempotent()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using (var setupScope = serviceProvider.CreateAsyncScope())
+        {
+            var setupContext = setupScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await setupContext.Database.MigrateAsync();
+            var now = new DateTimeOffset(2026, 10, 12, 8, 0, 0, TimeSpan.Zero);
+            setupContext.Comics.Add(Comic.Create(
+                Guid.Parse("10000000-0000-0000-0000-000000000001"),
+                "concurrent-page-upload",
+                "Concurrent Page Upload",
+                "",
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now));
+            setupContext.Chapters.Add(Chapter.Create(
+                Guid.Parse("20000000-0000-0000-0000-000000000001"),
+                Guid.Parse("10000000-0000-0000-0000-000000000001"),
+                "Chapter 1",
+                1,
+                null,
+                null,
+                now));
+            await setupContext.SaveChangesAsync();
+        }
+
+        var pageId = Guid.Parse("30000000-0000-0000-0000-000000000001");
+        var chapterId = Guid.Parse("20000000-0000-0000-0000-000000000001");
+        const string publicId = "comic-management/chapter-pages/concurrent/page";
+
+        static async Task<ChapterPage> RegisterPending(
+            IServiceProvider serviceProvider,
+            Guid pageId,
+            Guid chapterId,
+            string publicId)
+        {
+            await using var scope = serviceProvider.CreateAsyncScope();
+            var store = scope.ServiceProvider.GetRequiredService<IChapterPageUploadStore>();
+            return await store.GetOrCreatePendingAsync(
+                ChapterPage.CreatePending(pageId, chapterId, 1, publicId));
+        }
+
+        var registrations = await Task.WhenAll(
+            RegisterPending(serviceProvider, pageId, chapterId, publicId),
+            RegisterPending(serviceProvider, pageId, chapterId, publicId));
+
+        Assert.All(registrations, page => Assert.Equal(ChapterPageAssetStatuses.Pending, page.AssetStatus));
+
+        await using var verifyScope = serviceProvider.CreateAsyncScope();
+        var verifyContext = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(1, await verifyContext.ChapterPages.CountAsync(page => page.Id == pageId));
+
+        var uploadStore = verifyScope.ServiceProvider.GetRequiredService<IChapterPageUploadStore>();
+        var asset = new ChapterPageAsset(publicId, 1200, 1800);
+        var first = await uploadStore.MarkReadyAsync(pageId, asset);
+        var retry = await uploadStore.MarkReadyAsync(pageId, asset);
+
+        Assert.True(first.IsValid);
+        Assert.True(retry.IsValid);
     }
 
     private static Task<int> InsertChapter(
