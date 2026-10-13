@@ -1,5 +1,6 @@
 using ComicManagement.Api.Authentication;
 using ComicManagement.Api.OpenApi;
+using ComicManagement.Api.Reading;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
@@ -45,6 +46,7 @@ builder.Services.AddScoped<UpdateDisplayNameHandler>();
 builder.Services.AddScoped<PublicChapterListWorkflow>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddIdentityAuthentication(authenticationSettings);
+builder.Services.AddReadingRateLimiting(builder.Configuration);
 builder.Services.Configure<OutboxOptions>(
     builder.Configuration.GetSection(OutboxOptions.SectionName));
 builder.Services.AddOutboxWorker();
@@ -85,8 +87,8 @@ var app = builder.Build();
 app.UseExceptionHandler();
 app.UseForwardedHeaders();
 app.UseRouting();
-app.UseRateLimiter();
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseAuthorization();
 app.MapOpenApi();
 app.MapControllers();

@@ -26,6 +26,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261013044212_AddAdministrationAuditLogs",
         "20261013052440_AddPublicCatalogQueryIndexes",
         "20261013060258_AddChapterPublishedAtAndCatalogPagination",
+        "20261013185204_AddReadingSessionsAndProgress",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -72,6 +73,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "catalog.chapters"));
         Assert.True(await TableExists(context, "catalog.chapter_pages"));
         Assert.True(await TableExists(context, "administration.audit_logs"));
+        Assert.True(await TableExists(context, "reading.reading_sessions"));
+        Assert.True(await TableExists(context, "reading.reading_progress"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(
@@ -150,6 +153,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.False(await TableExists(context, "catalog.chapters"));
         Assert.False(await TableExists(context, "catalog.chapter_pages"));
         Assert.False(await TableExists(context, "administration.audit_logs"));
+        Assert.False(await TableExists(context, "reading.reading_sessions"));
+        Assert.False(await TableExists(context, "reading.reading_progress"));
 
         await context.Database.MigrateAsync();
 

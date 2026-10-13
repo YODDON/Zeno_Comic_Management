@@ -1,0 +1,5 @@
+# Reader UX
+
+Continuous vertical image scroll, no individual-page reading mode. Lazy-load chapter pages in stable `page_order`, preserve aspect ratios; placeholder with width/height, retry image failures and refresh authorized manifest when needed. Reader background matches User Dark/Light. On mobile toolbar auto-hides on scroll down and reappears on scroll up/tap. Top/bottom chapter navigation, resume last page+offset, progress sync safe under multiple tabs. At chapter end show next navigation and comments.
+
+Reading qualification >=90% and >=15 seconds **backend-verified** within an absolute 30-minute session. The client reports only current Ready-page order, offset ratio and strict sequence; it never supplies elapsed time, manifest revision/page count or accepted progress. On a manifest refresh it continues from a page still present in the new Ready-page set, while the server preserves monotonic accepted maximum progress. Show loading/locked/payment-needed/re-login/unavailable/expired-session states, no images before access check for paid/VIP. Signed URL alone is not a proven expiring link; paid asset delivery must pass Cloudinary verification gate.
