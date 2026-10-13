@@ -3,16 +3,25 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace ComicManagement.Api.Authentication;
 
+public sealed class ApiErrorResponse : ProblemDetails
+{
+    public required string ErrorCode { get; init; }
+
+    public required string Message { get; init; }
+
+    public required string TraceId { get; init; }
+}
+
 internal sealed class ApiProblemWriter(IdentityAuthenticationSettings settings)
 {
-    internal ProblemDetails Create(
+    internal ApiErrorResponse Create(
         HttpContext httpContext,
         int status,
         string errorCode,
         string title,
         string detail)
     {
-        var problem = new ProblemDetails
+        return new ApiErrorResponse
         {
             Type = new Uri(
                 settings.ErrorDocumentationBaseUri,
@@ -20,10 +29,10 @@ internal sealed class ApiProblemWriter(IdentityAuthenticationSettings settings)
             Title = title,
             Status = status,
             Detail = detail,
+            ErrorCode = errorCode,
+            Message = detail,
+            TraceId = httpContext.TraceIdentifier,
         };
-        problem.Extensions["errorCode"] = errorCode;
-        problem.Extensions["traceId"] = httpContext.TraceIdentifier;
-        return problem;
     }
 
     internal Task WriteAsync(

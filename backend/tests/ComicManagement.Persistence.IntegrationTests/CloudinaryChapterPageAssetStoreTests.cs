@@ -3,6 +3,7 @@ using CloudinaryDotNet;
 using CloudinaryDotNet.Actions;
 using ComicManagement.Catalog.Media;
 using ComicManagement.Persistence;
+using ComicManagement.Reading.Access;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -15,6 +16,7 @@ public sealed class CloudinaryChapterPageAssetStoreTests
     public async Task Registration_composes_the_scoped_upload_handler()
     {
         await using var serviceProvider = new ServiceCollection()
+            .AddLogging()
             .AddPersistence("Host=localhost;Database=unused;Username=unused;Password=unused")
             .AddCloudinaryChapterPageAssets(options =>
             {
@@ -27,6 +29,7 @@ public sealed class CloudinaryChapterPageAssetStoreTests
         await using var scope = serviceProvider.CreateAsyncScope();
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<UploadChapterPageHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageContentProvider>());
     }
 
     [Fact]

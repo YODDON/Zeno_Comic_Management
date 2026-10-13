@@ -1,5 +1,6 @@
 using CloudinaryDotNet;
 using ComicManagement.Catalog.Media;
+using ComicManagement.Reading.Access;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -40,7 +41,10 @@ public static class CloudinaryServiceCollectionExtensions
             serviceProvider.GetRequiredService<Cloudinary>());
         services.TryAddSingleton<ICloudinaryAdminApi>(serviceProvider =>
             serviceProvider.GetRequiredService<Cloudinary>());
+        services.TryAddSingleton<HttpClient>();
         services.TryAddSingleton<IChapterPageAssetStore, CloudinaryChapterPageAssetStore>();
+        services.TryAddSingleton<IChapterPageContentProvider,
+            CloudinaryChapterPageContentProvider>();
         services.TryAddScoped<UploadChapterPageHandler>();
 
         return services;

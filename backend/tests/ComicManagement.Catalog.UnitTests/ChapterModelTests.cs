@@ -26,6 +26,7 @@ public sealed class ChapterModelTests
         Assert.Equal(priceOverrideCoins, chapter.PriceOverrideCoins);
         Assert.Null(chapter.VipOverride);
         Assert.Equal(ChapterPublicationStatuses.Draft, chapter.PublicationStatus);
+        Assert.Null(chapter.PublishedAt);
         Assert.Equal(1, chapter.Version);
         Assert.Equal(Now, chapter.CreatedAt);
         Assert.Equal(Now, chapter.UpdatedAt);
@@ -56,6 +57,7 @@ public sealed class ChapterModelTests
             emptyChapter.Violation);
 
         chapter.Publish(true, 1, Now.AddMinutes(1));
+        Assert.Equal(Now.AddMinutes(1), chapter.PublishedAt);
 
         var lastChapter = Assert.Throws<CatalogRuleViolationException>(() =>
             chapter.Hide(false, 2, Now.AddMinutes(2)));
@@ -67,6 +69,9 @@ public sealed class ChapterModelTests
 
         Assert.Equal(ChapterPublicationStatuses.Hidden, chapter.PublicationStatus);
         Assert.Equal(3, chapter.Version);
+
+        chapter.Publish(true, 3, Now.AddMinutes(3));
+        Assert.Equal(Now.AddMinutes(3), chapter.PublishedAt);
     }
 
     [Fact]

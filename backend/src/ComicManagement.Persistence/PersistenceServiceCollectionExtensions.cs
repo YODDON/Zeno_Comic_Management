@@ -1,7 +1,9 @@
+using ComicManagement.Catalog.Browsing;
 using ComicManagement.Catalog.Media;
 using ComicManagement.Catalog.Publishing;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
+using ComicManagement.Reading.Access;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -28,6 +30,10 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<IChapterPageUploadStore, ChapterPageUploadStore>();
         services.TryAddScoped<ICatalogPublicationStore, CatalogPublicationStore>();
         services.TryAddScoped<CatalogPublicationHandler>();
+        services.TryAddScoped<IPublicCatalogStore, PublicCatalogStore>();
+        services.TryAddScoped<PublicCatalogHandler>();
+        services.TryAddScoped<IChapterAccessProjectionStore, ChapterAccessProjectionStore>();
+        services.TryAddScoped<ChapterAccessHandler>();
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();
         services.TryAddScoped<OutboxMessageDispatcher>();
         services.TryAddScoped<OutboxBatchProcessor>();

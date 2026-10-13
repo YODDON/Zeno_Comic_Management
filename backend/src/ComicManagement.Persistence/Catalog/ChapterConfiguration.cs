@@ -18,6 +18,9 @@ internal sealed class ChapterConfiguration : IEntityTypeConfiguration<Chapter>
             table.HasCheckConstraint(
                 "ck_chapters_publication_status",
                 "publication_status IN ('Draft', 'Published', 'Hidden')");
+            table.HasCheckConstraint(
+                "ck_chapters_published_at",
+                "publication_status <> 'Published' OR published_at IS NOT NULL");
             table.HasCheckConstraint("ck_chapters_version", "version >= 1");
         });
 
@@ -25,6 +28,23 @@ internal sealed class ChapterConfiguration : IEntityTypeConfiguration<Chapter>
         builder.HasIndex(chapter => new { chapter.ComicId, chapter.SortOrder })
             .IsUnique()
             .HasDatabaseName("ux_chapters_comic_id_sort_order");
+        builder.HasIndex(chapter => new
+        {
+            chapter.ComicId,
+            chapter.PublicationStatus,
+            chapter.SortOrder,
+            chapter.Id,
+        })
+            .HasDatabaseName("ix_chapters_public_comic_sort_id");
+        builder.HasIndex(chapter => new
+        {
+            chapter.ComicId,
+            chapter.PublicationStatus,
+            chapter.PublishedAt,
+            chapter.Id,
+        })
+            .IsDescending(false, false, true, true)
+            .HasDatabaseName("ix_chapters_public_comic_published_id");
 
         builder.Property(chapter => chapter.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(chapter => chapter.ComicId).HasColumnName("comic_id");
@@ -39,6 +59,9 @@ internal sealed class ChapterConfiguration : IEntityTypeConfiguration<Chapter>
             .HasColumnName("publication_status")
             .HasMaxLength(16)
             .IsRequired();
+        builder.Property(chapter => chapter.PublishedAt)
+            .HasColumnName("published_at")
+            .HasColumnType("timestamp with time zone");
         builder.Property(chapter => chapter.Version).HasColumnName("version").IsConcurrencyToken();
         builder.Property(chapter => chapter.CreatedAt)
             .HasColumnName("created_at")

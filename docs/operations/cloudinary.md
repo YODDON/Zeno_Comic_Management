@@ -11,6 +11,8 @@ Production composition reads `Cloudinary__CloudName`, `Cloudinary__ApiKey`, `Clo
 ## Critical constraint
 Cloudinary ordinary signed URL does **NOT** automatically imply expiration. `private` original assets may not protect derived transformations in every configuration. Paid/VIP pages require proven restricted/time-limited access strategy supported by actual Cloudinary account and transformations. Never publish paid page URLs as static public assets. Signed-only without expiry is not sufficient to claim short-lived entitlement revocation.
 
+R01 therefore uses ordinary signed authenticated-asset URLs only for Free Chapter pages. `VipIncluded` and `CoinUnlocked` pass the logical entitlement check but deliberately receive `503 PROVIDER_UNAVAILABLE` at the manifest boundary until this proof of concept is accepted. This is a fail-secure release blocker, not a temporary public-URL fallback.
+
 ## Proof of concept checklist
 1. Verify product tier/limits for `authenticated` assets and any token/cookie access control or suitable alternative.
 2. Upload protected chapter, test raw URL, derived URL, guessed public_id and copied URL with unauthenticated browser.
