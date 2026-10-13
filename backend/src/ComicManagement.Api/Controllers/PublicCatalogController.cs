@@ -1,5 +1,8 @@
 using ComicManagement.Api.Authentication;
 using ComicManagement.Catalog.Browsing;
+using ComicManagement.Catalog.Comics;
+using ComicManagement.Catalog.Taxonomy;
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ComicManagement.Api.Controllers;
@@ -11,14 +14,18 @@ public sealed class PublicCatalogController(
 {
     [HttpGet]
     [ProducesResponseType<PublicComicListResponse>(StatusCodes.Status200OK)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<PublicComicListResponse>> ListComics(
-        [FromQuery] string? search,
-        [FromQuery] string? genre,
-        [FromQuery] string? seriesStatus,
-        [FromQuery] string? cursor,
-        [FromQuery] int? limit,
-        CancellationToken cancellationToken)
+        [FromQuery, StringLength(PublicCatalogHandler.MaximumSearchLength)] string? search,
+        [FromQuery, StringLength(Genre.MaximumSlugLength)] string? genre,
+        [FromQuery, AllowedValues(
+            ComicSeriesStatuses.Ongoing,
+            ComicSeriesStatuses.Completed,
+            ComicSeriesStatuses.Hiatus)] string? seriesStatus,
+        [FromQuery, StringLength(32, MinimumLength = 32)] string? cursor,
+        CancellationToken cancellationToken,
+        [FromQuery, Range(1, PublicCatalogHandler.MaximumPageSize)] int limit =
+            PublicCatalogHandler.DefaultPageSize)
     {
         var result = await catalogHandler.ListComicsAsync(
             search,
@@ -42,10 +49,10 @@ public sealed class PublicCatalogController(
 
     [HttpGet("{slug}")]
     [ProducesResponseType<PublicComicDetailResponse>(StatusCodes.Status200OK)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PublicComicDetailResponse>> GetComic(
-        string slug,
+        [StringLength(Comic.MaximumSlugLength, MinimumLength = 1)] string slug,
         CancellationToken cancellationToken)
     {
         var result = await catalogHandler.GetComicAsync(slug, cancellationToken);
@@ -63,23 +70,21 @@ public sealed class PublicCatalogController(
 
     [HttpGet("{comicId:guid}/chapters")]
     [ProducesResponseType<PublicChapterListResponse>(StatusCodes.Status200OK)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PublicChapterListResponse>> ListChapters(
         Guid comicId,
-        [FromQuery] string? cursor,
-        [FromQuery] int? limit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery, Range(1, PublicCatalogHandler.MaximumPublicChapterPage)] int page = 1)
     {
         var result = await catalogHandler.ListChaptersAsync(
             comicId,
-            cursor,
-            limit,
+            page,
             cancellationToken);
         if (result.Outcome == PublicCatalogOutcome.ValidationFailed)
         {
             return BadRequest(ValidationProblem(
-                "Comic ID, cursor or limit is invalid. Limit must be between 1 and 100."));
+                "Comic ID or page is invalid."));
         }
 
         if (result.Outcome == PublicCatalogOutcome.NotFound)
@@ -87,26 +92,29 @@ public sealed class PublicCatalogController(
             return NotFound(NotFoundProblem());
         }
 
-        var page = result.Page ?? throw new InvalidOperationException(
+        var responsePage = result.Page ?? throw new InvalidOperationException(
             "A successful chapter list query requires a page.");
         return Ok(new PublicChapterListResponse(
-            page.Items.Select(ToResponse).ToArray(),
-            page.NextCursor));
+            responsePage.Items.Select(ToResponse).ToArray(),
+            responsePage.Page,
+            responsePage.PageSize,
+            responsePage.TotalItems,
+            responsePage.TotalPages));
     }
 
-    private ProblemDetails ValidationProblem(string detail) => CreateProblem(
+    private ApiErrorResponse ValidationProblem(string detail) => CreateProblem(
         StatusCodes.Status400BadRequest,
         "VALIDATION_FAILED",
         "Validation failed",
         detail);
 
-    private ProblemDetails NotFoundProblem() => CreateProblem(
+    private ApiErrorResponse NotFoundProblem() => CreateProblem(
         StatusCodes.Status404NotFound,
         "RESOURCE_NOT_FOUND",
         "Not found",
         "The requested published comic was not found.");
 
-    private ProblemDetails CreateProblem(
+    private ApiErrorResponse CreateProblem(
         int status,
         string errorCode,
         string title,
@@ -120,7 +128,7 @@ public sealed class PublicCatalogController(
         item.Title,
         item.CoverAssetId,
         item.SeriesStatus,
-        item.UpdatedAt,
+        item.UpdateSortAt,
         item.Genres.Select(ToResponse).ToArray());
 
     private static PublicComicDetailResponse ToResponse(PublicComicDetail detail) => new(
@@ -162,7 +170,7 @@ public sealed record PublicComicListItemResponse(
     string Title,
     string? CoverAssetId,
     string SeriesStatus,
-    DateTimeOffset UpdatedAt,
+    DateTimeOffset UpdateSortAt,
     IReadOnlyList<CatalogReferenceResponse> Genres);
 
 public sealed record PublicComicDetailResponse(
@@ -182,7 +190,16 @@ public sealed record CatalogReferenceResponse(Guid Id, string Name, string? Slug
 
 public sealed record PublicChapterListResponse(
     IReadOnlyList<PublicChapterListItemResponse> Items,
-    string? NextCursor);
+    [property: Range(1, PublicCatalogHandler.MaximumPublicChapterPage)]
+    int Page,
+    [property: Range(
+        PublicCatalogHandler.PublicChapterPageSize,
+        PublicCatalogHandler.PublicChapterPageSize)]
+    int PageSize,
+    [property: Range(0, int.MaxValue)]
+    int TotalItems,
+    [property: Range(0, int.MaxValue)]
+    int TotalPages);
 
 public sealed record PublicChapterListItemResponse(
     Guid Id,

@@ -1,6 +1,6 @@
 # API Error & Status Matrix
 
-All errors use ProblemDetails (`type,title,status,detail,errorCode,traceId`). Hide secrets/hidden resource existence and bank account data.
+All errors use ProblemDetails (`type,title,status,detail,errorCode,message,traceId`); `message` is the stable client-facing explanation and currently mirrors redacted `detail`. Hide secrets/hidden resource existence and bank account data.
 
 | HTTP | errorCode | Meaning / UI |
 |---|---|---|

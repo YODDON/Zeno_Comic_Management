@@ -83,6 +83,18 @@ public sealed class ChapterPersistenceTests : IAsyncLifetime
             PostgresErrorCodes.CheckViolation,
             () => InsertChapter(context, Guid.NewGuid(), comicId, "Invalid Version", 2, null, "Draft", 0, now));
         await AssertPostgresViolation(
+            PostgresErrorCodes.CheckViolation,
+            () => InsertChapter(
+                context,
+                Guid.NewGuid(),
+                comicId,
+                "Published without timestamp",
+                2,
+                null,
+                ChapterPublicationStatuses.Published,
+                1,
+                now));
+        await AssertPostgresViolation(
             PostgresErrorCodes.ForeignKeyViolation,
             () => InsertChapter(context, Guid.NewGuid(), Guid.NewGuid(), "Missing Comic", 1, null, "Draft", 1, now));
 
@@ -404,14 +416,15 @@ public sealed class ChapterPersistenceTests : IAsyncLifetime
         long? priceOverride,
         string publicationStatus,
         long version,
-        DateTimeOffset now) => context.Database.ExecuteSqlInterpolatedAsync(
+        DateTimeOffset now,
+        DateTimeOffset? publishedAt = null) => context.Database.ExecuteSqlInterpolatedAsync(
             $"""
             INSERT INTO catalog.chapters
                 (id, comic_id, chapter_label, sort_order, price_override_coins, vip_override,
-                 publication_status, version, created_at, updated_at)
+                 publication_status, published_at, version, created_at, updated_at)
             VALUES
                 ({id}, {comicId}, {label}, {sortOrder}, {priceOverride}, NULL,
-                 {publicationStatus}, {version}, {now}, {now});
+                 {publicationStatus}, {publishedAt}, {version}, {now}, {now});
             """);
 
     private static Task<int> InsertPage(

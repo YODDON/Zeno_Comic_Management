@@ -25,6 +25,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261012171656_AddChapterPageUploadFingerprint",
         "20261013044212_AddAdministrationAuditLogs",
         "20261013052440_AddPublicCatalogQueryIndexes",
+        "20261013060258_AddChapterPublishedAtAndCatalogPagination",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -73,6 +74,11 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "administration.audit_logs"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
+        Assert.True(await IndexExists(
+            context,
+            "catalog",
+            "ix_chapters_public_comic_published_id"));
+        Assert.True(await ColumnExists(context, "catalog", "chapters", "published_at"));
 
         var now = new DateTimeOffset(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
         var comicId = Guid.NewGuid();
@@ -107,12 +113,25 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 
         await migrator.MigrateAsync("20261012151245_AddCatalogChaptersAndPages");
         Assert.Equal(1, await CountRows(context, "catalog.chapter_pages"));
+        var legacyPublishedChapterId = Guid.NewGuid();
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO catalog.chapters
+                (id, comic_id, chapter_label, sort_order, price_override_coins,
+                 vip_override, publication_status, version, created_at, updated_at)
+            VALUES
+                ({legacyPublishedChapterId}, {comicId}, {"Legacy published"}, {2}, NULL,
+                 NULL, {ChapterPublicationStatuses.Published}, {1L}, {now}, {now});
+            """);
 
         await context.Database.MigrateAsync();
         context.ChangeTracker.Clear();
         var migratedPage = await context.ChapterPages.SingleAsync(page => page.Id == pageId);
         Assert.Equal(ChapterPageAssetStatuses.Pending, migratedPage.AssetStatus);
         Assert.StartsWith("legacy:", migratedPage.UploadFingerprint, StringComparison.Ordinal);
+        var migratedChapter = await context.Chapters.SingleAsync(
+            chapter => chapter.Id == legacyPublishedChapterId);
+        Assert.Equal(now, migratedChapter.PublishedAt);
 
         await context.Database.MigrateAsync();
 
@@ -178,6 +197,37 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 
         return (bool)(await command.ExecuteScalarAsync()
             ?? throw new InvalidOperationException("Table existence query returned null."));
+    }
+
+    private static async Task<bool> ColumnExists(
+        AppDbContext context,
+        string schemaName,
+        string tableName,
+        string columnName)
+    {
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns " +
+            "WHERE table_schema = @schema_name AND table_name = @table_name " +
+            "AND column_name = @column_name);";
+        foreach (var (name, value) in new[]
+                 {
+                     ("schema_name", schemaName),
+                     ("table_name", tableName),
+                     ("column_name", columnName),
+                 })
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
+        }
+
+        return (bool)(await command.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("Column existence query returned null."));
     }
 
     private static async Task<int> CountRows(AppDbContext context, string qualifiedTableName)

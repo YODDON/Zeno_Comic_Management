@@ -113,11 +113,11 @@ public sealed class PublicCatalogQueryPersistenceTests : IAsyncLifetime
             (await handler.GetComicAsync("draft-hero")).Outcome);
         Assert.Equal(
             PublicCatalogOutcome.NotFound,
-            (await handler.ListChaptersAsync(draftComicId, null, null)).Outcome);
+            (await handler.ListChaptersAsync(draftComicId, null)).Outcome);
     }
 
     [Fact]
-    public async Task Chapter_keyset_pagination_returns_thirty_items_and_baseline_access_summary()
+    public async Task Chapter_pagination_returns_fixed_thirty_items_total_metadata_and_access_summary()
     {
         var comicId = Guid.NewGuid();
         await using (var scope = _services.CreateAsyncScope())
@@ -160,43 +160,52 @@ public sealed class PublicCatalogQueryPersistenceTests : IAsyncLifetime
                 $"""
                 INSERT INTO catalog.chapters
                     (id, comic_id, chapter_label, sort_order, price_override_coins,
-                     vip_override, publication_status, version, created_at, updated_at)
+                     vip_override, publication_status, published_at, version, created_at, updated_at)
                 VALUES
                     ({Guid.NewGuid()}, {comicId}, {"Invalid published chapter"}, {1000}, {0L},
-                     {false}, {ChapterPublicationStatuses.Published}, {1L}, {Now}, {Now});
+                     {false}, {ChapterPublicationStatuses.Published}, {Now}, {1L}, {Now}, {Now});
                 """);
         }
 
         await using var queryScope = _services.CreateAsyncScope();
         var handler = queryScope.ServiceProvider.GetRequiredService<PublicCatalogHandler>();
 
-        var first = await handler.ListChaptersAsync(comicId, null, null);
-        var second = await handler.ListChaptersAsync(comicId, first.Page!.NextCursor, null);
-        var third = await handler.ListChaptersAsync(comicId, second.Page!.NextCursor, null);
+        var first = await handler.ListChaptersAsync(comicId, 1);
+        var second = await handler.ListChaptersAsync(comicId, 2);
+        var third = await handler.ListChaptersAsync(comicId, 3);
+        var firstPage = Assert.IsType<PublicChapterListPage>(first.Page);
+        var secondPage = Assert.IsType<PublicChapterListPage>(second.Page);
+        var thirdPage = Assert.IsType<PublicChapterListPage>(third.Page);
 
-        Assert.Equal(30, first.Page.Items.Count);
-        Assert.Equal(30, second.Page.Items.Count);
-        Assert.Single(third.Page!.Items);
-        Assert.NotNull(first.Page.NextCursor);
-        Assert.NotNull(second.Page.NextCursor);
-        Assert.Null(third.Page.NextCursor);
+        Assert.Equal(30, firstPage.Items.Count);
+        Assert.Equal(30, secondPage.Items.Count);
+        Assert.Single(thirdPage.Items);
+        Assert.Equal(1, firstPage.Page);
+        Assert.Equal(2, secondPage.Page);
+        Assert.Equal(3, thirdPage.Page);
+        Assert.All([firstPage, secondPage, thirdPage], page =>
+        {
+            Assert.Equal(30, page.PageSize);
+            Assert.Equal(61, page.TotalItems);
+            Assert.Equal(3, page.TotalPages);
+        });
         Assert.Equal(Enumerable.Range(1, 61),
-            first.Page.Items
-                .Concat(second.Page.Items)
-                .Concat(third.Page.Items)
+            firstPage.Items
+                .Concat(secondPage.Items)
+                .Concat(thirdPage.Items)
                 .Select(chapter => chapter.SortOrder));
 
-        Assert.Equal("Free", first.Page.Items[0].AccessSummary.AccessType);
-        Assert.True(first.Page.Items[0].AccessSummary.CanRead);
-        Assert.Equal(0, first.Page.Items[0].AccessSummary.FinalPriceCoins);
-        Assert.Equal("Locked", first.Page.Items[1].AccessSummary.AccessType);
-        Assert.False(first.Page.Items[1].AccessSummary.CanRead);
-        Assert.Equal(25, first.Page.Items[1].AccessSummary.FinalPriceCoins);
-        Assert.Equal(40, first.Page.Items[2].AccessSummary.FinalPriceCoins);
+        Assert.Equal("Free", firstPage.Items[0].AccessSummary.AccessType);
+        Assert.True(firstPage.Items[0].AccessSummary.CanRead);
+        Assert.Equal(0, firstPage.Items[0].AccessSummary.FinalPriceCoins);
+        Assert.Equal("Locked", firstPage.Items[1].AccessSummary.AccessType);
+        Assert.False(firstPage.Items[1].AccessSummary.CanRead);
+        Assert.Equal(25, firstPage.Items[1].AccessSummary.FinalPriceCoins);
+        Assert.Equal(40, firstPage.Items[2].AccessSummary.FinalPriceCoins);
     }
 
     [Fact]
-    public async Task Comic_keyset_pagination_is_stable_when_updated_timestamps_are_equal()
+    public async Task Comic_keyset_pagination_is_stable_when_update_sort_timestamps_are_equal()
     {
         await using (var scope = _services.CreateAsyncScope())
         {
@@ -239,11 +248,74 @@ public sealed class PublicCatalogQueryPersistenceTests : IAsyncLifetime
         Assert.Null(second.Page.NextCursor);
     }
 
+    [Fact]
+    public async Task Comic_update_sort_uses_latest_valid_published_chapter_not_comic_updated_at()
+    {
+        var olderContentComicId = Guid.NewGuid();
+        var newerContentComicId = Guid.NewGuid();
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var olderContent = Comic.Create(
+                olderContentComicId,
+                "older-content",
+                "Older Content",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                Now);
+            AddPublishedChapter(
+                context,
+                olderContent,
+                1,
+                0,
+                Now.AddMinutes(1));
+            olderContent.Publish(true, 1, Now.AddMinutes(2));
+
+            var newerContent = Comic.Create(
+                newerContentComicId,
+                "newer-content",
+                "Newer Content",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                Now);
+            AddPublishedChapter(
+                context,
+                newerContent,
+                1,
+                0,
+                Now.AddMinutes(10));
+            newerContent.Publish(true, 1, Now.AddMinutes(11));
+
+            context.Comics.AddRange(olderContent, newerContent);
+            await context.SaveChangesAsync();
+            await context.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE catalog.comics SET updated_at = {Now.AddDays(1)} WHERE id = {olderContentComicId};");
+        }
+
+        await using var queryScope = _services.CreateAsyncScope();
+        var handler = queryScope.ServiceProvider.GetRequiredService<PublicCatalogHandler>();
+
+        var result = await handler.ListComicsAsync(null, null, null, null, null);
+
+        Assert.Equal(
+            [newerContentComicId, olderContentComicId],
+            result.Page!.Items.Select(comic => comic.Id));
+        Assert.Equal(Now.AddMinutes(10), result.Page.Items[0].UpdateSortAt);
+        Assert.Equal(Now.AddMinutes(1), result.Page.Items[1].UpdateSortAt);
+    }
+
     private static void AddPublishedChapter(
         AppDbContext context,
         Comic comic,
         int sortOrder,
-        long? priceOverride)
+        long? priceOverride,
+        DateTimeOffset? publishedAt = null)
     {
         var chapter = Chapter.Create(
             Guid.NewGuid(),
@@ -261,7 +333,7 @@ public sealed class PublicCatalogQueryPersistenceTests : IAsyncLifetime
             $"sha256:{sortOrder:x64}",
             Now);
         page.MarkReady(1200, 1800);
-        chapter.Publish(true, 1, Now.AddSeconds(sortOrder));
+        chapter.Publish(true, 1, publishedAt ?? Now.AddSeconds(sortOrder));
         context.Chapters.Add(chapter);
         context.ChapterPages.Add(page);
     }

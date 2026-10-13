@@ -46,28 +46,38 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
             query = query.Where(comic => comic.SeriesStatus == criteria.SeriesStatus);
         }
 
-        if (criteria.BeforeUpdatedAt is not null && criteria.BeforeId is not null)
+        var projectedQuery = query.Select(comic => new
         {
-            var beforeUpdatedAt = criteria.BeforeUpdatedAt.Value;
+            comic.Id,
+            comic.Slug,
+            comic.Title,
+            comic.CoverAssetId,
+            comic.SeriesStatus,
+            UpdateSortAt = dbContext.Chapters
+                .Where(chapter =>
+                    chapter.ComicId == comic.Id &&
+                    chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
+                    dbContext.ChapterPages.Any(page =>
+                        page.ChapterId == chapter.Id &&
+                        page.AssetStatus == ChapterPageAssetStatuses.Ready &&
+                        page.Width > 0 &&
+                        page.Height > 0))
+                .Max(chapter => chapter.PublishedAt) ?? comic.CreatedAt,
+        });
+
+        if (criteria.BeforeUpdateSortAt is not null && criteria.BeforeId is not null)
+        {
+            var beforeUpdateSortAt = criteria.BeforeUpdateSortAt.Value;
             var beforeId = criteria.BeforeId.Value;
-            query = query.Where(comic =>
-                comic.UpdatedAt < beforeUpdatedAt ||
-                (comic.UpdatedAt == beforeUpdatedAt && comic.Id.CompareTo(beforeId) < 0));
+            projectedQuery = projectedQuery.Where(comic =>
+                comic.UpdateSortAt < beforeUpdateSortAt ||
+                (comic.UpdateSortAt == beforeUpdateSortAt && comic.Id.CompareTo(beforeId) < 0));
         }
 
-        var rows = await query
-            .OrderByDescending(comic => comic.UpdatedAt)
+        var rows = await projectedQuery
+            .OrderByDescending(comic => comic.UpdateSortAt)
             .ThenByDescending(comic => comic.Id)
             .Take(take)
-            .Select(comic => new
-            {
-                comic.Id,
-                comic.Slug,
-                comic.Title,
-                comic.CoverAssetId,
-                comic.SeriesStatus,
-                comic.UpdatedAt,
-            })
             .ToListAsync(cancellationToken);
 
         var comicIds = rows.Select(row => row.Id).ToArray();
@@ -90,7 +100,7 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
             row.Title,
             row.CoverAssetId,
             row.SeriesStatus,
-            row.UpdatedAt,
+            row.UpdateSortAt,
             genresByComic[row.Id]
                 .Select(genre => new CatalogReference(genre.Id, genre.Name, genre.Slug))
                 .ToArray()))
@@ -202,11 +212,23 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
                         page.AssetStatus == ChapterPageAssetStatuses.Ready &&
                         page.Width > 0 &&
                         page.Height > 0)))
-            .Select(value => new { value.Id, value.DefaultPriceCoins })
+            .Select(value => new
+            {
+                value.Id,
+                value.DefaultPriceCoins,
+                TotalItems = dbContext.Chapters.Count(chapter =>
+                    chapter.ComicId == value.Id &&
+                    chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
+                    dbContext.ChapterPages.Any(page =>
+                        page.ChapterId == chapter.Id &&
+                        page.AssetStatus == ChapterPageAssetStatuses.Ready &&
+                        page.Width > 0 &&
+                        page.Height > 0)),
+            })
             .SingleOrDefaultAsync(cancellationToken);
         if (comic is null)
         {
-            return new PublicChapterStorePage(false, []);
+            return new PublicChapterStorePage(false, [], 0);
         }
 
         var query = dbContext.Chapters
@@ -220,18 +242,11 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
                     page.Width > 0 &&
                     page.Height > 0));
 
-        if (criteria.AfterSortOrder is not null && criteria.AfterId is not null)
-        {
-            var afterSortOrder = criteria.AfterSortOrder.Value;
-            var afterId = criteria.AfterId.Value;
-            query = query.Where(chapter =>
-                chapter.SortOrder > afterSortOrder ||
-                (chapter.SortOrder == afterSortOrder && chapter.Id.CompareTo(afterId) > 0));
-        }
-
+        var skip = checked((criteria.Page - 1) * take);
         var rows = await query
             .OrderBy(chapter => chapter.SortOrder)
             .ThenBy(chapter => chapter.Id)
+            .Skip(skip)
             .Take(take)
             .Select(chapter => new
             {
@@ -254,7 +269,8 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
                     row.EffectivePriceCoins == 0 ? "Free" : "Locked",
                     row.EffectivePriceCoins == 0,
                     row.EffectivePriceCoins)))
-                .ToArray());
+                .ToArray(),
+            comic.TotalItems);
     }
 
     private static string EscapeLikePattern(string value) => value

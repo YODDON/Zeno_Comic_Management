@@ -19,7 +19,7 @@ public sealed record PublicComicListItem(
     string Title,
     string? CoverAssetId,
     string SeriesStatus,
-    DateTimeOffset UpdatedAt,
+    DateTimeOffset UpdateSortAt,
     IReadOnlyList<CatalogReference> Genres);
 
 public sealed record PublicComicListPage(
@@ -53,7 +53,10 @@ public sealed record PublicChapterListItem(
 
 public sealed record PublicChapterListPage(
     IReadOnlyList<PublicChapterListItem> Items,
-    string? NextCursor);
+    int Page,
+    int PageSize,
+    int TotalItems,
+    int TotalPages);
 
 public sealed record PublicComicListResult(
     PublicCatalogOutcome Outcome,
@@ -71,17 +74,17 @@ public sealed record PublicComicListCriteria(
     string? Search,
     string? GenreSlug,
     string? SeriesStatus,
-    DateTimeOffset? BeforeUpdatedAt,
+    DateTimeOffset? BeforeUpdateSortAt,
     Guid? BeforeId);
 
 public sealed record PublicChapterListCriteria(
     Guid ComicId,
-    int? AfterSortOrder,
-    Guid? AfterId);
+    int Page);
 
 public sealed record PublicChapterStorePage(
     bool ComicFound,
-    IReadOnlyList<PublicChapterListItem> Items);
+    IReadOnlyList<PublicChapterListItem> Items,
+    int TotalItems);
 
 public interface IPublicCatalogStore
 {
@@ -104,6 +107,8 @@ public sealed class PublicCatalogHandler(IPublicCatalogStore store)
 {
     public const int DefaultPageSize = 30;
     public const int MaximumPageSize = 100;
+    public const int PublicChapterPageSize = 30;
+    public const int MaximumPublicChapterPage = (int.MaxValue / PublicChapterPageSize) + 1;
     public const int MaximumSearchLength = 200;
 
     public async Task<PublicComicListResult> ListComicsAsync(
@@ -131,14 +136,14 @@ public sealed class PublicCatalogHandler(IPublicCatalogStore store)
                 normalizedSearch,
                 normalizedGenre,
                 seriesStatus,
-                comicCursor?.UpdatedAt,
+                comicCursor?.UpdateSortAt,
                 comicCursor?.Id),
             pageSize + 1,
             cancellationToken);
 
         var pageItems = items.Take(pageSize).ToArray();
         var nextCursor = items.Count > pageSize
-            ? PublicCatalogCursor.EncodeComic(pageItems[^1].UpdatedAt, pageItems[^1].Id)
+            ? PublicCatalogCursor.EncodeComic(pageItems[^1].UpdateSortAt, pageItems[^1].Id)
             : null;
         return new PublicComicListResult(
             PublicCatalogOutcome.Succeeded,
@@ -162,37 +167,35 @@ public sealed class PublicCatalogHandler(IPublicCatalogStore store)
 
     public async Task<PublicChapterListResult> ListChaptersAsync(
         Guid comicId,
-        string? cursor,
-        int? limit,
+        int? page,
         CancellationToken cancellationToken = default)
     {
-        var pageSize = limit ?? DefaultPageSize;
+        var pageNumber = page ?? 1;
         if (comicId == Guid.Empty ||
-            pageSize is < 1 or > MaximumPageSize ||
-            !PublicCatalogCursor.TryDecodeChapter(cursor, out var chapterCursor))
+            pageNumber is < 1 or > MaximumPublicChapterPage)
         {
             return new PublicChapterListResult(PublicCatalogOutcome.ValidationFailed);
         }
 
         var storePage = await store.ListChaptersAsync(
-            new PublicChapterListCriteria(
-                comicId,
-                chapterCursor?.SortOrder,
-                chapterCursor?.Id),
-            pageSize + 1,
+            new PublicChapterListCriteria(comicId, pageNumber),
+            PublicChapterPageSize,
             cancellationToken);
         if (!storePage.ComicFound)
         {
             return new PublicChapterListResult(PublicCatalogOutcome.NotFound);
         }
 
-        var pageItems = storePage.Items.Take(pageSize).ToArray();
-        var nextCursor = storePage.Items.Count > pageSize
-            ? PublicCatalogCursor.EncodeChapter(pageItems[^1].SortOrder, pageItems[^1].Id)
-            : null;
+        var totalPages = storePage.TotalItems / PublicChapterPageSize +
+            (storePage.TotalItems % PublicChapterPageSize == 0 ? 0 : 1);
         return new PublicChapterListResult(
             PublicCatalogOutcome.Succeeded,
-            new PublicChapterListPage(pageItems, nextCursor));
+            new PublicChapterListPage(
+                storePage.Items,
+                pageNumber,
+                PublicChapterPageSize,
+                storePage.TotalItems,
+                totalPages));
     }
 
     private static string? NormalizeOptional(string? value) =>
@@ -202,21 +205,12 @@ public sealed class PublicCatalogHandler(IPublicCatalogStore store)
 internal static class PublicCatalogCursor
 {
     private const int ComicCursorLength = sizeof(long) + 16;
-    private const int ChapterCursorLength = sizeof(int) + 16;
 
-    public static string EncodeComic(DateTimeOffset updatedAt, Guid id)
+    public static string EncodeComic(DateTimeOffset updateSortAt, Guid id)
     {
         Span<byte> bytes = stackalloc byte[ComicCursorLength];
-        BinaryPrimitives.WriteInt64BigEndian(bytes, updatedAt.UtcTicks);
+        BinaryPrimitives.WriteInt64BigEndian(bytes, updateSortAt.UtcTicks);
         id.TryWriteBytes(bytes[sizeof(long)..]);
-        return Encode(bytes);
-    }
-
-    public static string EncodeChapter(int sortOrder, Guid id)
-    {
-        Span<byte> bytes = stackalloc byte[ChapterCursorLength];
-        BinaryPrimitives.WriteInt32BigEndian(bytes, sortOrder);
-        id.TryWriteBytes(bytes[sizeof(int)..]);
         return Encode(bytes);
     }
 
@@ -247,30 +241,6 @@ internal static class PublicCatalogCursor
         value = new ComicCursor(
             new DateTimeOffset(ticks, TimeSpan.Zero),
             new Guid(bytes.AsSpan(sizeof(long), 16)));
-        return value.Id != Guid.Empty;
-    }
-
-    public static bool TryDecodeChapter(string? cursor, out ChapterCursor? value)
-    {
-        value = null;
-        if (string.IsNullOrEmpty(cursor))
-        {
-            return true;
-        }
-
-        if (string.IsNullOrWhiteSpace(cursor))
-        {
-            return false;
-        }
-
-        if (!TryDecode(cursor, ChapterCursorLength, out var bytes))
-        {
-            return false;
-        }
-
-        value = new ChapterCursor(
-            BinaryPrimitives.ReadInt32BigEndian(bytes),
-            new Guid(bytes.AsSpan(sizeof(int), 16)));
         return value.Id != Guid.Empty;
     }
 
@@ -305,7 +275,5 @@ internal static class PublicCatalogCursor
         }
     }
 
-    internal sealed record ComicCursor(DateTimeOffset UpdatedAt, Guid Id);
-
-    internal sealed record ChapterCursor(int SortOrder, Guid Id);
+    internal sealed record ComicCursor(DateTimeOffset UpdateSortAt, Guid Id);
 }

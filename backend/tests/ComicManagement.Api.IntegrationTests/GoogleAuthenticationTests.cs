@@ -173,32 +173,35 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, firstPage.StatusCode);
         var firstPageJson = await firstPage.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(30, firstPageJson.GetProperty("items").GetArrayLength());
-        var cursor = firstPageJson.GetProperty("nextCursor").GetString();
-        Assert.False(string.IsNullOrWhiteSpace(cursor));
+        Assert.Equal(1, firstPageJson.GetProperty("page").GetInt32());
+        Assert.Equal(30, firstPageJson.GetProperty("pageSize").GetInt32());
+        Assert.Equal(31, firstPageJson.GetProperty("totalItems").GetInt32());
+        Assert.Equal(2, firstPageJson.GetProperty("totalPages").GetInt32());
         var firstChapter = firstPageJson.GetProperty("items")[0];
         Assert.Equal(
             "Free",
             firstChapter.GetProperty("accessSummary").GetProperty("accessType").GetString());
 
         var secondPage = await client.GetAsync(
-            $"/api/v1/comics/{comicId}/chapters?cursor={Uri.EscapeDataString(cursor!)}");
+            $"/api/v1/comics/{comicId}/chapters?page=2");
         Assert.Equal(HttpStatusCode.OK, secondPage.StatusCode);
         var secondPageJson = await secondPage.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, secondPageJson.GetProperty("items").GetArrayLength());
-        Assert.Equal(JsonValueKind.Null, secondPageJson.GetProperty("nextCursor").ValueKind);
+        Assert.Equal(2, secondPageJson.GetProperty("page").GetInt32());
         Assert.DoesNotContain("cloudinary", await firstPage.Content.ReadAsStringAsync(),
             StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("deliveryUrl", await firstPage.Content.ReadAsStringAsync(),
             StringComparison.OrdinalIgnoreCase);
 
-        var invalidCursor = await client.GetAsync(
-            $"/api/v1/comics/{comicId}/chapters?cursor=invalid");
-        Assert.Equal(HttpStatusCode.BadRequest, invalidCursor.StatusCode);
+        var invalidPage = await client.GetAsync(
+            $"/api/v1/comics/{comicId}/chapters?page=0");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidPage.StatusCode);
+        var invalidPageDocument = await invalidPage.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(
             "VALIDATION_FAILED",
-            (await invalidCursor.Content.ReadFromJsonAsync<JsonElement>())
-                .GetProperty("errorCode")
-                .GetString());
+            invalidPageDocument.GetProperty("errorCode").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(
+            invalidPageDocument.GetProperty("message").GetString()));
         var hiddenDraft = await client.GetAsync(
             $"/api/v1/comics/c04-draft-{draftComicId:N}");
         Assert.Equal(HttpStatusCode.NotFound, hiddenDraft.StatusCode);
@@ -1004,9 +1007,44 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var listSchema = ResolveResponseSchema(document, list, "200");
         Assert.True(listSchema.GetProperty("properties").TryGetProperty("items", out _));
         Assert.True(listSchema.GetProperty("properties").TryGetProperty("nextCursor", out _));
+        var listItemSchema = ResolveOpenApiSchema(
+            document,
+            listSchema.GetProperty("properties").GetProperty("items").GetProperty("items"));
+        Assert.True(listItemSchema.GetProperty("properties")
+            .TryGetProperty("updateSortAt", out _));
+        var searchParameter = FindOpenApiParameter(list, "search");
+        Assert.Equal(200, searchParameter.GetProperty("schema").GetProperty("maxLength").GetInt32());
+        var genreParameter = FindOpenApiParameter(list, "genre");
+        Assert.Equal(200, genreParameter.GetProperty("schema").GetProperty("maxLength").GetInt32());
+        var seriesStatusParameter = FindOpenApiParameter(list, "seriesStatus");
+        Assert.Equal(
+            ["Ongoing", "Completed", "Hiatus"],
+            seriesStatusParameter.GetProperty("schema").GetProperty("enum")
+                .EnumerateArray()
+                .Select(value => value.GetString()));
+        var cursorParameter = FindOpenApiParameter(list, "cursor");
+        Assert.Equal(32, cursorParameter.GetProperty("schema").GetProperty("minLength").GetInt32());
+        Assert.Equal(32, cursorParameter.GetProperty("schema").GetProperty("maxLength").GetInt32());
+        var limitParameter = FindOpenApiParameter(list, "limit");
+        Assert.Equal(1, limitParameter.GetProperty("schema").GetProperty("minimum").GetInt32());
+        Assert.Equal(100, limitParameter.GetProperty("schema").GetProperty("maximum").GetInt32());
+        Assert.Equal(30, limitParameter.GetProperty("schema").GetProperty("default").GetInt32());
+        var errorSchema = ResolveResponseSchema(document, list, "400");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
+            Assert.Contains(
+                property,
+                errorSchema.GetProperty("required")
+                    .EnumerateArray()
+                    .Select(value => value.GetString()));
+        }
 
         var detail = paths.GetProperty("/api/v1/comics/{slug}").GetProperty("get");
         Assert.True(detail.GetProperty("responses").TryGetProperty("404", out _));
+        var slugParameter = FindOpenApiParameter(detail, "slug");
+        Assert.Equal(1, slugParameter.GetProperty("schema").GetProperty("minLength").GetInt32());
+        Assert.Equal(200, slugParameter.GetProperty("schema").GetProperty("maxLength").GetInt32());
         var detailSchema = ResolveResponseSchema(document, detail, "200");
         foreach (var property in new[]
                  {
@@ -1022,7 +1060,20 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .GetProperty("get");
         Assert.True(chapters.GetProperty("responses").TryGetProperty("400", out _));
         Assert.True(chapters.GetProperty("responses").TryGetProperty("404", out _));
+        var pageParameter = FindOpenApiParameter(chapters, "page");
+        Assert.Equal(1, pageParameter.GetProperty("schema").GetProperty("minimum").GetInt32());
+        Assert.Equal(
+            PublicCatalogHandler.MaximumPublicChapterPage,
+            pageParameter.GetProperty("schema").GetProperty("maximum").GetInt32());
+        Assert.Equal(1, pageParameter.GetProperty("schema").GetProperty("default").GetInt32());
+        Assert.DoesNotContain(
+            chapters.GetProperty("parameters").EnumerateArray(),
+            parameter => parameter.GetProperty("name").GetString() is "limit" or "cursor");
         var chapterPageSchema = ResolveResponseSchema(document, chapters, "200");
+        foreach (var property in new[] { "page", "pageSize", "totalItems", "totalPages" })
+        {
+            Assert.True(chapterPageSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
         var chapterItemsSchema = ResolveOpenApiSchema(
             document,
             chapterPageSchema.GetProperty("properties")
@@ -1443,6 +1494,11 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .GetProperty("schemas")
             .GetProperty(value[prefix.Length..]);
     }
+
+    private static JsonElement FindOpenApiParameter(JsonElement operation, string name) =>
+        operation.GetProperty("parameters")
+            .EnumerateArray()
+            .Single(parameter => parameter.GetProperty("name").GetString() == name);
 
     private static JsonElement ResolveResponseSchema(
         JsonElement document,

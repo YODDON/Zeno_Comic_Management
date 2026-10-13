@@ -32,26 +32,43 @@ public sealed class PublicCatalogHandlerTests
             first.Page.NextCursor,
             null);
 
-        Assert.Equal(items[29].UpdatedAt, store.ComicCriteria!.BeforeUpdatedAt);
+        Assert.Equal(items[29].UpdateSortAt, store.ComicCriteria!.BeforeUpdateSortAt);
         Assert.Equal(items[29].Id, store.ComicCriteria.BeforeId);
         Assert.Null(second.Page!.NextCursor);
     }
 
     [Theory]
-    [InlineData("not-a-cursor", 30)]
-    [InlineData(null, 0)]
-    [InlineData(null, 101)]
-    public async Task Chapter_list_rejects_invalid_cursor_or_limit_without_querying_store(
-        string? cursor,
-        int limit)
+    [InlineData(0)]
+    [InlineData(PublicCatalogHandler.MaximumPublicChapterPage + 1)]
+    public async Task Chapter_list_rejects_invalid_page_without_querying_store(int page)
     {
         var store = new RecordingStore();
         var handler = new PublicCatalogHandler(store);
 
-        var result = await handler.ListChaptersAsync(Guid.NewGuid(), cursor, limit);
+        var result = await handler.ListChaptersAsync(Guid.NewGuid(), page);
 
         Assert.Equal(PublicCatalogOutcome.ValidationFailed, result.Outcome);
         Assert.Equal(0, store.CallCount);
+    }
+
+    [Fact]
+    public async Task Chapter_list_uses_fixed_page_size_and_returns_total_metadata()
+    {
+        var store = new RecordingStore
+        {
+            ChapterPage = new PublicChapterStorePage(true, [], 61),
+        };
+        var handler = new PublicCatalogHandler(store);
+
+        var result = await handler.ListChaptersAsync(Guid.NewGuid(), 3);
+
+        Assert.Equal(PublicCatalogOutcome.Succeeded, result.Outcome);
+        Assert.Equal(3, store.ChapterCriteria!.Page);
+        Assert.Equal(PublicCatalogHandler.PublicChapterPageSize, store.Take);
+        Assert.Equal(3, result.Page!.Page);
+        Assert.Equal(30, result.Page.PageSize);
+        Assert.Equal(61, result.Page.TotalItems);
+        Assert.Equal(3, result.Page.TotalPages);
     }
 
     [Fact]
@@ -91,13 +108,13 @@ public sealed class PublicCatalogHandlerTests
         Assert.Equal(PublicCatalogOutcome.NotFound, result.Outcome);
     }
 
-    private static PublicComicListItem CreateComic(int index, DateTimeOffset updatedAt) => new(
+    private static PublicComicListItem CreateComic(int index, DateTimeOffset updateSortAt) => new(
         Guid.Parse($"00000000-0000-0000-0000-{index:D12}"),
         $"comic-{index}",
         $"Comic {index}",
         null,
         "Ongoing",
-        updatedAt,
+        updateSortAt,
         []);
 
     private sealed class RecordingStore : IPublicCatalogStore
@@ -105,6 +122,10 @@ public sealed class PublicCatalogHandlerTests
         public IReadOnlyList<PublicComicListItem> ComicItems { get; set; } = [];
 
         public PublicComicListCriteria? ComicCriteria { get; private set; }
+
+        public PublicChapterListCriteria? ChapterCriteria { get; private set; }
+
+        public PublicChapterStorePage ChapterPage { get; set; } = new(true, [], 0);
 
         public int Take { get; private set; }
 
@@ -135,7 +156,9 @@ public sealed class PublicCatalogHandlerTests
             CancellationToken cancellationToken = default)
         {
             CallCount++;
-            return Task.FromResult(new PublicChapterStorePage(true, []));
+            ChapterCriteria = criteria;
+            Take = take;
+            return Task.FromResult(ChapterPage);
         }
     }
 }

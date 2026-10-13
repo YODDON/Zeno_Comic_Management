@@ -22,6 +22,8 @@ public sealed class Chapter
 
     public string PublicationStatus { get; private set; } = ChapterPublicationStatuses.Draft;
 
+    public DateTimeOffset? PublishedAt { get; private set; }
+
     public long Version { get; private set; }
 
     public DateTimeOffset CreatedAt { get; private set; }
@@ -96,6 +98,7 @@ public sealed class Chapter
         }
 
         PublicationStatus = ChapterPublicationStatuses.Published;
+        PublishedAt = publishedAt;
         Touch(publishedAt);
     }
 

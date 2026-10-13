@@ -1,4 +1,5 @@
 using ComicManagement.Api.Authentication;
+using ComicManagement.Api.OpenApi;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
@@ -16,7 +17,8 @@ var authenticationSettings = IdentityAuthenticationSettings.FromConfiguration(
     builder.Environment.ContentRootPath);
 
 builder.Services.AddControllers();
-builder.Services.AddOpenApi();
+builder.Services.AddOpenApi(options =>
+    options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>());
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
 builder.Services.AddCloudinaryChapterPageAssets(options =>
