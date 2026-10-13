@@ -82,6 +82,53 @@ public sealed record ChapterPageContentResult(
     ChapterManifestOutcome Outcome,
     ChapterPageContent? Content = null);
 
+public static class ChapterAccessPolicy
+{
+    public static ChapterAccessDecision Resolve(
+        ChapterAccessProjection projection,
+        bool isAuthenticated)
+    {
+        ArgumentNullException.ThrowIfNull(projection);
+
+        if (projection.EffectivePriceCoins == 0)
+        {
+            return new ChapterAccessDecision(
+                projection.ChapterId,
+                ChapterAccessTypes.Free,
+                true,
+                0,
+                false);
+        }
+
+        if (isAuthenticated && projection.HasActiveVip && projection.VipEligible)
+        {
+            return new ChapterAccessDecision(
+                projection.ChapterId,
+                ChapterAccessTypes.VipIncluded,
+                true,
+                projection.EffectivePriceCoins,
+                false);
+        }
+
+        if (isAuthenticated && projection.HasCoinUnlock)
+        {
+            return new ChapterAccessDecision(
+                projection.ChapterId,
+                ChapterAccessTypes.CoinUnlocked,
+                true,
+                projection.EffectivePriceCoins,
+                false);
+        }
+
+        return new ChapterAccessDecision(
+            projection.ChapterId,
+            ChapterAccessTypes.Locked,
+            false,
+            projection.EffectivePriceCoins,
+            !isAuthenticated);
+    }
+}
+
 public interface IChapterAccessProjectionStore
 {
     Task<IReadOnlyDictionary<Guid, ChapterAccessProjection>> GetManyAsync(
@@ -129,7 +176,7 @@ public sealed class ChapterAccessHandler(
         return projections.TryGetValue(chapterId, out var projection)
             ? new ChapterAccessResult(
                 ChapterAccessOutcome.Succeeded,
-                Resolve(projection, userId.HasValue))
+                ChapterAccessPolicy.Resolve(projection, userId.HasValue))
             : new ChapterAccessResult(ChapterAccessOutcome.NotFound);
     }
 
@@ -151,7 +198,7 @@ public sealed class ChapterAccessHandler(
         var projections = await store.GetManyAsync(distinctIds, userId, cancellationToken);
         return projections.ToDictionary(
             pair => pair.Key,
-            pair => Resolve(pair.Value, userId.HasValue));
+            pair => ChapterAccessPolicy.Resolve(pair.Value, userId.HasValue));
     }
 
     public async Task<ChapterManifestResult> GetManifestAsync(
@@ -170,7 +217,7 @@ public sealed class ChapterAccessHandler(
             return new ChapterManifestResult(ChapterManifestOutcome.NotFound);
         }
 
-        var access = Resolve(source.Access, userId.HasValue);
+        var access = ChapterAccessPolicy.Resolve(source.Access, userId.HasValue);
         if (!access.CanRead)
         {
             return new ChapterManifestResult(
@@ -257,53 +304,11 @@ public sealed class ChapterAccessHandler(
             : new ChapterPageContentResult(deniedOutcome.Value);
     }
 
-    private static ChapterAccessDecision Resolve(
-        ChapterAccessProjection projection,
-        bool isAuthenticated)
-    {
-        if (projection.EffectivePriceCoins == 0)
-        {
-            return new ChapterAccessDecision(
-                projection.ChapterId,
-                ChapterAccessTypes.Free,
-                true,
-                0,
-                false);
-        }
-
-        if (isAuthenticated && projection.HasActiveVip && projection.VipEligible)
-        {
-            return new ChapterAccessDecision(
-                projection.ChapterId,
-                ChapterAccessTypes.VipIncluded,
-                true,
-                projection.EffectivePriceCoins,
-                false);
-        }
-
-        if (isAuthenticated && projection.HasCoinUnlock)
-        {
-            return new ChapterAccessDecision(
-                projection.ChapterId,
-                ChapterAccessTypes.CoinUnlocked,
-                true,
-                projection.EffectivePriceCoins,
-                false);
-        }
-
-        return new ChapterAccessDecision(
-            projection.ChapterId,
-            ChapterAccessTypes.Locked,
-            false,
-            projection.EffectivePriceCoins,
-            !isAuthenticated);
-    }
-
     private static ChapterManifestOutcome? GetDeniedContentOutcome(
         ChapterAccessProjection projection,
         bool isAuthenticated)
     {
-        var access = Resolve(projection, isAuthenticated);
+        var access = ChapterAccessPolicy.Resolve(projection, isAuthenticated);
         if (!access.CanRead)
         {
             return isAuthenticated

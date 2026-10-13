@@ -3,6 +3,7 @@ using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Taxonomy;
 using ComicManagement.Identity.Users;
+using ComicManagement.Reading.Sessions;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -36,6 +37,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<ProcessedMessage> ProcessedMessages => Set<ProcessedMessage>();
 
     internal DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+
+    internal DbSet<ReadingSession> ReadingSessions => Set<ReadingSession>();
+
+    internal DbSet<ReadingProgress> ReadingProgress => Set<ReadingProgress>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {

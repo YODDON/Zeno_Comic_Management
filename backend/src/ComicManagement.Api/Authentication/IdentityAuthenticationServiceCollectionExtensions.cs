@@ -170,7 +170,7 @@ internal static class IdentityAuthenticationServiceCollectionExtensions
                         StatusCodes.Status429TooManyRequests,
                         "RATE_LIMITED",
                         "Too many requests",
-                        "Try signing in again later."));
+                        "Try again after the indicated retry interval."));
             };
 
             options.AddPolicy(

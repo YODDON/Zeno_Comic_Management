@@ -6,4 +6,4 @@ Free Chapter manifests contain Ready pages in stable order and expose only same-
 
 Public Chapter list enrichment retries a Catalog/Reading snapshot mismatch once and then removes any still-missing Chapter fail-closed. It never preserves newly hidden Chapter metadata as an `Unavailable` list item.
 
-R02 sessions/progress/qualification, follows, unlock mutation, VIP persistence and frontend reader behavior are outside R01.
+R02 extends that same access boundary with authenticated 30-minute reading sessions, strict sequence/fingerprint replay handling, Ready-manifest revision tracking, monotonic server-derived progress, cross-tab-safe progress persistence, and one-time session qualification at 90% plus 15 seconds. Qualification and `Reading.ChapterReadQualified.v1` outbox creation are atomic. Follows/Continue, unlock mutation, VIP persistence and frontend reader behavior remain outside R02.

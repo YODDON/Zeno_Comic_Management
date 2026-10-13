@@ -15,6 +15,7 @@ using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Identity.Users;
 using ComicManagement.Reading.Access;
+using ComicManagement.Reading.Sessions;
 using ComicManagement.Workflows.Reading;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
@@ -111,6 +112,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageContentProvider>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicChapterListWorkflow>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReadingSessionHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IReadingSessionStore>());
     }
 
     [Fact]
@@ -362,6 +365,211 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 await hiddenResponse.Content.ReadAsStringAsync(),
                 StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    [Fact]
+    public async Task Reading_session_requires_user_csrf_and_enforces_sequence_contract()
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var comic = Comic.Create(
+                comicId,
+                $"r02-api-{comicId:N}",
+                "R02 API",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now);
+            AddApiPublishedChapter(context, comicId, chapterId, 1, 0, now);
+            comic.Publish(true, 1, now.AddMinutes(2));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        using var anonymousClient = CreateClient();
+        var anonymous = await anonymousClient.PostAsJsonAsync(
+            "/api/v1/reading/sessions",
+            new { chapterId });
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-r02-reader",
+            "R02 Reader",
+            "r02-reader@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/reader"));
+
+        var missingCsrf = await client.PostAsJsonAsync(
+            "/api/v1/reading/sessions",
+            new { chapterId });
+        Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
+
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        using var createRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/reading/sessions")
+        {
+            Content = JsonContent.Create(new { chapterId }),
+        };
+        createRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        var created = await client.SendAsync(createRequest);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Contains("no-store", created.Headers.CacheControl!.ToString());
+        var createdJson = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var sessionId = createdJson.GetProperty("sessionId").GetGuid();
+        var startedAt = createdJson.GetProperty("startedAt").GetDateTimeOffset();
+        var expiresAt = createdJson.GetProperty("expiresAt").GetDateTimeOffset();
+        Assert.Equal(TimeSpan.FromMinutes(30), expiresAt - startedAt);
+        Assert.Equal(
+            15_000,
+            createdJson.GetProperty("policy").GetProperty("minimumActiveDurationMs").GetInt64());
+        Assert.Equal(1, createdJson.GetProperty("manifestPageCount").GetInt32());
+
+        async Task<HttpResponseMessage> PatchAsync(decimal offset, long sequence)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Patch,
+                $"/api/v1/reading/sessions/{sessionId}")
+            {
+                Content = JsonContent.Create(new
+                {
+                    currentPageOrder = 1,
+                    currentPageOffsetRatio = offset,
+                    sequenceNumber = sequence,
+                }),
+            };
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            return await client.SendAsync(request);
+        }
+
+        var first = await PatchAsync(0.95m, 1);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var firstJson = await first.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(9_500, firstJson.GetProperty("acceptedMaxProgressBasisPoints").GetInt32());
+        Assert.Equal(0, firstJson.GetProperty("activeDurationMs").GetInt64());
+        Assert.Equal(1, firstJson.GetProperty("lastAcceptedSequence").GetInt64());
+        Assert.Equal(sessionId, firstJson.GetProperty("sessionId").GetGuid());
+        Assert.Equal(1, firstJson.GetProperty("manifestPageCount").GetInt32());
+        var persistedExpiresAt = firstJson.GetProperty("expiresAt").GetDateTimeOffset();
+        Assert.InRange(
+            (persistedExpiresAt - expiresAt).Duration(),
+            TimeSpan.Zero,
+            TimeSpan.FromMilliseconds(1));
+
+        var replay = await PatchAsync(0.95m, 1);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        var replayJson = await replay.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, replayJson.GetProperty("activeDurationMs").GetInt64());
+
+        var mismatch = await PatchAsync(0.9m, 1);
+        Assert.Equal(HttpStatusCode.Conflict, mismatch.StatusCode);
+        var mismatchProblem = await mismatch.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(
+            "READING_SEQUENCE_CONFLICT",
+            mismatchProblem.GetProperty("errorCode").GetString());
+
+        using var qualifyRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/reading/sessions/{sessionId}/qualify");
+        qualifyRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        var qualification = await client.SendAsync(qualifyRequest);
+        Assert.Equal(HttpStatusCode.OK, qualification.StatusCode);
+        var qualificationJson = await qualification.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(qualificationJson.GetProperty("qualified").GetBoolean());
+        Assert.Equal(
+            "ACTIVE_DURATION_THRESHOLD_NOT_MET",
+            qualificationJson.GetProperty("reasonCode").GetString());
+    }
+
+    [Fact]
+    public async Task Reading_progress_rate_limit_is_partitioned_after_authentication()
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var comic = Comic.Create(
+                comicId,
+                $"r02-limit-{comicId:N}",
+                "R02 Rate Limit",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now);
+            AddApiPublishedChapter(context, comicId, chapterId, 1, 0, now);
+            comic.Publish(true, 1, now.AddMinutes(2));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            readingProgressPermitLimit: 2);
+        factory.TokenEndpoint.SetProfile(
+            "google-subject-r02-limit",
+            "R02 Limit User",
+            "r02-limit@example.com",
+            null);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = true,
+        });
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/reader", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var createRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/reading/sessions")
+        {
+            Content = JsonContent.Create(new { chapterId }),
+        };
+        createRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        var created = await client.SendAsync(createRequest);
+        var createdJson = await created.Content.ReadFromJsonAsync<JsonElement>();
+        var sessionId = createdJson.GetProperty("sessionId").GetGuid();
+
+        async Task<HttpResponseMessage> PatchAsync(long sequence)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Patch,
+                $"/api/v1/reading/sessions/{sessionId}")
+            {
+                Content = JsonContent.Create(new
+                {
+                    currentPageOrder = 1,
+                    currentPageOffsetRatio = 0.5m,
+                    sequenceNumber = sequence,
+                }),
+            };
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            return await client.SendAsync(request);
+        }
+
+        Assert.Equal(HttpStatusCode.OK, (await PatchAsync(1)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PatchAsync(2)).StatusCode);
+        var limited = await PatchAsync(3);
+        Assert.Equal(HttpStatusCode.TooManyRequests, limited.StatusCode);
+        Assert.True(limited.Headers.Contains("Retry-After"));
+        var problem = await limited.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("RATE_LIMITED", problem.GetProperty("errorCode").GetString());
     }
 
     [Fact]
@@ -1319,6 +1527,74 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         {
             Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
         }
+
+        var createSession = paths
+            .GetProperty("/api/v1/reading/sessions")
+            .GetProperty("post");
+        foreach (var status in new[] { "201", "400", "401", "403", "404" })
+        {
+            Assert.True(createSession.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var createSessionSchema = ResolveResponseSchema(document, createSession, "201");
+        foreach (var property in new[]
+                 {
+                     "sessionId", "startedAt", "expiresAt", "policy",
+                     "manifestRevision", "manifestPageCount", "version",
+                 })
+        {
+            Assert.True(createSessionSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var updateSession = paths
+            .GetProperty("/api/v1/reading/sessions/{id}")
+            .GetProperty("patch");
+        foreach (var status in new[] { "200", "400", "401", "403", "404", "409", "429" })
+        {
+            Assert.True(updateSession.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var updateRequestSchema = ResolveOpenApiSchema(
+            document,
+            updateSession.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        var updateProperties = updateRequestSchema.GetProperty("properties");
+        Assert.True(updateProperties.TryGetProperty("currentPageOrder", out var pageOrder));
+        Assert.Equal(1, pageOrder.GetProperty("minimum").GetInt32());
+        Assert.True(updateProperties.TryGetProperty(
+            "currentPageOffsetRatio",
+            out var pageOffset));
+        Assert.Equal(0, pageOffset.GetProperty("minimum").GetDecimal());
+        Assert.Equal(1, pageOffset.GetProperty("maximum").GetDecimal());
+        Assert.True(updateProperties.TryGetProperty("sequenceNumber", out var sequence));
+        Assert.Equal(1, sequence.GetProperty("minimum").GetInt64());
+        Assert.False(updateProperties.TryGetProperty("progressBasisPoints", out _));
+        Assert.False(updateProperties.TryGetProperty("maxObservedPageOrder", out _));
+
+        var updateResponseSchema = ResolveResponseSchema(document, updateSession, "200");
+        foreach (var property in new[]
+                 {
+                     "sessionId", "acceptedPosition", "acceptedMaxProgressBasisPoints",
+                     "activeDurationMs", "manifestRevision", "manifestPageCount",
+                     "lastAcceptedSequence", "expiresAt", "version",
+                 })
+        {
+            Assert.True(updateResponseSchema.GetProperty("properties").TryGetProperty(
+                property,
+                out _));
+        }
+
+        var qualify = paths
+            .GetProperty("/api/v1/reading/sessions/{id}/qualify")
+            .GetProperty("post");
+        Assert.True(qualify.GetProperty("responses").TryGetProperty("200", out _));
+        var readingErrorSchema = ResolveResponseSchema(document, updateSession, "409");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(readingErrorSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
     }
 
     [Fact]
@@ -1903,7 +2179,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         string securityDirectory,
         int loginPermitLimit = 1000,
         bool forceIdentityConflicts = false,
-        bool forceProfileConflicts = false) : WebApplicationFactory<Program>
+        bool forceProfileConflicts = false,
+        int readingProgressPermitLimit = 60) : WebApplicationFactory<Program>
     {
         private readonly string _keysPath = Path.Combine(securityDirectory, "keys");
         private readonly string _certificatePath = Path.Combine(
@@ -1942,6 +2219,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     "Authentication:LoginRateLimit:PermitLimit",
                     loginPermitLimit.ToString(System.Globalization.CultureInfo.InvariantCulture))
                 .UseSetting("Authentication:LoginRateLimit:Window", "00:01:00")
+                .UseSetting(
+                    "Reading:ProgressRateLimit:PermitLimit",
+                    readingProgressPermitLimit.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture))
                 .UseSetting("ReverseProxy:KnownNetworks:0", "0.0.0.0/0")
                 .UseSetting("ReverseProxy:KnownNetworks:1", "::/0");
             builder.ConfigureServices(services =>

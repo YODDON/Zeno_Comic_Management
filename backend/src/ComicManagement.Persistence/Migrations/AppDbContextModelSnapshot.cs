@@ -622,6 +622,206 @@ namespace ComicManagement.Persistence.Migrations
                     b.ToTable("processed_messages", "infrastructure");
                 });
 
+            modelBuilder.Entity("ComicManagement.Reading.Sessions.ReadingProgress", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<Guid>("LastChapterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_chapter_id");
+
+                    b.Property<decimal>("LastPageOffsetRatio")
+                        .HasColumnType("numeric")
+                        .HasColumnName("last_page_offset_ratio");
+
+                    b.Property<int>("LastPageOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("last_page_order");
+
+                    b.Property<DateTimeOffset>("LastReadAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_read_at");
+
+                    b.Property<Guid>("SourceSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_session_id");
+
+                    b.Property<DateTimeOffset>("SourceSessionStartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("source_session_started_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("UserId", "ComicId")
+                        .HasName("pk_reading_progress");
+
+                    b.HasIndex("ComicId")
+                        .HasDatabaseName("ix_reading_progress_comic_id");
+
+                    b.HasIndex("LastChapterId")
+                        .HasDatabaseName("ix_reading_progress_last_chapter_id");
+
+                    b.HasIndex("SourceSessionId")
+                        .HasDatabaseName("ix_reading_progress_source_session_id");
+
+                    b.HasIndex("UserId", "LastReadAt")
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ix_reading_progress_user_last_read_at");
+
+                    b.ToTable("reading_progress", "reading", t =>
+                        {
+                            t.HasCheckConstraint("ck_reading_progress_offset", "last_page_offset_ratio BETWEEN 0 AND 1");
+
+                            t.HasCheckConstraint("ck_reading_progress_page_order", "last_page_order >= 1");
+
+                            t.HasCheckConstraint("ck_reading_progress_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Reading.Sessions.ReadingSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("ActiveDurationMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("active_duration_ms");
+
+                    b.Property<Guid>("ChapterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("chapter_id");
+
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<decimal?>("CurrentPageOffsetRatio")
+                        .HasColumnType("numeric")
+                        .HasColumnName("current_page_offset_ratio");
+
+                    b.Property<int?>("CurrentPageOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("current_page_order");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<long>("LastAcceptedSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("last_accepted_sequence");
+
+                    b.Property<DateTimeOffset?>("LastActivityAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_activity_at");
+
+                    b.Property<bool>("LastActivityWasReady")
+                        .HasColumnType("boolean")
+                        .HasColumnName("last_activity_was_ready");
+
+                    b.Property<string>("LastRequestFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("last_request_fingerprint");
+
+                    b.Property<int>("ManifestPageCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("manifest_page_count");
+
+                    b.Property<string>("ManifestRevision")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("manifest_revision");
+
+                    b.Property<int>("MaxProgressBasisPoints")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_progress_basis_points");
+
+                    b.Property<long>("MinimumActiveDurationMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("minimum_active_duration_ms");
+
+                    b.Property<int>("MinimumProgressBasisPoints")
+                        .HasColumnType("integer")
+                        .HasColumnName("minimum_progress_basis_points");
+
+                    b.Property<string>("PolicyRevision")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("policy_revision");
+
+                    b.Property<DateTimeOffset?>("QualifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("qualified_at");
+
+                    b.Property<DateTimeOffset>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_reading_sessions");
+
+                    b.HasIndex("ComicId")
+                        .HasDatabaseName("ix_reading_sessions_comic_id");
+
+                    b.HasIndex("ChapterId", "QualifiedAt")
+                        .HasDatabaseName("ix_reading_sessions_chapter_qualified_at");
+
+                    b.HasIndex("UserId", "StartedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_reading_sessions_user_started_id");
+
+                    b.ToTable("reading_sessions", "reading", t =>
+                        {
+                            t.HasCheckConstraint("ck_reading_sessions_active_duration", "active_duration_ms BETWEEN 0 AND 1800000");
+
+                            t.HasCheckConstraint("ck_reading_sessions_current_position", "(current_page_order IS NULL AND current_page_offset_ratio IS NULL) OR (current_page_order >= 1 AND current_page_offset_ratio BETWEEN 0 AND 1)");
+
+                            t.HasCheckConstraint("ck_reading_sessions_expiry", "expires_at = started_at + interval '30 minutes'");
+
+                            t.HasCheckConstraint("ck_reading_sessions_manifest", "manifest_revision ~ '^[0-9a-f]{64}$' AND manifest_page_count >= 1");
+
+                            t.HasCheckConstraint("ck_reading_sessions_policy", "minimum_progress_basis_points BETWEEN 1 AND 10000 AND minimum_active_duration_ms >= 1 AND length(btrim(policy_revision)) > 0");
+
+                            t.HasCheckConstraint("ck_reading_sessions_progress", "max_progress_basis_points BETWEEN 0 AND 10000");
+
+                            t.HasCheckConstraint("ck_reading_sessions_qualification", "(status = 'Active' AND qualified_at IS NULL) OR (status = 'Qualified' AND qualified_at IS NOT NULL AND max_progress_basis_points >= minimum_progress_basis_points AND active_duration_ms >= minimum_active_duration_ms AND qualified_at < expires_at)");
+
+                            t.HasCheckConstraint("ck_reading_sessions_sequence", "(last_accepted_sequence = 0 AND last_request_fingerprint IS NULL) OR (last_accepted_sequence >= 1 AND last_request_fingerprint ~ '^[0-9a-f]{64}$')");
+
+                            t.HasCheckConstraint("ck_reading_sessions_status", "status IN ('Active', 'Qualified')");
+
+                            t.HasCheckConstraint("ck_reading_sessions_version", "version >= 1");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
@@ -703,6 +903,61 @@ namespace ComicManagement.Persistence.Migrations
                         .HasConstraintName("fk_google_identities_users_user_id");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ComicManagement.Reading.Sessions.ReadingProgress", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reading_progress_comics");
+
+                    b.HasOne("ComicManagement.Catalog.Chapters.Chapter", null)
+                        .WithMany()
+                        .HasForeignKey("LastChapterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reading_progress_chapters");
+
+                    b.HasOne("ComicManagement.Reading.Sessions.ReadingSession", null)
+                        .WithMany()
+                        .HasForeignKey("SourceSessionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reading_progress_source_session");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reading_progress_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Reading.Sessions.ReadingSession", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Chapters.Chapter", null)
+                        .WithMany()
+                        .HasForeignKey("ChapterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reading_sessions_chapters");
+
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reading_sessions_comics");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reading_sessions_users");
                 });
 #pragma warning restore 612, 618
         }
