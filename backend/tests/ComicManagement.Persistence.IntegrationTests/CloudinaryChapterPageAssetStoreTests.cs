@@ -16,6 +16,7 @@ public sealed class CloudinaryChapterPageAssetStoreTests
     public async Task Registration_composes_the_scoped_upload_handler()
     {
         await using var serviceProvider = new ServiceCollection()
+            .AddLogging()
             .AddPersistence("Host=localhost;Database=unused;Username=unused;Password=unused")
             .AddCloudinaryChapterPageAssets(options =>
             {
