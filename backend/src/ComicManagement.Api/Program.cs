@@ -4,6 +4,7 @@ using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
 using ComicManagement.Shared.Identity;
+using ComicManagement.Workflows.Reading;
 using Microsoft.AspNetCore.HttpOverrides;
 using System.Net;
 using System.Globalization;
@@ -41,6 +42,7 @@ builder.Services.AddCloudinaryChapterPageAssets(options =>
 builder.Services.AddScoped<GoogleSignInHandler>();
 builder.Services.AddScoped<LogoutHandler>();
 builder.Services.AddScoped<UpdateDisplayNameHandler>();
+builder.Services.AddScoped<PublicChapterListWorkflow>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddIdentityAuthentication(authenticationSettings);
 builder.Services.Configure<OutboxOptions>(

@@ -14,6 +14,8 @@ using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Identity.Users;
+using ComicManagement.Reading.Access;
+using ComicManagement.Workflows.Reading;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -98,6 +100,17 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicCatalogHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IPublicCatalogStore>());
+    }
+
+    [Fact]
+    public async Task Production_composition_registers_the_reading_access_slice()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChapterAccessHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageDeliveryUrlProvider>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicChapterListWorkflow>());
     }
 
     [Fact]
@@ -211,6 +224,123 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             "Must remain private",
             await hiddenDraft.Content.ReadAsStringAsync(),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Reader_access_and_manifest_allow_free_and_deny_locked_or_hidden_content()
+    {
+        var comicId = Guid.NewGuid();
+        var freeChapterId = Guid.NewGuid();
+        var lockedChapterId = Guid.NewGuid();
+        var hiddenChapterId = Guid.NewGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var comic = Comic.Create(
+                comicId,
+                $"r01-api-{comicId:N}",
+                "R01 API",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                25,
+                true,
+                now);
+            AddApiPublishedChapter(
+                context,
+                comicId,
+                freeChapterId,
+                1,
+                0,
+                now);
+            AddApiPublishedChapter(
+                context,
+                comicId,
+                lockedChapterId,
+                2,
+                null,
+                now);
+            var hidden = AddApiPublishedChapter(
+                context,
+                comicId,
+                hiddenChapterId,
+                3,
+                40,
+                now);
+            hidden.Hide(canHide: true, expectedVersion: 2, now.AddMinutes(4));
+            comic.Publish(true, 1, now.AddMinutes(5));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        using var anonymousClient = CreateClient();
+        var freeAccess = await anonymousClient.GetAsync(
+            $"/api/v1/chapters/{freeChapterId}/access");
+        Assert.Equal(HttpStatusCode.OK, freeAccess.StatusCode);
+        var freeAccessJson = await freeAccess.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Free", freeAccessJson.GetProperty("accessType").GetString());
+        Assert.True(freeAccessJson.GetProperty("canRead").GetBoolean());
+        Assert.False(freeAccessJson.GetProperty("needsLogin").GetBoolean());
+
+        var freePages = await anonymousClient.GetAsync(
+            $"/api/v1/chapters/{freeChapterId}/pages");
+        Assert.Equal(HttpStatusCode.OK, freePages.StatusCode);
+        Assert.Contains("no-store", freePages.Headers.CacheControl!.ToString());
+        var freePagesJson = await freePages.Content.ReadFromJsonAsync<JsonElement>();
+        var freePage = Assert.Single(freePagesJson.GetProperty("pages").EnumerateArray());
+        Assert.Equal(1, freePage.GetProperty("order").GetInt32());
+        Assert.Equal(1200, freePage.GetProperty("width").GetInt32());
+        Assert.StartsWith("https://", freePage.GetProperty("deliveryUrl").GetString());
+        Assert.False(freePagesJson.TryGetProperty("cloudinaryPublicId", out _));
+
+        var lockedAccess = await anonymousClient.GetAsync(
+            $"/api/v1/chapters/{lockedChapterId}/access");
+        Assert.Equal(HttpStatusCode.OK, lockedAccess.StatusCode);
+        var lockedAccessJson = await lockedAccess.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Locked", lockedAccessJson.GetProperty("accessType").GetString());
+        Assert.True(lockedAccessJson.GetProperty("needsLogin").GetBoolean());
+
+        var anonymousLockedPages = await anonymousClient.GetAsync(
+            $"/api/v1/chapters/{lockedChapterId}/pages");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousLockedPages.StatusCode);
+        var anonymousProblem =
+            await anonymousLockedPages.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("AUTH_REQUIRED", anonymousProblem.GetProperty("errorCode").GetString());
+
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-r01-reader",
+            "R01 Reader",
+            "r01-reader@example.com",
+            null);
+        using var authenticatedClient = CreateClient();
+        await CompleteLoginAsync(
+            authenticatedClient,
+            await BeginLoginAsync(authenticatedClient, "/reader"));
+        var authenticatedLockedPages = await authenticatedClient.GetAsync(
+            $"/api/v1/chapters/{lockedChapterId}/pages");
+        Assert.Equal(HttpStatusCode.Forbidden, authenticatedLockedPages.StatusCode);
+        var forbiddenProblem =
+            await authenticatedLockedPages.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("FORBIDDEN", forbiddenProblem.GetProperty("errorCode").GetString());
+
+        foreach (var path in new[]
+                 {
+                     $"/api/v1/chapters/{hiddenChapterId}/access",
+                     $"/api/v1/chapters/{hiddenChapterId}/pages",
+                 })
+        {
+            var hiddenResponse = await anonymousClient.GetAsync(path);
+            Assert.Equal(HttpStatusCode.NotFound, hiddenResponse.StatusCode);
+            var hiddenProblem = await hiddenResponse.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal(
+                "CHAPTER_UNAVAILABLE",
+                hiddenProblem.GetProperty("errorCode").GetString());
+            Assert.DoesNotContain(
+                "r01-api",
+                await hiddenResponse.Content.ReadAsStringAsync(),
+                StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -1100,6 +1230,69 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenApi_document_contains_reader_access_and_manifest_contracts()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+
+        var access = paths
+            .GetProperty("/api/v1/chapters/{chapterId}/access")
+            .GetProperty("get");
+        Assert.True(access.GetProperty("responses").TryGetProperty("404", out _));
+        var accessSchema = ResolveResponseSchema(document, access, "200");
+        foreach (var property in new[]
+                 {
+                     "chapterId", "accessType", "canRead", "priceCoins", "needsLogin",
+                 })
+        {
+            Assert.True(accessSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var accessTypeSchema = ResolveOpenApiSchema(
+            document,
+            accessSchema.GetProperty("properties").GetProperty("accessType"));
+        Assert.Equal(
+            ["Free", "VipIncluded", "CoinUnlocked", "Locked", "Unavailable"],
+            accessTypeSchema.GetProperty("enum")
+                .EnumerateArray()
+                .Select(value => value.GetString()));
+
+        var pages = paths
+            .GetProperty("/api/v1/chapters/{chapterId}/pages")
+            .GetProperty("get");
+        foreach (var status in new[] { "401", "403", "404", "503" })
+        {
+            Assert.True(pages.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var manifestSchema = ResolveResponseSchema(document, pages, "200");
+        foreach (var property in new[]
+                 {
+                     "chapterId", "pages", "manifestIssuedAt", "refreshHint",
+                 })
+        {
+            Assert.True(manifestSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var pageSchema = ResolveOpenApiSchema(
+            document,
+            manifestSchema.GetProperty("properties").GetProperty("pages").GetProperty("items"));
+        foreach (var property in new[] { "order", "width", "height", "deliveryUrl" })
+        {
+            Assert.True(pageSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var errorSchema = ResolveResponseSchema(document, pages, "403");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+    }
+
+    [Fact]
     public async Task Profile_update_requires_authentication_and_csrf()
     {
         using var anonymousClient = CreateClient();
@@ -1475,6 +1668,36 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             StringComparison.Ordinal);
         Assert.Equal(HttpStatusCode.TooManyRequests, sameIp.StatusCode);
         Assert.Equal(HttpStatusCode.Redirect, anotherIp.StatusCode);
+    }
+
+    private static Chapter AddApiPublishedChapter(
+        AppDbContext context,
+        Guid comicId,
+        Guid chapterId,
+        int sortOrder,
+        long? priceOverride,
+        DateTimeOffset createdAt)
+    {
+        var chapter = Chapter.Create(
+            chapterId,
+            comicId,
+            $"Chapter {sortOrder}",
+            sortOrder,
+            priceOverride,
+            null,
+            createdAt);
+        var page = ChapterPage.CreatePending(
+            Guid.NewGuid(),
+            chapterId,
+            1,
+            $"r01-api/{chapterId:N}/1",
+            $"sha256:{sortOrder:x64}",
+            createdAt);
+        page.MarkReady(1200, 1800);
+        chapter.Publish(true, 1, createdAt.AddMinutes(sortOrder));
+        context.Chapters.Add(chapter);
+        context.ChapterPages.Add(page);
+        return chapter;
     }
 
     private static JsonElement ResolveOpenApiSchema(

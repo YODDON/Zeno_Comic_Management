@@ -13,5 +13,7 @@ C03 implements the Admin publication commands as `POST /api/v1/admin/comics/{com
 
 C04 implements anonymous public comic list/detail and fixed 30-item, one-based Chapter pagination with total metadata. Reader update ordering uses the newest `published_at` of valid Published Chapters, falling back internally to `comic.created_at` only when no Published Chapter exists; Comic metadata edits never affect this order. All projections fail closed to Published Comics and valid Published Chapters and never expose page/provider identities. Its batched Chapter `accessSummary` is deliberately limited to catalog-owned effective price: zero is `Free`, positive is `Locked`. Reading-owned VIP and durable unlock personalization is deferred to R01; rating sort is deferred to IN01.
 
+R01 enriches that Chapter page through Workflows so Catalog does not reference Reading. The enrichment is one batched projection and returns `Unavailable` if a Chapter becomes non-public between catalog and access reads; the manifest endpoint performs its own authoritative publication/page recheck before issuing any URL.
+
 ## Acceptance
 Cannot publish Comic with zero valid Published Chapters; cannot publish empty Chapter; can publish Chapter while Comic Draft without public access; hide last valid Published Chapter rejected; paid assets never leaked in public metadata; Featured duplicates/max6/unpublished rejected; concurrent reorder conflicts rather than lost updates.

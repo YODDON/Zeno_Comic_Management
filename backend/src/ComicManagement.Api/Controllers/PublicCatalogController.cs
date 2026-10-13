@@ -2,6 +2,7 @@ using ComicManagement.Api.Authentication;
 using ComicManagement.Catalog.Browsing;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Taxonomy;
+using ComicManagement.Workflows.Reading;
 using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 
@@ -10,7 +11,8 @@ namespace ComicManagement.Api.Controllers;
 [ApiController]
 [Route("api/v1/comics")]
 public sealed class PublicCatalogController(
-    PublicCatalogHandler catalogHandler) : ControllerBase
+    PublicCatalogHandler catalogHandler,
+    PublicChapterListWorkflow chapterListWorkflow) : ControllerBase
 {
     [HttpGet]
     [ProducesResponseType<PublicComicListResponse>(StatusCodes.Status200OK)]
@@ -77,7 +79,7 @@ public sealed class PublicCatalogController(
         CancellationToken cancellationToken,
         [FromQuery, Range(1, PublicCatalogHandler.MaximumPublicChapterPage)] int page = 1)
     {
-        var result = await catalogHandler.ListChaptersAsync(
+        var result = await chapterListWorkflow.ListAsync(
             comicId,
             page,
             cancellationToken);
@@ -150,7 +152,7 @@ public sealed class PublicCatalogController(
         chapter.SortOrder,
         chapter.PublicationStatus,
         new PublicChapterAccessSummaryResponse(
-            chapter.AccessSummary.AccessType,
+            Enum.Parse<ChapterAccessTypeResponse>(chapter.AccessSummary.AccessType),
             chapter.AccessSummary.CanRead,
             chapter.AccessSummary.FinalPriceCoins));
 
@@ -209,6 +211,6 @@ public sealed record PublicChapterListItemResponse(
     PublicChapterAccessSummaryResponse AccessSummary);
 
 public sealed record PublicChapterAccessSummaryResponse(
-    string AccessType,
+    ChapterAccessTypeResponse AccessType,
     bool CanRead,
     long FinalPriceCoins);
