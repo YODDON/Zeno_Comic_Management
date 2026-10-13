@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
+using ComicManagement.Catalog.Browsing;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Media;
@@ -88,6 +89,125 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<CatalogPublicationHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ICatalogPublicationStore>());
+    }
+
+    [Fact]
+    public async Task Production_composition_registers_the_public_catalog_slice()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicCatalogHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IPublicCatalogStore>());
+    }
+
+    [Fact]
+    public async Task Public_catalog_is_anonymous_hides_private_content_and_paginates_thirty_chapters()
+    {
+        var comicId = Guid.NewGuid();
+        var draftComicId = Guid.NewGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var comic = Comic.Create(
+                comicId,
+                $"c04-api-{comicId:N}",
+                "C04 API Catalog",
+                "Public catalog detail",
+                ComicSeriesStatuses.Ongoing,
+                "covers/c04-api",
+                25,
+                true,
+                now);
+            for (var sortOrder = 1; sortOrder <= 31; sortOrder++)
+            {
+                var chapter = Chapter.Create(
+                    Guid.NewGuid(),
+                    comicId,
+                    $"Chapter {sortOrder}",
+                    sortOrder,
+                    sortOrder == 1 ? 0 : null,
+                    null,
+                    now);
+                var page = ChapterPage.CreatePending(
+                    Guid.NewGuid(),
+                    chapter.Id,
+                    1,
+                    $"c04-api/{comicId:N}/{sortOrder}",
+                    $"sha256:{sortOrder:x64}",
+                    now);
+                page.MarkReady(1200, 1800);
+                chapter.Publish(true, 1, now.AddSeconds(sortOrder));
+                context.Chapters.Add(chapter);
+                context.ChapterPages.Add(page);
+            }
+
+            comic.Publish(true, 1, now.AddMinutes(1));
+            context.Comics.Add(comic);
+            context.Comics.Add(Comic.Create(
+                draftComicId,
+                $"c04-draft-{draftComicId:N}",
+                "C04 Draft",
+                "Must remain private",
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now));
+            await context.SaveChangesAsync();
+        }
+
+        using var client = CreateClient();
+        var list = await client.GetAsync("/api/v1/comics?search=C04%20API");
+        Assert.Equal(HttpStatusCode.OK, list.StatusCode);
+        var listDocument = await list.Content.ReadFromJsonAsync<JsonElement>();
+        var listItem = Assert.Single(listDocument.GetProperty("items").EnumerateArray());
+        Assert.Equal(comicId, listItem.GetProperty("id").GetGuid());
+
+        var detail = await client.GetAsync($"/api/v1/comics/c04-api-{comicId:N}");
+        Assert.Equal(HttpStatusCode.OK, detail.StatusCode);
+        var detailDocument = await detail.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Public catalog detail", detailDocument.GetProperty("description").GetString());
+
+        var firstPage = await client.GetAsync($"/api/v1/comics/{comicId}/chapters");
+        Assert.Equal(HttpStatusCode.OK, firstPage.StatusCode);
+        var firstPageJson = await firstPage.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(30, firstPageJson.GetProperty("items").GetArrayLength());
+        var cursor = firstPageJson.GetProperty("nextCursor").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(cursor));
+        var firstChapter = firstPageJson.GetProperty("items")[0];
+        Assert.Equal(
+            "Free",
+            firstChapter.GetProperty("accessSummary").GetProperty("accessType").GetString());
+
+        var secondPage = await client.GetAsync(
+            $"/api/v1/comics/{comicId}/chapters?cursor={Uri.EscapeDataString(cursor!)}");
+        Assert.Equal(HttpStatusCode.OK, secondPage.StatusCode);
+        var secondPageJson = await secondPage.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, secondPageJson.GetProperty("items").GetArrayLength());
+        Assert.Equal(JsonValueKind.Null, secondPageJson.GetProperty("nextCursor").ValueKind);
+        Assert.DoesNotContain("cloudinary", await firstPage.Content.ReadAsStringAsync(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("deliveryUrl", await firstPage.Content.ReadAsStringAsync(),
+            StringComparison.OrdinalIgnoreCase);
+
+        var invalidCursor = await client.GetAsync(
+            $"/api/v1/comics/{comicId}/chapters?cursor=invalid");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidCursor.StatusCode);
+        Assert.Equal(
+            "VALIDATION_FAILED",
+            (await invalidCursor.Content.ReadFromJsonAsync<JsonElement>())
+                .GetProperty("errorCode")
+                .GetString());
+        var hiddenDraft = await client.GetAsync(
+            $"/api/v1/comics/c04-draft-{draftComicId:N}");
+        Assert.Equal(HttpStatusCode.NotFound, hiddenDraft.StatusCode);
+        var hiddenProblem = await hiddenDraft.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("RESOURCE_NOT_FOUND", hiddenProblem.GetProperty("errorCode").GetString());
+        Assert.DoesNotContain(
+            "Must remain private",
+            await hiddenDraft.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -870,6 +990,65 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenApi_document_contains_public_catalog_contracts()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+        var list = paths.GetProperty("/api/v1/comics").GetProperty("get");
+        Assert.True(list.GetProperty("responses").TryGetProperty("200", out _));
+        Assert.True(list.GetProperty("responses").TryGetProperty("400", out _));
+        var listSchema = ResolveResponseSchema(document, list, "200");
+        Assert.True(listSchema.GetProperty("properties").TryGetProperty("items", out _));
+        Assert.True(listSchema.GetProperty("properties").TryGetProperty("nextCursor", out _));
+
+        var detail = paths.GetProperty("/api/v1/comics/{slug}").GetProperty("get");
+        Assert.True(detail.GetProperty("responses").TryGetProperty("404", out _));
+        var detailSchema = ResolveResponseSchema(document, detail, "200");
+        foreach (var property in new[]
+                 {
+                     "id", "slug", "title", "description", "coverAssetId", "seriesStatus",
+                     "firstPublishedAt", "updatedAt", "genres", "authors", "translationGroups",
+                 })
+        {
+            Assert.True(detailSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var chapters = paths
+            .GetProperty("/api/v1/comics/{comicId}/chapters")
+            .GetProperty("get");
+        Assert.True(chapters.GetProperty("responses").TryGetProperty("400", out _));
+        Assert.True(chapters.GetProperty("responses").TryGetProperty("404", out _));
+        var chapterPageSchema = ResolveResponseSchema(document, chapters, "200");
+        var chapterItemsSchema = ResolveOpenApiSchema(
+            document,
+            chapterPageSchema.GetProperty("properties")
+                .GetProperty("items")
+                .GetProperty("items"));
+        foreach (var property in new[]
+                 {
+                     "id", "chapterLabel", "sortOrder", "publicationStatus", "accessSummary",
+                 })
+        {
+            Assert.True(chapterItemsSchema.GetProperty("properties")
+                .TryGetProperty(property, out _));
+        }
+
+        var accessSummarySchema = ResolveOpenApiSchema(
+            document,
+            chapterItemsSchema.GetProperty("properties").GetProperty("accessSummary"));
+        Assert.True(accessSummarySchema.GetProperty("properties")
+            .TryGetProperty("accessType", out _));
+        Assert.True(accessSummarySchema.GetProperty("properties")
+            .TryGetProperty("canRead", out _));
+        Assert.True(accessSummarySchema.GetProperty("properties")
+            .TryGetProperty("finalPriceCoins", out _));
+    }
+
+    [Fact]
     public async Task Profile_update_requires_authentication_and_csrf()
     {
         using var anonymousClient = CreateClient();
@@ -1264,6 +1443,17 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .GetProperty("schemas")
             .GetProperty(value[prefix.Length..]);
     }
+
+    private static JsonElement ResolveResponseSchema(
+        JsonElement document,
+        JsonElement operation,
+        string statusCode) => ResolveOpenApiSchema(
+        document,
+        operation.GetProperty("responses")
+            .GetProperty(statusCode)
+            .GetProperty("content")
+            .GetProperty("application/json")
+            .GetProperty("schema"));
 
     private HttpClient CreateClient() => _factory.CreateClient(
         new WebApplicationFactoryClientOptions

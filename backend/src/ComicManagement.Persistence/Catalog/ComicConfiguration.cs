@@ -24,6 +24,14 @@ internal sealed class ComicConfiguration : IEntityTypeConfiguration<Comic>
 
         builder.HasKey(comic => comic.Id).HasName("pk_comics");
         builder.HasIndex(comic => comic.Slug).IsUnique().HasDatabaseName("ux_comics_slug");
+        builder.HasIndex(comic => new
+        {
+            comic.PublicationStatus,
+            comic.UpdatedAt,
+            comic.Id,
+        })
+            .IsDescending(false, true, true)
+            .HasDatabaseName("ix_comics_publication_updated_id");
 
         builder.Property(comic => comic.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(comic => comic.Slug)

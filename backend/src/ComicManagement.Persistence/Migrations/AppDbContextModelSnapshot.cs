@@ -136,6 +136,9 @@ namespace ComicManagement.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_chapters_comic_id_sort_order");
 
+                    b.HasIndex("ComicId", "PublicationStatus", "SortOrder", "Id")
+                        .HasDatabaseName("ix_chapters_public_comic_sort_id");
+
                     b.ToTable("chapters", "catalog", t =>
                         {
                             t.HasCheckConstraint("ck_chapters_label_not_blank", "length(btrim(chapter_label)) > 0");
@@ -286,6 +289,10 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasIndex("Slug")
                         .IsUnique()
                         .HasDatabaseName("ux_comics_slug");
+
+                    b.HasIndex("PublicationStatus", "UpdatedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_comics_publication_updated_id");
 
                     b.ToTable("comics", "catalog", t =>
                         {

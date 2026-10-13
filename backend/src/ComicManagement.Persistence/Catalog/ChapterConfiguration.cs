@@ -25,6 +25,14 @@ internal sealed class ChapterConfiguration : IEntityTypeConfiguration<Chapter>
         builder.HasIndex(chapter => new { chapter.ComicId, chapter.SortOrder })
             .IsUnique()
             .HasDatabaseName("ux_chapters_comic_id_sort_order");
+        builder.HasIndex(chapter => new
+        {
+            chapter.ComicId,
+            chapter.PublicationStatus,
+            chapter.SortOrder,
+            chapter.Id,
+        })
+            .HasDatabaseName("ix_chapters_public_comic_sort_id");
 
         builder.Property(chapter => chapter.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(chapter => chapter.ComicId).HasColumnName("comic_id");

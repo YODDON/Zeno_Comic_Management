@@ -3,8 +3,8 @@
 | Actor | Method | Route | Owner |
 |---|---|---|---|
 | User | GET/PATCH | `/api/v1/me` | Identity |
-| Public | GET | `/api/v1/comics`, `/api/v1/comics/{slug}` | Catalog |
-| Public/User | GET | `/api/v1/comics/{id}/chapters` | Catalog/Reading access projection |
+| Public | GET | `/api/v1/comics`, `/api/v1/comics/{slug}` | Catalog (C04 implemented) |
+| Public/User | GET | `/api/v1/comics/{id}/chapters` | Catalog baseline (C04); Reading enrichment (R01) |
 | Public | GET | `/api/v1/featured-comics` | Catalog |
 | Public/User | GET | `/api/v1/chapters/{id}/access`, `/api/v1/chapters/{id}/pages` | Reading |
 | User | POST/PATCH | `/api/v1/reading/sessions`, `/api/v1/reading/sessions/{id}` | Reading |
