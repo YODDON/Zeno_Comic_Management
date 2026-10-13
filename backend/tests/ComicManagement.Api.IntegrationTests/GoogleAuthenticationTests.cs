@@ -160,6 +160,16 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         using var adminClient = CreateClient();
         await CompleteLoginAsync(adminClient, await BeginLoginAsync(adminClient, "/"));
+
+        var missingCsrf = await adminClient.PostAsJsonAsync(
+            $"/api/v1/admin/comics/{comicId}/publish",
+            new { expectedVersion = 1 });
+        Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
+        var missingCsrfProblem = await missingCsrf.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(
+            "VALIDATION_FAILED",
+            missingCsrfProblem.GetProperty("errorCode").GetString());
+
         var me = await adminClient.GetAsync("/api/v1/me");
         var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
 
@@ -173,6 +183,24 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             return await adminClient.SendAsync(request);
         }
 
+        async Task<HttpResponseMessage> PatchSlugAsync(string slug, long expectedVersion)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Patch,
+                $"/api/v1/admin/comics/{comicId}/slug")
+            {
+                Content = JsonContent.Create(new { slug, expectedVersion }),
+            };
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            return await adminClient.SendAsync(request);
+        }
+
+        var slugChange = await PatchSlugAsync("c03-api-renamed", 1);
+        Assert.Equal(HttpStatusCode.OK, slugChange.StatusCode);
+        var slugResponse = await slugChange.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("c03-api-renamed", slugResponse.GetProperty("slug").GetString());
+        Assert.Equal(2, slugResponse.GetProperty("version").GetInt64());
+
         Assert.Equal(
             HttpStatusCode.OK,
             (await PostCommandAsync(
@@ -182,7 +210,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             HttpStatusCode.OK,
             (await PostCommandAsync(
                 $"/api/v1/admin/comics/{comicId}/publish",
-                1)).StatusCode);
+                2)).StatusCode);
 
         var lastChapter = await PostCommandAsync(
             $"/api/v1/admin/chapters/{chapterId}/hide",
@@ -769,7 +797,76 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             Assert.True(post.GetProperty("responses").TryGetProperty("403", out _));
             Assert.True(post.GetProperty("responses").TryGetProperty("404", out _));
             Assert.True(post.GetProperty("responses").TryGetProperty("409", out _));
+
+            var requestSchema = ResolveOpenApiSchema(
+                document,
+                post.GetProperty("requestBody")
+                    .GetProperty("content")
+                    .GetProperty("application/json")
+                    .GetProperty("schema"));
+            Assert.True(requestSchema.GetProperty("properties")
+                .TryGetProperty("expectedVersion", out _));
+            Assert.Contains(
+                requestSchema.GetProperty("required").EnumerateArray(),
+                property => property.GetString() == "expectedVersion");
+
+            var responseSchema = ResolveOpenApiSchema(
+                document,
+                post.GetProperty("responses")
+                    .GetProperty("200")
+                    .GetProperty("content")
+                    .GetProperty("application/json")
+                    .GetProperty("schema"));
+            var responseProperties = responseSchema.GetProperty("properties");
+            Assert.True(responseProperties.TryGetProperty("id", out _));
+            Assert.True(responseProperties.TryGetProperty("publicationStatus", out _));
+            Assert.True(responseProperties.TryGetProperty("version", out _));
+            Assert.True(responseProperties.TryGetProperty("firstPublishedAt", out _));
         }
+
+        Assert.True(paths
+            .GetProperty("/api/v1/admin/comics/{comicId}/publish")
+            .GetProperty("post")
+            .GetProperty("responses")
+            .TryGetProperty("422", out _));
+        Assert.True(paths
+            .GetProperty("/api/v1/admin/chapters/{chapterId}/publish")
+            .GetProperty("post")
+            .GetProperty("responses")
+            .TryGetProperty("422", out _));
+        Assert.True(paths
+            .GetProperty("/api/v1/admin/chapters/{chapterId}/hide")
+            .GetProperty("post")
+            .GetProperty("responses")
+            .TryGetProperty("422", out _));
+
+        var patchSlug = paths
+            .GetProperty("/api/v1/admin/comics/{comicId}/slug")
+            .GetProperty("patch");
+        foreach (var status in new[] { "200", "400", "401", "403", "404", "409", "422" })
+        {
+            Assert.True(patchSlug.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var slugRequestSchema = ResolveOpenApiSchema(
+            document,
+            patchSlug.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        Assert.True(slugRequestSchema.GetProperty("properties").TryGetProperty("slug", out _));
+        Assert.True(slugRequestSchema.GetProperty("properties")
+            .TryGetProperty("expectedVersion", out _));
+        var slugResponseSchema = ResolveOpenApiSchema(
+            document,
+            patchSlug.GetProperty("responses")
+                .GetProperty("200")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        Assert.True(slugResponseSchema.GetProperty("properties").TryGetProperty("id", out _));
+        Assert.True(slugResponseSchema.GetProperty("properties").TryGetProperty("slug", out _));
+        Assert.True(slugResponseSchema.GetProperty("properties").TryGetProperty("version", out _));
     }
 
     [Fact]
@@ -1148,6 +1245,24 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             StringComparison.Ordinal);
         Assert.Equal(HttpStatusCode.TooManyRequests, sameIp.StatusCode);
         Assert.Equal(HttpStatusCode.Redirect, anotherIp.StatusCode);
+    }
+
+    private static JsonElement ResolveOpenApiSchema(
+        JsonElement document,
+        JsonElement schema)
+    {
+        if (!schema.TryGetProperty("$ref", out var reference))
+        {
+            return schema;
+        }
+
+        const string prefix = "#/components/schemas/";
+        var value = reference.GetString()
+            ?? throw new InvalidOperationException("OpenAPI schema reference is empty.");
+        Assert.StartsWith(prefix, value, StringComparison.Ordinal);
+        return document.GetProperty("components")
+            .GetProperty("schemas")
+            .GetProperty(value[prefix.Length..]);
     }
 
     private HttpClient CreateClient() => _factory.CreateClient(

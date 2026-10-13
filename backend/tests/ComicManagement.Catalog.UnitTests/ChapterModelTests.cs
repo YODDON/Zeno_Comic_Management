@@ -82,6 +82,20 @@ public sealed class ChapterModelTests
     }
 
     [Fact]
+    public void Page_mutation_guard_rejects_invalidating_a_published_chapter_only()
+    {
+        var published = CreateChapter();
+        published.Publish(true, 1, Now.AddMinutes(1));
+
+        var exception = Assert.Throws<CatalogRuleViolationException>(() =>
+            published.EnsurePageMutationPreservesPublication(false));
+        Assert.Equal(CatalogRuleViolation.PublicationPreconditionFailed, exception.Violation);
+
+        published.EnsurePageMutationPreservesPublication(true);
+        CreateChapter().EnsurePageMutationPreservesPublication(false);
+    }
+
+    [Fact]
     public void Chapter_page_is_valid_only_after_a_pending_asset_is_marked_ready()
     {
         var page = ChapterPage.CreatePending(

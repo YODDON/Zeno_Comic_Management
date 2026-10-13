@@ -23,6 +23,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261012151245_AddCatalogChaptersAndPages",
         "20261012161522_DefineChapterPageAssetLifecycle",
         "20261012171656_AddChapterPageUploadFingerprint",
+        "20261013044212_AddAdministrationAuditLogs",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -68,6 +69,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "catalog.comic_translation_groups"));
         Assert.True(await TableExists(context, "catalog.chapters"));
         Assert.True(await TableExists(context, "catalog.chapter_pages"));
+        Assert.True(await TableExists(context, "administration.audit_logs"));
 
         var now = new DateTimeOffset(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
         var comicId = Guid.NewGuid();
@@ -125,6 +127,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.False(await TableExists(context, "catalog.genres"));
         Assert.False(await TableExists(context, "catalog.chapters"));
         Assert.False(await TableExists(context, "catalog.chapter_pages"));
+        Assert.False(await TableExists(context, "administration.audit_logs"));
 
         await context.Database.MigrateAsync();
 

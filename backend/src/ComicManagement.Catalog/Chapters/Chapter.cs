@@ -123,6 +123,17 @@ public sealed class Chapter
         Touch(hiddenAt);
     }
 
+    public void EnsurePageMutationPreservesPublication(bool hasValidPageAfterMutation)
+    {
+        if (PublicationStatus == ChapterPublicationStatuses.Published &&
+            !hasValidPageAfterMutation)
+        {
+            throw new CatalogRuleViolationException(
+                CatalogRuleViolation.PublicationPreconditionFailed,
+                "A page mutation cannot leave a published chapter without a valid page.");
+        }
+    }
+
     private static void EnsureUtc(DateTimeOffset value, string parameterName)
     {
         if (value.Offset != TimeSpan.Zero)

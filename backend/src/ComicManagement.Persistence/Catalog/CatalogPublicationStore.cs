@@ -1,162 +1,23 @@
 using System.Data;
+using System.Text.Json;
+using ComicManagement.Administration.Auditing;
 using ComicManagement.Catalog;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Publishing;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace ComicManagement.Persistence;
 
 internal sealed class CatalogPublicationStore(AppDbContext dbContext) : ICatalogPublicationStore
 {
-    public Task<CatalogPublicationResult> PublishComicAsync(
+    public async Task<CatalogPublicationResult> ExecuteComicAsync(
         Guid comicId,
-        long expectedVersion,
-        DateTimeOffset occurredAt,
-        CancellationToken cancellationToken = default) =>
-        ExecuteComicAsync(
-            comicId,
-            async comic =>
-            {
-                var hasValidPublishedChapter = await dbContext.Chapters
-                    .Where(chapter =>
-                        chapter.ComicId == comic.Id &&
-                        chapter.PublicationStatus == ChapterPublicationStatuses.Published)
-                    .AnyAsync(
-                        chapter => dbContext.ChapterPages.Any(page =>
-                            page.ChapterId == chapter.Id &&
-                            page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                            page.Width > 0 &&
-                            page.Height > 0),
-                        cancellationToken);
-
-                comic.Publish(hasValidPublishedChapter, expectedVersion, occurredAt);
-            },
-            cancellationToken);
-
-    public Task<CatalogPublicationResult> HideComicAsync(
-        Guid comicId,
-        long expectedVersion,
-        DateTimeOffset occurredAt,
-        CancellationToken cancellationToken = default) =>
-        ExecuteComicAsync(
-            comicId,
-            comic =>
-            {
-                comic.Hide(expectedVersion, occurredAt);
-                return Task.CompletedTask;
-            },
-            cancellationToken);
-
-    public async Task<CatalogPublicationResult> PublishChapterAsync(
-        Guid chapterId,
-        long expectedVersion,
+        CatalogCommandAudit audit,
+        Action<Comic, ComicPublicationFacts> transition,
         DateTimeOffset occurredAt,
         CancellationToken cancellationToken = default)
-    {
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.ReadCommitted,
-            cancellationToken);
-
-        var chapterIdentity = await dbContext.Chapters
-            .AsNoTracking()
-            .Where(chapter => chapter.Id == chapterId)
-            .Select(chapter => new { chapter.Id, chapter.ComicId })
-            .SingleOrDefaultAsync(cancellationToken);
-        if (chapterIdentity is null)
-        {
-            return NotFound();
-        }
-
-        var comic = await LockComicAsync(chapterIdentity.ComicId, cancellationToken);
-        if (comic is null)
-        {
-            return NotFound();
-        }
-
-        var chapter = await LockChapterAsync(chapterId, cancellationToken);
-        if (chapter is null)
-        {
-            return NotFound();
-        }
-
-        var hasValidPage = await dbContext.ChapterPages.AnyAsync(
-            page =>
-                page.ChapterId == chapter.Id &&
-                page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                page.Width > 0 &&
-                page.Height > 0,
-            cancellationToken);
-
-        return await SaveChapterAsync(
-            chapter,
-            () => chapter.Publish(hasValidPage, expectedVersion, occurredAt),
-            transaction,
-            cancellationToken);
-    }
-
-    public async Task<CatalogPublicationResult> HideChapterAsync(
-        Guid chapterId,
-        long expectedVersion,
-        DateTimeOffset occurredAt,
-        CancellationToken cancellationToken = default)
-    {
-        await using var transaction = await dbContext.Database.BeginTransactionAsync(
-            IsolationLevel.ReadCommitted,
-            cancellationToken);
-
-        var chapterIdentity = await dbContext.Chapters
-            .AsNoTracking()
-            .Where(chapter => chapter.Id == chapterId)
-            .Select(chapter => new { chapter.Id, chapter.ComicId })
-            .SingleOrDefaultAsync(cancellationToken);
-        if (chapterIdentity is null)
-        {
-            return NotFound();
-        }
-
-        var comic = await LockComicAsync(chapterIdentity.ComicId, cancellationToken);
-        if (comic is null)
-        {
-            return NotFound();
-        }
-
-        var chapter = await LockChapterAsync(chapterId, cancellationToken);
-        if (chapter is null)
-        {
-            return NotFound();
-        }
-
-        var canHide = true;
-        if (comic.PublicationStatus == ComicPublicationStatuses.Published &&
-            chapter.PublicationStatus == ChapterPublicationStatuses.Published)
-        {
-            var otherValidPublishedChapterExists = await dbContext.Chapters
-                .Where(candidate =>
-                    candidate.ComicId == comic.Id &&
-                    candidate.Id != chapter.Id &&
-                    candidate.PublicationStatus == ChapterPublicationStatuses.Published)
-                .AnyAsync(
-                    candidate => dbContext.ChapterPages.Any(page =>
-                        page.ChapterId == candidate.Id &&
-                        page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                        page.Width > 0 &&
-                        page.Height > 0),
-                    cancellationToken);
-            canHide = otherValidPublishedChapterExists;
-        }
-
-        return await SaveChapterAsync(
-            chapter,
-            () => chapter.Hide(canHide, expectedVersion, occurredAt),
-            transaction,
-            cancellationToken);
-    }
-
-    private async Task<CatalogPublicationResult> ExecuteComicAsync(
-        Guid comicId,
-        Func<Comic, Task> transition,
-        CancellationToken cancellationToken)
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.ReadCommitted,
@@ -167,9 +28,23 @@ internal sealed class CatalogPublicationStore(AppDbContext dbContext) : ICatalog
             return NotFound();
         }
 
+        var facts = new ComicPublicationFacts(await HasValidPublishedChapterAsync(
+            comic.Id,
+            cancellationToken));
+        var before = new { comic.PublicationStatus, comic.Slug, comic.Version };
+
         try
         {
-            await transition(comic);
+            transition(comic, facts);
+            AddAudit(
+                audit,
+                comic.Id,
+                occurredAt,
+                JsonSerializer.Serialize(new
+                {
+                    Before = before,
+                    After = new { comic.PublicationStatus, comic.Slug, comic.Version },
+                }));
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return Succeeded(comic);
@@ -182,17 +57,66 @@ internal sealed class CatalogPublicationStore(AppDbContext dbContext) : ICatalog
         {
             return ConcurrencyConflict();
         }
+        catch (DbUpdateException exception) when (IsSlugConflict(exception))
+        {
+            return new CatalogPublicationResult(CatalogPublicationOutcome.SlugConflict);
+        }
     }
 
-    private async Task<CatalogPublicationResult> SaveChapterAsync(
-        Chapter chapter,
-        Action transition,
-        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
-        CancellationToken cancellationToken)
+    public async Task<CatalogPublicationResult> ExecuteChapterAsync(
+        Guid chapterId,
+        CatalogCommandAudit audit,
+        Action<Chapter, ChapterPublicationFacts> transition,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken = default)
     {
+        await using var transaction = await dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+
+        var chapterIdentity = await dbContext.Chapters
+            .AsNoTracking()
+            .Where(chapter => chapter.Id == chapterId)
+            .Select(chapter => new { chapter.Id, chapter.ComicId })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (chapterIdentity is null)
+        {
+            return NotFound();
+        }
+
+        var comic = await LockComicAsync(chapterIdentity.ComicId, cancellationToken);
+        if (comic is null)
+        {
+            return NotFound();
+        }
+
+        var chapter = await LockChapterAsync(chapterId, cancellationToken);
+        if (chapter is null)
+        {
+            return NotFound();
+        }
+
+        var facts = new ChapterPublicationFacts(
+            comic.PublicationStatus,
+            await HasValidPageAsync(chapter.Id, cancellationToken),
+            await HasOtherValidPublishedChapterAsync(
+                comic.Id,
+                chapter.Id,
+                cancellationToken));
+        var before = new { chapter.PublicationStatus, chapter.Version };
+
         try
         {
-            transition();
+            transition(chapter, facts);
+            AddAudit(
+                audit,
+                chapter.Id,
+                occurredAt,
+                JsonSerializer.Serialize(new
+                {
+                    Before = before,
+                    After = new { chapter.PublicationStatus, chapter.Version },
+                }));
             await dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return Succeeded(chapter);
@@ -206,6 +130,60 @@ internal sealed class CatalogPublicationStore(AppDbContext dbContext) : ICatalog
             return ConcurrencyConflict();
         }
     }
+
+    private Task<bool> HasValidPublishedChapterAsync(
+        Guid comicId,
+        CancellationToken cancellationToken) => dbContext.Chapters
+        .Where(chapter =>
+            chapter.ComicId == comicId &&
+            chapter.PublicationStatus == ChapterPublicationStatuses.Published)
+        .AnyAsync(
+            chapter => dbContext.ChapterPages.Any(page =>
+                page.ChapterId == chapter.Id &&
+                page.AssetStatus == ChapterPageAssetStatuses.Ready &&
+                page.Width > 0 &&
+                page.Height > 0),
+            cancellationToken);
+
+    private Task<bool> HasValidPageAsync(
+        Guid chapterId,
+        CancellationToken cancellationToken) => dbContext.ChapterPages.AnyAsync(
+        page =>
+            page.ChapterId == chapterId &&
+            page.AssetStatus == ChapterPageAssetStatuses.Ready &&
+            page.Width > 0 &&
+            page.Height > 0,
+        cancellationToken);
+
+    private Task<bool> HasOtherValidPublishedChapterAsync(
+        Guid comicId,
+        Guid excludedChapterId,
+        CancellationToken cancellationToken) => dbContext.Chapters
+        .Where(candidate =>
+            candidate.ComicId == comicId &&
+            candidate.Id != excludedChapterId &&
+            candidate.PublicationStatus == ChapterPublicationStatuses.Published)
+        .AnyAsync(
+            candidate => dbContext.ChapterPages.Any(page =>
+                page.ChapterId == candidate.Id &&
+                page.AssetStatus == ChapterPageAssetStatuses.Ready &&
+                page.Width > 0 &&
+                page.Height > 0),
+            cancellationToken);
+
+    private void AddAudit(
+        CatalogCommandAudit audit,
+        Guid targetId,
+        DateTimeOffset occurredAt,
+        string redactedChanges) => dbContext.AuditLogs.Add(AuditLog.Create(
+        Guid.NewGuid(),
+        audit.ActorId,
+        audit.Action,
+        audit.TargetType,
+        targetId,
+        audit.CorrelationId,
+        occurredAt,
+        redactedChanges));
 
     private async Task<Comic?> LockComicAsync(
         Guid comicId,
@@ -231,13 +209,21 @@ internal sealed class CatalogPublicationStore(AppDbContext dbContext) : ICatalog
         return chapters.SingleOrDefault();
     }
 
+    private static bool IsSlugConflict(DbUpdateException exception) =>
+        exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: "ux_comics_slug",
+        };
+
     private static CatalogPublicationResult Succeeded(Comic comic) => new(
         CatalogPublicationOutcome.Succeeded,
         new CatalogPublicationState(
             comic.Id,
             comic.PublicationStatus,
             comic.Version,
-            comic.FirstPublishedAt));
+            comic.FirstPublishedAt,
+            comic.Slug));
 
     private static CatalogPublicationResult Succeeded(Chapter chapter) => new(
         CatalogPublicationOutcome.Succeeded,

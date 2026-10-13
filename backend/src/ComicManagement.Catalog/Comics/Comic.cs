@@ -152,11 +152,14 @@ public sealed class Comic
         Touch(changedAt);
     }
 
+    public static bool IsValidSlug(string? slug) =>
+        !string.IsNullOrWhiteSpace(slug) && slug.Length <= MaximumSlugLength;
+
     private static void ValidateSlug(string slug)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(slug);
-        if (slug.Length > MaximumSlugLength)
+        if (!IsValidSlug(slug))
         {
+            ArgumentException.ThrowIfNullOrWhiteSpace(slug);
             throw new ArgumentOutOfRangeException(nameof(slug));
         }
     }

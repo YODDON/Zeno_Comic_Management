@@ -22,6 +22,66 @@ namespace ComicManagement.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("ComicManagement.Administration.Auditing.AuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("RedactedChanges")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("redacted_changes");
+
+                    b.Property<Guid>("TargetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_id");
+
+                    b.Property<string>("TargetType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("target_type");
+
+                    b.HasKey("Id")
+                        .HasName("pk_audit_logs");
+
+                    b.HasIndex("ActorId", "OccurredAt")
+                        .HasDatabaseName("ix_audit_logs_actor_occurred_at");
+
+                    b.HasIndex("TargetType", "TargetId", "OccurredAt")
+                        .HasDatabaseName("ix_audit_logs_target_occurred_at");
+
+                    b.ToTable("audit_logs", "administration", t =>
+                        {
+                            t.HasCheckConstraint("ck_audit_logs_action_not_blank", "length(btrim(action)) > 0");
+
+                            t.HasCheckConstraint("ck_audit_logs_correlation_id_not_blank", "length(btrim(correlation_id)) > 0");
+
+                            t.HasCheckConstraint("ck_audit_logs_target_type_not_blank", "length(btrim(target_type)) > 0");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.Property<Guid>("Id")
