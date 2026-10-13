@@ -23,10 +23,6 @@ internal sealed class ReadingSessionStore(
             IsolationLevel.ReadCommitted,
             cancellationToken);
 
-        await ChapterAccessQuery.LockAccessRowsAsync(
-            dbContext,
-            chapterId,
-            cancellationToken);
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             chapterId,
@@ -90,10 +86,6 @@ internal sealed class ReadingSessionStore(
             return Expired();
         }
 
-        await ChapterAccessQuery.LockAccessRowsAsync(
-            dbContext,
-            session.ChapterId,
-            cancellationToken);
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             session.ChapterId,
@@ -134,6 +126,17 @@ internal sealed class ReadingSessionStore(
                 receivedAt,
                 cancellationToken);
         }
+        else if (heartbeat.PositionRemapped &&
+                 session.CurrentPageOrder.HasValue &&
+                 session.CurrentPageOffsetRatio.HasValue)
+        {
+            await UpsertProgressAsync(
+                session,
+                session.CurrentPageOrder.Value,
+                session.CurrentPageOffsetRatio.Value,
+                receivedAt,
+                cancellationToken);
+        }
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -160,10 +163,6 @@ internal sealed class ReadingSessionStore(
             return Succeeded(session);
         }
 
-        await ChapterAccessQuery.LockAccessRowsAsync(
-            dbContext,
-            session.ChapterId,
-            cancellationToken);
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             session.ChapterId,
@@ -174,19 +173,51 @@ internal sealed class ReadingSessionStore(
             return accessFailure;
         }
 
+        var currentManifest = manifest ?? throw new InvalidOperationException(
+            "An accessible chapter requires a manifest.");
+        var readyPageOrders = currentManifest.Pages
+            .Select(page => page.PageOrder)
+            .ToArray();
+        var manifestSynchronization = session.SynchronizeManifest(
+            currentManifest.Revision,
+            readyPageOrders);
+        if (manifestSynchronization.PositionRemapped &&
+            session.CurrentPageOrder.HasValue &&
+            session.CurrentPageOffsetRatio.HasValue)
+        {
+            await UpsertProgressAsync(
+                session,
+                session.CurrentPageOrder.Value,
+                session.CurrentPageOffsetRatio.Value,
+                qualifiedAt,
+                cancellationToken);
+        }
+
         var qualification = session.Qualify(qualifiedAt);
         if (qualification == ReadingQualificationOutcome.Expired)
         {
+            await PersistManifestSynchronizationAsync(
+                manifestSynchronization,
+                transaction,
+                cancellationToken);
             return NotQualified(session, "SESSION_EXPIRED");
         }
 
         if (qualification == ReadingQualificationOutcome.ProgressThresholdNotMet)
         {
+            await PersistManifestSynchronizationAsync(
+                manifestSynchronization,
+                transaction,
+                cancellationToken);
             return NotQualified(session, "PROGRESS_THRESHOLD_NOT_MET");
         }
 
         if (qualification == ReadingQualificationOutcome.ActiveDurationThresholdNotMet)
         {
+            await PersistManifestSynchronizationAsync(
+                manifestSynchronization,
+                transaction,
+                cancellationToken);
             return NotQualified(session, "ACTIVE_DURATION_THRESHOLD_NOT_MET");
         }
 
@@ -195,9 +226,8 @@ internal sealed class ReadingSessionStore(
             return Succeeded(session);
         }
 
-        var currentManifest = manifest ?? throw new InvalidOperationException(
-            "An accessible chapter requires a manifest.");
-        if (session.CurrentPageOrder.HasValue &&
+        if (!manifestSynchronization.PositionRemapped &&
+            session.CurrentPageOrder.HasValue &&
             session.CurrentPageOffsetRatio.HasValue &&
             currentManifest.Pages.Any(page => page.PageOrder == session.CurrentPageOrder.Value))
         {
@@ -227,6 +257,20 @@ internal sealed class ReadingSessionStore(
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return Succeeded(session);
+    }
+
+    private async Task PersistManifestSynchronizationAsync(
+        ReadingManifestSynchronization synchronization,
+        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
+        CancellationToken cancellationToken)
+    {
+        if (!synchronization.Changed)
+        {
+            return;
+        }
+
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private async Task<ReadingSession?> LockSessionAsync(
