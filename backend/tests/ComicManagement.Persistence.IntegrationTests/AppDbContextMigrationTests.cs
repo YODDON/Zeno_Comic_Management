@@ -1,3 +1,5 @@
+using ComicManagement.Catalog.Chapters;
+using ComicManagement.Catalog.Comics;
 using ComicManagement.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -19,6 +21,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261011194443_AddIdentityUsers",
         "20261012112702_AddCatalogTaxonomyAndComics",
         "20261012151245_AddCatalogChaptersAndPages",
+        "20261012161522_DefineChapterPageAssetLifecycle",
+        "20261012171656_AddChapterPageUploadFingerprint",
+        "20261013044212_AddAdministrationAuditLogs",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -64,6 +69,47 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "catalog.comic_translation_groups"));
         Assert.True(await TableExists(context, "catalog.chapters"));
         Assert.True(await TableExists(context, "catalog.chapter_pages"));
+        Assert.True(await TableExists(context, "administration.audit_logs"));
+
+        var now = new DateTimeOffset(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        var pageId = Guid.NewGuid();
+        context.Comics.Add(Comic.Create(
+            comicId,
+            "migration-pending-page",
+            "Migration Pending Page",
+            string.Empty,
+            ComicSeriesStatuses.Ongoing,
+            null,
+            0,
+            false,
+            now));
+        context.Chapters.Add(Chapter.Create(
+            chapterId,
+            comicId,
+            "Chapter 1",
+            1,
+            null,
+            null,
+            now));
+        context.ChapterPages.Add(ChapterPage.CreatePending(
+            pageId,
+            chapterId,
+            1,
+            "comic-management/chapter-pages/migration/pending",
+            $"sha256:{new string('a', 64)}",
+            now));
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync("20261012151245_AddCatalogChaptersAndPages");
+        Assert.Equal(1, await CountRows(context, "catalog.chapter_pages"));
+
+        await context.Database.MigrateAsync();
+        context.ChangeTracker.Clear();
+        var migratedPage = await context.ChapterPages.SingleAsync(page => page.Id == pageId);
+        Assert.Equal(ChapterPageAssetStatuses.Pending, migratedPage.AssetStatus);
+        Assert.StartsWith("legacy:", migratedPage.UploadFingerprint, StringComparison.Ordinal);
 
         await context.Database.MigrateAsync();
 
@@ -81,6 +127,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.False(await TableExists(context, "catalog.genres"));
         Assert.False(await TableExists(context, "catalog.chapters"));
         Assert.False(await TableExists(context, "catalog.chapter_pages"));
+        Assert.False(await TableExists(context, "administration.audit_logs"));
 
         await context.Database.MigrateAsync();
 
@@ -128,5 +175,17 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 
         return (bool)(await command.ExecuteScalarAsync()
             ?? throw new InvalidOperationException("Table existence query returned null."));
+    }
+
+    private static async Task<int> CountRows(AppDbContext context, string qualifiedTableName)
+    {
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"SELECT count(*) FROM {qualifiedTableName};";
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(),
+            System.Globalization.CultureInfo.InvariantCulture);
     }
 }

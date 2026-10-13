@@ -1,0 +1,52 @@
+# P0 Request/Response Contracts — Implementation Blueprint
+
+**Status:** approved business behavior with *proposed* wire schemas. Concrete SePay payload/QR fields and Cloudinary protected manifest are Verification Required. Implement OpenAPI and tests before treating routes production-ready. `Idempotency-Key` required on financial POST commands. Actor scopes indicated.
+
+## Identity — GET/PATCH `/api/v1/me` (User)
+GET -> `{id,displayName,email,avatarUrl,role,status}`. PATCH request `{displayName}` updates only displayName; never provider subject/email/role. 400 invalid name, 401 no session, 403 disabled. Cookie Google OAuth only.
+
+## Catalog & chapter access (Public/User)
+GET `/api/v1/comics/{id}/chapters?cursor=&limit=30` -> `{items:[{id,chapterLabel,sortOrder,publicationStatus,accessSummary:{accessType,canRead,finalPriceCoins}}],nextCursor}`; public only Published parent/Chapter. Access summary projected in batch. GET `/api/v1/chapters/{id}/access` -> `{chapterId,accessType:"Free|VipIncluded|CoinUnlocked|Locked|Unavailable",canRead,priceCoins,needsLogin}`. GET `/api/v1/chapters/{id}/pages` only after access check: `{chapterId,pages:[{order,width,height,deliveryUrl}],manifestIssuedAt,refreshHint}`; protected delivery mechanism unresolved and must fail secure.
+
+## Catalog publication and slug (Admin)
+POST `/api/v1/admin/comics/{comicId}/publish`, POST `/api/v1/admin/comics/{comicId}/hide`, POST `/api/v1/admin/chapters/{chapterId}/publish`, and POST `/api/v1/admin/chapters/{chapterId}/hide` accept `{expectedVersion}` and return 200 `{id,publicationStatus,version,firstPublishedAt}`. PATCH `/api/v1/admin/comics/{comicId}/slug` accepts `{slug,expectedVersion}` and returns 200 `{id,slug,version}`. All routes require an authenticated Admin and CSRF token. They return 400 `VALIDATION_FAILED`, 404 `RESOURCE_NOT_FOUND`, and 409 `CONCURRENCY_CONFLICT`; publication/slug-lock invariant failures return 422 `PUBLICATION_PRECONDITION_FAILED`, while an existing slug returns 409 `SLUG_CONFLICT`. These non-financial commands use optimistic versions rather than `Idempotency-Key`. Mutations and their redacted immutable audit rows commit in the same PostgreSQL transaction.
+
+## Reading session (User)
+POST `/api/v1/reading/sessions` `{chapterId}` -> 201 `{sessionId,startedAt,expiresAt,policy:{minProgressBasisPoints:9000,minActiveDurationMs:5000},version}`. PATCH `/api/v1/reading/sessions/{id}` `{currentPageOrder,maxObservedPageOrder,progressBasisPoints,sequenceNumber}` -> 200 `{acceptedPosition,acceptedMaxProgressBasisPoints,version}`; client statements are untrusted input. POST `/qualify` -> `{qualified,qualifiedAt?,reasonCode?}`; server verifies chapter access and plausible active time. GET `/reading/continue` -> paged comics with most recent chapter/page and availability. Nonqualifying progress never creates Mission event.
+
+## Wallet (User)
+GET `/api/v1/wallet` -> `{paidAvailable,paidReserved,bonusAvailable,totalAvailable,version}`; totalAvailable excludes reserved. GET `/wallet/entries?cursor=` -> immutable ledger projections with operation type, coin/bucket, delta, occurredAt, cursor. Never expose other users' data.
+
+## Unlock Quote (User)
+POST `/api/v1/chapters/{id}/unlock-quotes` no client price -> `{quoteId,chapterId,basePriceCoins,vipDiscountApplied,finalPriceCoins,bonusToSpend,paidToSpend,expiresAt,priceRevision}`; expires in 5 minutes, bound to user/chapter/revision. Example price 101 with VIP discount -> ceil(80.8)=81. Quote never reserves funds. Locked only; Free/VIP included bypass purchase.
+
+## Unlock (User)
+POST `/api/v1/chapters/{id}/unlock`, `Idempotency-Key`, `{quoteId}` -> 200 `{chapterId,accessType:"CoinUnlocked",spent:{bonusCoins,paidCoins,totalCoins},walletAfter:{paidAvailable,bonusAvailable},alreadyUnlocked}`. Transaction rechecks quote, publication, entitlement, price and balance; Bonus then Paid FIFO; writes ledger + allocation + unique chapter unlock + outbox. Retry safe. 409 `QUOTE_EXPIRED`, `PRICE_CHANGED`, `IDEMPOTENCY_CONFLICT`; 422 `INSUFFICIENT_COINS`; hidden 404.
+
+## TopUp (User)
+POST `/api/v1/billing/topups`, `Idempotency-Key`, `{amountVnd:100000}` -> 201 `{orderId,orderCode,amountVnd:100000,paidCoinsExpected:10000,status:"Pending",expiresAt,paymentInstructions:{type:"ProviderSpecific"}}`. Validate 10k–2m VND, multiple 1000. `paymentInstructions` is a **placeholder union** until actual SePay QR/checkout verified. GET `/billing/orders/{id}` returns owner-safe providerPaymentStatus, fulfillmentStatus, matching/reconciliation state. Redirect alone never fulfills.
+
+## SePay webhook (Provider)
+POST `/api/v1/webhooks/sepay/ipn`: read raw body, authenticate via account-validated method (HMAC preferred subject to real verification), anti-replay, normalize provider financial transaction ID, validate payment code/receiving account/incoming direction/exact amount/expiry policy. Financial event dedup independent of delivery retry. One transaction fulfills TopUp (Paid lot+Wallet+ledger+outbox) OR VIP (membership transaction+subscription+outbox). Unmatched, late, wrong-amount -> reconciliation with no automatic credit. **HTTP acknowledgement, headers and exact payload MUST be confirmed with SePay documentation/test account.**
+
+## VIP (User/Admin)
+GET `/membership/plan` -> `{planId,priceVnd,durationHours:720,discountPercent:20,version}`. GET `/membership/me` -> `{isActive,expiresAt}`. POST `/membership/checkout`, `Idempotency-Key`, `{planId}` -> 201 `{orderId,amountVnd,durationHours:720,status:"Pending",paymentInstructions}`. Fulfill exactly once; expiry=max(existingExpiry,successfulBackendFulfilledAt)+720h. PATCH Admin `/admin/vip-plan` `{priceVnd,expectedVersion}` changes **future-order price only**; duration/discount fixed for MVP.
+
+## Refund eligibility (User)
+GET `/api/v1/refunds/eligibility?paymentOrderId={id}` -> `{orderId,originalAmountVnd,feeVnd,netRefundVnd,lotGrantedCoins,lotAvailableCoins,eligible,reasonCode,paidAt}`. Informational snapshot only; lot rechecked when Admin approves. Within 7 days of verified paidAt. 5% fee VND is whole due to TopUp multiples 1000.
+
+## Refund request (User)
+POST `/api/v1/refunds`, `Idempotency-Key`, `{paymentOrderId,reason,recipient:{bankCode,accountNumber,accountHolder}}` -> 201 `{refundId,status:"Requested",originalAmountVnd,feeVnd,netRefundVnd,requestedAt}`. Recipient encrypted and masked in responses/logs. One RefundRequest per TopUp **even if Rejected**; no reserve on submission.
+
+## Refund Admin transitions
+`POST /api/v1/admin/refunds/{id}/review`: UnderReview.
+`POST /approve` `{expectedVersion,decisionNote}` -> `RecoveryReserved` with reservation; lock Wallet/lot, recheck full `granted_coins` still available (spent/refunded/reserved=0), reserve all; 422 insufficient, 409 conflict.
+`POST /reject` `{expectedVersion,reason}` -> Rejected and audit.
+`POST /transfer-attempts` records manual attempt details/reference/evidence and state, does **not** itself prove bank succeeded.
+`POST /complete` `{expectedVersion,transferRecordId,confirmationNote}` -> Completed only after verified/reviewed bank evidence; consumes reserved to refunded, immutable ledger. `POST /release` after **confirmed failed** transfer -> release to Paid available; ambiguous `NeedsReconciliation` holds reservation. Never automatically retry bank payout.
+
+## Missions (User/Admin)
+GET `/api/v1/missions` -> active definitions/revisions plus per-period progress/rewardStatus; GET `/daily-limit` -> `{localDate,limitCoins:300,grantedCoins,remainingCoins}`; GET `/rewards` -> cursor history. Admin create/revise/activate Missions with target, reward (<=300), action type, Fixed/Daily/Weekly/Event, repeat policy and effective window. **No User API to grant own reward**. Backend event -> dedup -> period/revision at event time -> reward decision + Wallet Bonus+ledger+counter transaction; `DeniedDailyCap` is processed result, not HTTP failure.
+
+## Error conventions
+Use `docs/api/error-codes.md` for HTTP mapping and domain guard. Financial request idempotency stores request fingerprint, prior result and in-progress state. For same-key operation executing, default `409 OPERATION_IN_PROGRESS` + Retry-After unless durable status resource introduced by approved ADR.

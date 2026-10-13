@@ -2,8 +2,8 @@ namespace ComicManagement.Catalog.Media;
 
 public sealed class ChapterPageAssetException : Exception
 {
-    public ChapterPageAssetException(string errorCode, string message, Exception? innerException = null)
-        : base(message, innerException)
+    public ChapterPageAssetException(string errorCode, string message)
+        : base(message)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(errorCode);
         ErrorCode = errorCode;

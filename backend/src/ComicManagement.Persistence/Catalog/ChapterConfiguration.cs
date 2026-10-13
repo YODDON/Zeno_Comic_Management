@@ -65,16 +65,26 @@ internal sealed class ChapterPageConfiguration : IEntityTypeConfiguration<Chapte
                 "ck_chapter_pages_cloudinary_public_id_not_blank",
                 "length(btrim(cloudinary_public_id)) > 0");
             table.HasCheckConstraint(
-                "ck_chapter_pages_asset_status_not_blank",
-                "length(btrim(asset_status)) > 0");
-            table.HasCheckConstraint("ck_chapter_pages_width", "width > 0");
-            table.HasCheckConstraint("ck_chapter_pages_height", "height > 0");
+                "ck_chapter_pages_asset_status",
+                "asset_status IN ('Pending', 'Ready')");
+            table.HasCheckConstraint(
+                "ck_chapter_pages_upload_fingerprint",
+                "upload_fingerprint ~ '^(sha256:[0-9a-f]{64}|legacy:[0-9a-f-]{36})$'");
+            table.HasCheckConstraint(
+                "ck_chapter_pages_asset_dimensions",
+                "(asset_status = 'Pending' AND width = 0 AND height = 0) " +
+                "OR (asset_status = 'Ready' AND width > 0 AND height > 0)");
         });
 
         builder.HasKey(page => page.Id).HasName("pk_chapter_pages");
         builder.HasIndex(page => new { page.ChapterId, page.PageOrder })
             .IsUnique()
             .HasDatabaseName("ux_chapter_pages_chapter_id_page_order");
+        builder.HasIndex(page => page.CloudinaryPublicId)
+            .IsUnique()
+            .HasDatabaseName("ux_chapter_pages_cloudinary_public_id");
+        builder.HasIndex(page => new { page.AssetStatus, page.UploadCreatedAt })
+            .HasDatabaseName("ix_chapter_pages_asset_status_upload_created_at");
 
         builder.Property(page => page.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(page => page.ChapterId).HasColumnName("chapter_id");
@@ -87,6 +97,13 @@ internal sealed class ChapterPageConfiguration : IEntityTypeConfiguration<Chapte
             .HasColumnName("asset_status")
             .HasMaxLength(ChapterPage.MaximumAssetStatusLength)
             .IsRequired();
+        builder.Property(page => page.UploadFingerprint)
+            .HasColumnName("upload_fingerprint")
+            .HasMaxLength(ChapterPage.MaximumUploadFingerprintLength)
+            .IsRequired();
+        builder.Property(page => page.UploadCreatedAt)
+            .HasColumnName("upload_created_at")
+            .HasColumnType("timestamp with time zone");
         builder.Property(page => page.Width).HasColumnName("width");
         builder.Property(page => page.Height).HasColumnName("height");
 

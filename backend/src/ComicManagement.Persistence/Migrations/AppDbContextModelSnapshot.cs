@@ -22,6 +22,66 @@ namespace ComicManagement.Persistence.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("ComicManagement.Administration.Auditing.AuditLog", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("ActorId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("RedactedChanges")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("redacted_changes");
+
+                    b.Property<Guid>("TargetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_id");
+
+                    b.Property<string>("TargetType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("target_type");
+
+                    b.HasKey("Id")
+                        .HasName("pk_audit_logs");
+
+                    b.HasIndex("ActorId", "OccurredAt")
+                        .HasDatabaseName("ix_audit_logs_actor_occurred_at");
+
+                    b.HasIndex("TargetType", "TargetId", "OccurredAt")
+                        .HasDatabaseName("ix_audit_logs_target_occurred_at");
+
+                    b.ToTable("audit_logs", "administration", t =>
+                        {
+                            t.HasCheckConstraint("ck_audit_logs_action_not_blank", "length(btrim(action)) > 0");
+
+                            t.HasCheckConstraint("ck_audit_logs_correlation_id_not_blank", "length(btrim(correlation_id)) > 0");
+
+                            t.HasCheckConstraint("ck_audit_logs_target_type_not_blank", "length(btrim(target_type)) > 0");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.Property<Guid>("Id")
@@ -117,6 +177,16 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("page_order");
 
+                    b.Property<DateTimeOffset>("UploadCreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("upload_created_at");
+
+                    b.Property<string>("UploadFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("upload_fingerprint");
+
                     b.Property<int>("Width")
                         .HasColumnType("integer")
                         .HasColumnName("width");
@@ -124,19 +194,26 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_chapter_pages");
 
+                    b.HasIndex("CloudinaryPublicId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chapter_pages_cloudinary_public_id");
+
+                    b.HasIndex("AssetStatus", "UploadCreatedAt")
+                        .HasDatabaseName("ix_chapter_pages_asset_status_upload_created_at");
+
                     b.HasIndex("ChapterId", "PageOrder")
                         .IsUnique()
                         .HasDatabaseName("ux_chapter_pages_chapter_id_page_order");
 
                     b.ToTable("chapter_pages", "catalog", t =>
                         {
-                            t.HasCheckConstraint("ck_chapter_pages_asset_status_not_blank", "length(btrim(asset_status)) > 0");
+                            t.HasCheckConstraint("ck_chapter_pages_asset_dimensions", "(asset_status = 'Pending' AND width = 0 AND height = 0) OR (asset_status = 'Ready' AND width > 0 AND height > 0)");
+
+                            t.HasCheckConstraint("ck_chapter_pages_asset_status", "asset_status IN ('Pending', 'Ready')");
 
                             t.HasCheckConstraint("ck_chapter_pages_cloudinary_public_id_not_blank", "length(btrim(cloudinary_public_id)) > 0");
 
-                            t.HasCheckConstraint("ck_chapter_pages_height", "height > 0");
-
-                            t.HasCheckConstraint("ck_chapter_pages_width", "width > 0");
+                            t.HasCheckConstraint("ck_chapter_pages_upload_fingerprint", "upload_fingerprint ~ '^(sha256:[0-9a-f]{64}|legacy:[0-9a-f-]{36})$'");
                         });
                 });
 

@@ -1,0 +1,15 @@
+# Catalog Module
+
+## Model
+Comic with title, unique stable slug, description, cover, genres/authors/translation groups (separate M:N), publication Draft/Published/Hidden, series Ongoing/Completed/Hiatus, default price and VIP eligible. Chapter has freeform `chapter_label`, numeric `sort_order`, nullable price override (`NULL` inherit, `0` free), nullable VIP override, publication state; ordered valid pages via Cloudinary. A chapter page asset is `Pending` while its durable upload intent exists but provider metadata is not confirmed, and `Ready` only after the authenticated Cloudinary asset identity and positive width/height are confirmed. Each new upload intent stores a SHA-256 content fingerprint; reuse of the same page identity with different content is a conflict, not a retry. Only `Ready` pages are valid for publication. Featured max five Published Comics with ordered positions.
+
+## Publication
+Chapter may become Published under Draft Comic, but not visible. Comic Publish requires >=1 Published Chapter with >=1 valid page. Do not Hide last valid Published Chapter while Comic Published; editing/removing page may not invalidate this either. Slug permanently immutable after *first* publish (`first_published_at`). Comic/Chapter with read/payment history cannot be hard-deleted; use Hidden. Public exposure requires both parent Comic and Chapter Published.
+
+## API
+Public comic search/filter/sort, detail, chapter Load More 30, featured. Admin comics/chapters CRUD, publish/hide, upload page ordering, metadata/taxonomy, Featured GET/PUT with version. Chapter list response includes batched access projection instead of one HTTP query per chapter. Save reorder atomically, account for unique-position collisions.
+
+C03 implements the Admin publication commands as `POST /api/v1/admin/comics/{comicId}/publish`, `POST /api/v1/admin/comics/{comicId}/hide`, `POST /api/v1/admin/chapters/{chapterId}/publish`, and `POST /api/v1/admin/chapters/{chapterId}/hide`, each with `{expectedVersion}`. It also implements the narrowly scoped `PATCH /api/v1/admin/comics/{comicId}/slug` command with `{slug,expectedVersion}` so the permanent first-publication slug lock is enforced through the production path; the later full editor remains out of scope. These commands require the Admin policy and authenticated unsafe requests require CSRF. Mutations use one PostgreSQL transaction, lock in `Comic -> Chapter` order, revalidate the relevant facts after locking, and append a redacted immutable audit record with actor and correlation identity in that same transaction. A shared Chapter domain guard must be invoked by future page edit/removal commands so a Published Chapter cannot be left without a `Ready` page with positive dimensions.
+
+## Acceptance
+Cannot publish Comic with zero valid Published Chapters; cannot publish empty Chapter; can publish Chapter while Comic Draft without public access; hide last valid Published Chapter rejected; paid assets never leaked in public metadata; Featured duplicates/max6/unpublished rejected; concurrent reorder conflicts rather than lost updates.

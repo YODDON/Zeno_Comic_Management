@@ -22,16 +22,26 @@ public static class CloudinaryServiceCollectionExtensions
             .Validate(options => !string.IsNullOrWhiteSpace(options.ApiKey), "ApiKey is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.ApiSecret), "ApiSecret is required.")
             .Validate(
-                options => !string.IsNullOrWhiteSpace(options.ChapterPagePublicIdPrefix),
+                options =>
+                    !string.IsNullOrWhiteSpace(options.ChapterPagePublicIdPrefix) &&
+                    options.ChapterPagePublicIdPrefix.Trim('/').Length > 0,
                 "ChapterPagePublicIdPrefix is required.")
+            .Validate(
+                options => options.MaximumChapterPageBytes > 0,
+                "MaximumChapterPageBytes must be positive.")
             .ValidateOnStart();
 
-        services.TryAddSingleton<ICloudinaryUploadApi>(serviceProvider =>
+        services.TryAddSingleton(serviceProvider =>
         {
             var options = serviceProvider.GetRequiredService<IOptions<CloudinaryOptions>>().Value;
             return new Cloudinary(new Account(options.CloudName, options.ApiKey, options.ApiSecret));
         });
+        services.TryAddSingleton<ICloudinaryUploadApi>(serviceProvider =>
+            serviceProvider.GetRequiredService<Cloudinary>());
+        services.TryAddSingleton<ICloudinaryAdminApi>(serviceProvider =>
+            serviceProvider.GetRequiredService<Cloudinary>());
         services.TryAddSingleton<IChapterPageAssetStore, CloudinaryChapterPageAssetStore>();
+        services.TryAddScoped<UploadChapterPageHandler>();
 
         return services;
     }

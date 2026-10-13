@@ -5,6 +5,7 @@ using ComicManagement.Persistence;
 using ComicManagement.Shared.Identity;
 using Microsoft.AspNetCore.HttpOverrides;
 using System.Net;
+using System.Globalization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +19,23 @@ builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
+builder.Services.AddCloudinaryChapterPageAssets(options =>
+{
+    var section = builder.Configuration.GetSection(CloudinaryOptions.SectionName);
+    options.CloudName = section[nameof(CloudinaryOptions.CloudName)] ?? string.Empty;
+    options.ApiKey = section[nameof(CloudinaryOptions.ApiKey)] ?? string.Empty;
+    options.ApiSecret = section[nameof(CloudinaryOptions.ApiSecret)] ?? string.Empty;
+    options.ChapterPagePublicIdPrefix =
+        section[nameof(CloudinaryOptions.ChapterPagePublicIdPrefix)] ??
+        options.ChapterPagePublicIdPrefix;
+    options.MaximumChapterPageBytes = long.TryParse(
+        section[nameof(CloudinaryOptions.MaximumChapterPageBytes)],
+        NumberStyles.None,
+        CultureInfo.InvariantCulture,
+        out var maximumChapterPageBytes)
+        ? maximumChapterPageBytes
+        : 0;
+});
 builder.Services.AddScoped<GoogleSignInHandler>();
 builder.Services.AddScoped<LogoutHandler>();
 builder.Services.AddScoped<UpdateDisplayNameHandler>();
