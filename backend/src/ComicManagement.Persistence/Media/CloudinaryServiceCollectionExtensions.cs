@@ -41,9 +41,10 @@ public static class CloudinaryServiceCollectionExtensions
             serviceProvider.GetRequiredService<Cloudinary>());
         services.TryAddSingleton<ICloudinaryAdminApi>(serviceProvider =>
             serviceProvider.GetRequiredService<Cloudinary>());
+        services.TryAddSingleton<HttpClient>();
         services.TryAddSingleton<IChapterPageAssetStore, CloudinaryChapterPageAssetStore>();
-        services.TryAddSingleton<IChapterPageDeliveryUrlProvider,
-            CloudinaryFreeChapterPageDeliveryUrlProvider>();
+        services.TryAddSingleton<IChapterPageContentProvider,
+            CloudinaryChapterPageContentProvider>();
         services.TryAddScoped<UploadChapterPageHandler>();
 
         return services;

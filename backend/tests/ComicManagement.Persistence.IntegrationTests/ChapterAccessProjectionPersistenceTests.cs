@@ -2,6 +2,7 @@ using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Persistence;
 using ComicManagement.Reading.Access;
+using ComicManagement.Shared.Time;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
@@ -164,6 +165,74 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
         Assert.Null(await finalStore.GetManifestSourceAsync(chapterId, null));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Page_delivery_rechecks_postgresql_after_concurrent_hide_or_reprice(
+        bool hideChapter)
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        await using (var seedScope = _services.CreateAsyncScope())
+        {
+            var context = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var comic = Comic.Create(
+                comicId,
+                $"r01-content-race-{comicId:N}",
+                "R01 Content Race",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                Now);
+            AddPublishedChapter(context, comicId, chapterId, 1, 0, false);
+            comic.Publish(true, 1, Now.AddMinutes(2));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        await using var readScope = _services.CreateAsyncScope();
+        var provider = new BlockingContentProvider();
+        var handler = new ChapterAccessHandler(
+            readScope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>(),
+            provider,
+            new StubClock(Now));
+        var delivery = handler.GetPageContentAsync(chapterId, 1, null);
+        await provider.Entered;
+
+        await using (var mutationScope = _services.CreateAsyncScope())
+        {
+            var context = mutationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            if (hideChapter)
+            {
+                await context.Chapters
+                    .Where(chapter => chapter.Id == chapterId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        chapter => chapter.PublicationStatus,
+                        ChapterPublicationStatuses.Hidden));
+            }
+            else
+            {
+                await context.Chapters
+                    .Where(chapter => chapter.Id == chapterId)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(
+                        chapter => chapter.PriceOverrideCoins,
+                        (long?)25));
+            }
+        }
+
+        provider.Release();
+        var result = await delivery;
+
+        Assert.Equal(
+            hideChapter
+                ? ChapterManifestOutcome.NotFound
+                : ChapterManifestOutcome.AuthenticationRequired,
+            result.Outcome);
+        Assert.Null(result.Content);
+    }
+
     private static Chapter AddPublishedChapter(
         AppDbContext context,
         Guid comicId,
@@ -201,5 +270,31 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
             Now);
         page.MarkReady(1200, 1800);
         context.ChapterPages.Add(page);
+    }
+
+    private sealed class BlockingContentProvider : IChapterPageContentProvider
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        internal void Release() => _release.TrySetResult();
+
+        public async Task<ChapterPageContent?> GetAsync(
+            string assetKey,
+            CancellationToken cancellationToken = default)
+        {
+            _entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return new ChapterPageContent([1, 2, 3], "image/webp");
+        }
+    }
+
+    private sealed class StubClock(DateTimeOffset utcNow) : IClock
+    {
+        public DateTimeOffset UtcNow => utcNow;
     }
 }

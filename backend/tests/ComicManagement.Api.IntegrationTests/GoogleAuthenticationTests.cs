@@ -109,7 +109,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChapterAccessHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>());
-        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageDeliveryUrlProvider>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageContentProvider>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicChapterListWorkflow>());
     }
 
@@ -291,8 +291,22 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var freePage = Assert.Single(freePagesJson.GetProperty("pages").EnumerateArray());
         Assert.Equal(1, freePage.GetProperty("order").GetInt32());
         Assert.Equal(1200, freePage.GetProperty("width").GetInt32());
-        Assert.StartsWith("https://", freePage.GetProperty("deliveryUrl").GetString());
+        var deliveryUrl = freePage.GetProperty("deliveryUrl").GetString();
+        Assert.Equal(
+            $"/api/v1/chapters/{freeChapterId}/pages/1/content",
+            deliveryUrl);
         Assert.False(freePagesJson.TryGetProperty("cloudinaryPublicId", out _));
+        Assert.DoesNotContain(
+            $"r01-api/{freeChapterId:N}/1",
+            await freePages.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+
+        var freeContent = await anonymousClient.GetAsync(deliveryUrl);
+        Assert.Equal(HttpStatusCode.OK, freeContent.StatusCode);
+        Assert.Equal("image/webp", freeContent.Content.Headers.ContentType!.MediaType);
+        Assert.Equal([1, 2, 3], await freeContent.Content.ReadAsByteArrayAsync());
+        Assert.Contains("no-store", freeContent.Headers.CacheControl!.ToString());
+        Assert.Equal("nosniff", Assert.Single(freeContent.Headers.GetValues("X-Content-Type-Options")));
 
         var lockedAccess = await anonymousClient.GetAsync(
             $"/api/v1/chapters/{lockedChapterId}/access");
@@ -307,6 +321,9 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var anonymousProblem =
             await anonymousLockedPages.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("AUTH_REQUIRED", anonymousProblem.GetProperty("errorCode").GetString());
+        var anonymousLockedContent = await anonymousClient.GetAsync(
+            $"/api/v1/chapters/{lockedChapterId}/pages/1/content");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousLockedContent.StatusCode);
 
         _factory.TokenEndpoint.SetProfile(
             "google-subject-r01-reader",
@@ -323,11 +340,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var forbiddenProblem =
             await authenticatedLockedPages.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("FORBIDDEN", forbiddenProblem.GetProperty("errorCode").GetString());
+        var authenticatedLockedContent = await authenticatedClient.GetAsync(
+            $"/api/v1/chapters/{lockedChapterId}/pages/1/content");
+        Assert.Equal(HttpStatusCode.Forbidden, authenticatedLockedContent.StatusCode);
 
         foreach (var path in new[]
                  {
                      $"/api/v1/chapters/{hiddenChapterId}/access",
                      $"/api/v1/chapters/{hiddenChapterId}/pages",
+                     $"/api/v1/chapters/{hiddenChapterId}/pages/1/content",
                  })
         {
             var hiddenResponse = await anonymousClient.GetAsync(path);
@@ -1285,6 +1306,14 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             Assert.True(pageSchema.GetProperty("properties").TryGetProperty(property, out _));
         }
 
+        var content = paths
+            .GetProperty("/api/v1/chapters/{chapterId}/pages/{pageOrder}/content")
+            .GetProperty("get");
+        foreach (var status in new[] { "200", "401", "403", "404", "503" })
+        {
+            Assert.True(content.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
         var errorSchema = ResolveResponseSchema(document, pages, "403");
         foreach (var property in new[] { "errorCode", "message", "traceId" })
         {
@@ -1938,6 +1967,9 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     options.Backchannel = new HttpClient(TokenEndpoint);
                 });
 
+                services.RemoveAll<IChapterPageContentProvider>();
+                services.AddSingleton<IChapterPageContentProvider, FakeChapterPageContentProvider>();
+
                 if (forceIdentityConflicts)
                 {
                     services.RemoveAll<IGoogleIdentityStore>();
@@ -1957,6 +1989,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             base.Dispose(disposing);
             TokenEndpoint.Dispose();
         }
+    }
+
+    private sealed class FakeChapterPageContentProvider : IChapterPageContentProvider
+    {
+        public Task<ChapterPageContent?> GetAsync(
+            string assetKey,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<ChapterPageContent?>(
+                new ChapterPageContent([1, 2, 3], "image/webp"));
     }
 
     private sealed class AlwaysConflictIdentityStore : IGoogleIdentityStore

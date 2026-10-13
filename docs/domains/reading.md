@@ -18,7 +18,9 @@ One user/comic `reading_progress` row with last chapter/page/offset and version;
 ## Protected media
 Auth check before issuing manifest for paid/VIP pages. Provider-specific signed/time-bound delivery **Verification Required**. A Cloudinary normal signed URL is not necessarily expiring. Fail secure until access-control proof-of-concept passes.
 
-R01 may issue a signed authenticated-asset URL for Free pages because Free URLs do not require entitlement revocation. It never uses that URL path for `VipIncluded` or `CoinUnlocked`; those manifests return provider unavailable until Q02 produces accepted real-account evidence. Every manifest response disables shared/browser storage with `no-store` and contains no standalone provider public-ID field.
+R01 never exposes a Cloudinary URL or provider public ID. A Free manifest contains same-origin API content routes; each content request checks access, fetches the authenticated asset internally, validates the owned namespace/raster MIME/maximum size, then rechecks publication, effective price and page asset identity before returning bytes with `no-store` and `nosniff`. A concurrent hide, Free-to-Paid change or asset replacement therefore fails closed. `VipIncluded` and `CoinUnlocked` manifests/content remain provider unavailable until Q02 produces accepted real-account protected-delivery evidence.
+
+The public Chapter list crosses Catalog and Reading projections. R01 retries once when a Catalog item is absent from the authoritative Reading visibility result, then drops any item still missing and adjusts the returned counts conservatively. It does not retain newly private metadata as an `Unavailable` row.
 
 ## Acceptance
 No manifest for unauthorized Paid; Hidden always denied; VIP expiry triggers new check; no double unlock; qual threshold and active duration both required; stale progress requests handled; reader can retry manifest without opening previously protected assets to unauthorized users.

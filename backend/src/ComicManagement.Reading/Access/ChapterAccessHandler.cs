@@ -1,3 +1,5 @@
+using ComicManagement.Shared.Time;
+
 namespace ComicManagement.Reading.Access;
 
 public static class ChapterAccessTypes
@@ -56,8 +58,7 @@ public sealed record ChapterAccessResult(
 public sealed record ChapterManifestPage(
     int Order,
     int Width,
-    int Height,
-    string DeliveryUrl);
+    int Height);
 
 public sealed record ChapterManifest(
     Guid ChapterId,
@@ -68,6 +69,18 @@ public sealed record ChapterManifest(
 public sealed record ChapterManifestResult(
     ChapterManifestOutcome Outcome,
     ChapterManifest? Manifest = null);
+
+public sealed record ChapterPageContentSource(
+    ChapterAccessProjection Access,
+    ChapterManifestPageSource Page);
+
+public sealed record ChapterPageContent(
+    byte[] Bytes,
+    string ContentType);
+
+public sealed record ChapterPageContentResult(
+    ChapterManifestOutcome Outcome,
+    ChapterPageContent? Content = null);
 
 public interface IChapterAccessProjectionStore
 {
@@ -80,16 +93,25 @@ public interface IChapterAccessProjectionStore
         Guid chapterId,
         Guid? userId,
         CancellationToken cancellationToken = default);
+
+    Task<ChapterPageContentSource?> GetPageContentSourceAsync(
+        Guid chapterId,
+        int pageOrder,
+        Guid? userId,
+        CancellationToken cancellationToken = default);
 }
 
-public interface IChapterPageDeliveryUrlProvider
+public interface IChapterPageContentProvider
 {
-    bool TryCreateFreeDeliveryUrl(string assetKey, out string deliveryUrl);
+    Task<ChapterPageContent?> GetAsync(
+        string assetKey,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class ChapterAccessHandler(
     IChapterAccessProjectionStore store,
-    IChapterPageDeliveryUrlProvider deliveryUrlProvider)
+    IChapterPageContentProvider pageContentProvider,
+    IClock clock)
 {
     public const string FreeManifestRefreshHint = "Refresh after an image delivery error.";
 
@@ -135,10 +157,9 @@ public sealed class ChapterAccessHandler(
     public async Task<ChapterManifestResult> GetManifestAsync(
         Guid chapterId,
         Guid? userId,
-        DateTimeOffset issuedAt,
         CancellationToken cancellationToken = default)
     {
-        if (chapterId == Guid.Empty || issuedAt.Offset != TimeSpan.Zero)
+        if (chapterId == Guid.Empty)
         {
             return new ChapterManifestResult(ChapterManifestOutcome.NotFound);
         }
@@ -166,28 +187,74 @@ public sealed class ChapterAccessHandler(
                 ChapterManifestOutcome.ProtectedDeliveryUnavailable);
         }
 
-        var pages = new List<ChapterManifestPage>(source.Pages.Count);
-        foreach (var page in source.Pages)
-        {
-            if (!deliveryUrlProvider.TryCreateFreeDeliveryUrl(page.AssetKey, out var deliveryUrl))
-            {
-                return new ChapterManifestResult(ChapterManifestOutcome.ProviderUnavailable);
-            }
-
-            pages.Add(new ChapterManifestPage(
-                page.Order,
-                page.Width,
-                page.Height,
-                deliveryUrl));
-        }
-
         return new ChapterManifestResult(
             ChapterManifestOutcome.Succeeded,
             new ChapterManifest(
                 chapterId,
-                pages,
-                issuedAt,
+                source.Pages.Select(page => new ChapterManifestPage(
+                        page.Order,
+                        page.Width,
+                        page.Height))
+                    .ToArray(),
+                clock.UtcNow,
                 FreeManifestRefreshHint));
+    }
+
+    public async Task<ChapterPageContentResult> GetPageContentAsync(
+        Guid chapterId,
+        int pageOrder,
+        Guid? userId,
+        CancellationToken cancellationToken = default)
+    {
+        if (chapterId == Guid.Empty || pageOrder < 1)
+        {
+            return new ChapterPageContentResult(ChapterManifestOutcome.NotFound);
+        }
+
+        var source = await store.GetPageContentSourceAsync(
+            chapterId,
+            pageOrder,
+            userId,
+            cancellationToken);
+        if (source is null)
+        {
+            return new ChapterPageContentResult(ChapterManifestOutcome.NotFound);
+        }
+
+        var deniedOutcome = GetDeniedContentOutcome(source.Access, userId.HasValue);
+        if (deniedOutcome is not null)
+        {
+            return new ChapterPageContentResult(deniedOutcome.Value);
+        }
+
+        // Provider bytes are fetched internally. The provider URL is never returned
+        // to the caller and the authoritative access facts are checked again below.
+        var content = await pageContentProvider.GetAsync(
+            source.Page.AssetKey,
+            cancellationToken);
+        if (content is null)
+        {
+            return new ChapterPageContentResult(ChapterManifestOutcome.ProviderUnavailable);
+        }
+
+        var rechecked = await store.GetPageContentSourceAsync(
+            chapterId,
+            pageOrder,
+            userId,
+            cancellationToken);
+        if (rechecked is null ||
+            !string.Equals(
+                rechecked.Page.AssetKey,
+                source.Page.AssetKey,
+                StringComparison.Ordinal))
+        {
+            return new ChapterPageContentResult(ChapterManifestOutcome.NotFound);
+        }
+
+        deniedOutcome = GetDeniedContentOutcome(rechecked.Access, userId.HasValue);
+        return deniedOutcome is null
+            ? new ChapterPageContentResult(ChapterManifestOutcome.Succeeded, content)
+            : new ChapterPageContentResult(deniedOutcome.Value);
     }
 
     private static ChapterAccessDecision Resolve(
@@ -230,5 +297,23 @@ public sealed class ChapterAccessHandler(
             false,
             projection.EffectivePriceCoins,
             !isAuthenticated);
+    }
+
+    private static ChapterManifestOutcome? GetDeniedContentOutcome(
+        ChapterAccessProjection projection,
+        bool isAuthenticated)
+    {
+        var access = Resolve(projection, isAuthenticated);
+        if (!access.CanRead)
+        {
+            return isAuthenticated
+                ? ChapterManifestOutcome.Forbidden
+                : ChapterManifestOutcome.AuthenticationRequired;
+        }
+
+        return access.AccessType is ChapterAccessTypes.VipIncluded or
+            ChapterAccessTypes.CoinUnlocked
+            ? ChapterManifestOutcome.ProtectedDeliveryUnavailable
+            : null;
     }
 }

@@ -103,4 +103,54 @@ internal sealed class ChapterAccessProjectionStore(AppDbContext dbContext)
                     row.CloudinaryPublicId))
                 .ToArray());
     }
+
+    public async Task<ChapterPageContentSource?> GetPageContentSourceAsync(
+        Guid chapterId,
+        int pageOrder,
+        Guid? userId,
+        CancellationToken cancellationToken = default)
+    {
+        var row = await (
+                from chapter in dbContext.Chapters.AsNoTracking()
+                join comic in dbContext.Comics.AsNoTracking()
+                    on chapter.ComicId equals comic.Id
+                join page in dbContext.ChapterPages.AsNoTracking()
+                    on chapter.Id equals page.ChapterId
+                where chapter.Id == chapterId &&
+                      page.PageOrder == pageOrder &&
+                      comic.PublicationStatus == ComicPublicationStatuses.Published &&
+                      comic.FirstPublishedAt != null &&
+                      chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
+                      page.AssetStatus == ChapterPageAssetStatuses.Ready &&
+                      page.Width > 0 &&
+                      page.Height > 0
+                select new
+                {
+                    chapter.Id,
+                    EffectivePriceCoins = chapter.PriceOverrideCoins ?? comic.DefaultPriceCoins,
+                    VipEligible = chapter.VipOverride ?? comic.DefaultVipEligible,
+                    page.PageOrder,
+                    page.Width,
+                    page.Height,
+                    page.CloudinaryPublicId,
+                })
+            .SingleOrDefaultAsync(cancellationToken);
+        if (row is null)
+        {
+            return null;
+        }
+
+        return new ChapterPageContentSource(
+            new ChapterAccessProjection(
+                row.Id,
+                row.EffectivePriceCoins,
+                row.VipEligible,
+                HasActiveVip: false,
+                HasCoinUnlock: false),
+            new ChapterManifestPageSource(
+                row.PageOrder,
+                row.Width,
+                row.Height,
+                row.CloudinaryPublicId));
+    }
 }

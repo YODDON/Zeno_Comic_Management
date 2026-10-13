@@ -3,6 +3,7 @@ using CloudinaryDotNet;
 using CloudinaryDotNet.Actions;
 using ComicManagement.Catalog.Media;
 using ComicManagement.Persistence;
+using ComicManagement.Reading.Access;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -27,6 +28,7 @@ public sealed class CloudinaryChapterPageAssetStoreTests
         await using var scope = serviceProvider.CreateAsyncScope();
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<UploadChapterPageHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageContentProvider>());
     }
 
     [Fact]
