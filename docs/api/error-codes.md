@@ -31,6 +31,8 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 
 Reading session creation/update may return `404 READING_SESSION_UNAVAILABLE` without exposing unpublished content, `403 FORBIDDEN` for a known but unauthorized Chapter, or `409 READING_SESSION_EXPIRED`. A successful non-qualifying `/qualify` response uses `qualified:false` with `reasonCode` equal to `SESSION_EXPIRED`, `PROGRESS_THRESHOLD_NOT_MET`, or `ACTIVE_DURATION_THRESHOLD_NOT_MET`; these are result reasons, not ProblemDetails errors.
 
+Library routes use `401 AUTH_REQUIRED`/`403 FORBIDDEN` for authentication/role failures. Follow returns `404 RESOURCE_NOT_FOUND` when the Comic is not currently public and valid without disclosing draft metadata. Invalid Library cursor/limit or an empty identifier returns `400 VALIDATION_FAILED`; idempotent follow replay and unfollow are successful responses rather than conflict errors.
+
 ### State enums (separate concerns)
 Payment provider verification: Pending / Verified / Rejected / ReconciliationRequired; fulfillment: NotStarted / Retryable / Fulfilled / ManualReview. Order expiry is separate `expires_at`. Refund: Requested → UnderReview → RecoveryReserved → TransferPending → Completed OR Rejected / NeedsReconciliation → TransferConfirmedFailed → ReservationReleased. Missions: Progress InProgress/Completed, reward Pending/Granted/DeniedDailyCap. Comic and Chapter Draft/Published/Hidden, republish Hidden after revalidating invariants.
 

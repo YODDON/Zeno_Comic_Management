@@ -28,6 +28,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261013060258_AddChapterPublishedAtAndCatalogPagination",
         "20261013185204_AddReadingSessionsAndProgress",
         "20261014094117_AddWalletCore",
+        "20261014043925_AddComicFollows",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -80,6 +81,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "wallet.paid_coin_lots"));
         Assert.True(await TableExists(context, "wallet.wallet_operations"));
         Assert.True(await TableExists(context, "wallet.wallet_entries"));
+        Assert.True(await TableExists(context, "reading.comic_follows"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(

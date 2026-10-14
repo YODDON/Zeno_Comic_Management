@@ -15,6 +15,7 @@ using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Identity.Users;
 using ComicManagement.Reading.Access;
+using ComicManagement.Reading.Library;
 using ComicManagement.Reading.Sessions;
 using ComicManagement.Workflows.Reading;
 using ComicManagement.Wallet.Ledger;
@@ -116,6 +117,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicChapterListWorkflow>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReadingSessionHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IReadingSessionStore>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<LibraryHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ILibraryStore>());
     }
 
     [Fact]
@@ -642,6 +645,90 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.True(limited.Headers.Contains("Retry-After"));
         var problem = await limited.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal("RATE_LIMITED", problem.GetProperty("errorCode").GetString());
+    }
+
+    [Fact]
+    public async Task Library_follow_requires_user_csrf_and_replays_idempotently()
+    {
+        var comicId = Guid.NewGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var comic = Comic.Create(
+                comicId,
+                $"r03-api-{comicId:N}",
+                "R03 Library API",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now);
+            AddApiPublishedChapter(context, comicId, Guid.NewGuid(), 1, 0, now);
+            comic.Publish(true, 1, now.AddMinutes(2));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        using var anonymousClient = CreateClient();
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymousClient.GetAsync("/api/v1/library/follows")).StatusCode);
+
+        _factory.TokenEndpoint.SetProfile(
+            "google-subject-r03-library",
+            "R03 Reader",
+            "r03-reader@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/library"));
+
+        var missingCsrf = await client.PostAsync(
+            $"/api/v1/comics/{comicId}/follow",
+            content: null);
+        Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
+
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        async Task<HttpResponseMessage> FollowAsync()
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/comics/{comicId}/follow");
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            return await client.SendAsync(request);
+        }
+
+        var created = await FollowAsync();
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var createdJson = await created.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(createdJson.GetProperty("created").GetBoolean());
+        Assert.Equal(comicId, createdJson.GetProperty("comicId").GetGuid());
+
+        var replay = await FollowAsync();
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        var replayJson = await replay.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(replayJson.GetProperty("created").GetBoolean());
+        Assert.Equal(
+            createdJson.GetProperty("followedAt").GetDateTimeOffset(),
+            replayJson.GetProperty("followedAt").GetDateTimeOffset());
+
+        var followed = await client.GetAsync("/api/v1/library/follows?limit=1");
+        Assert.Equal(HttpStatusCode.OK, followed.StatusCode);
+        var followedJson = await followed.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(comicId, Assert.Single(
+            followedJson.GetProperty("items").EnumerateArray()).GetProperty("comicId").GetGuid());
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Delete,
+                $"/api/v1/comics/{comicId}/follow");
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            Assert.Equal(HttpStatusCode.NoContent, (await client.SendAsync(request)).StatusCode);
+        }
     }
 
     [Fact]
@@ -1724,6 +1811,43 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         foreach (var property in new[] { "errorCode", "message", "traceId" })
         {
             Assert.True(readingErrorSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var follow = paths
+            .GetProperty("/api/v1/comics/{comicId}/follow")
+            .GetProperty("post");
+        foreach (var status in new[] { "200", "201", "400", "401", "403", "404" })
+        {
+            Assert.True(follow.GetProperty("responses").TryGetProperty(status, out _));
+        }
+        var followSchema = ResolveResponseSchema(document, follow, "201");
+        foreach (var property in new[] { "comicId", "followed", "followedAt", "created" })
+        {
+            Assert.True(followSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        foreach (var path in new[] { "/api/v1/reading/continue", "/api/v1/library/follows" })
+        {
+            var operation = paths.GetProperty(path).GetProperty("get");
+            foreach (var status in new[] { "200", "400", "401", "403" })
+            {
+                Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _));
+            }
+            var cursor = FindOpenApiParameter(operation, "cursor");
+            Assert.Equal(
+                LibraryHandler.CursorLength,
+                cursor.GetProperty("schema").GetProperty("minLength").GetInt32());
+            Assert.Equal(
+                LibraryHandler.CursorLength,
+                cursor.GetProperty("schema").GetProperty("maxLength").GetInt32());
+            var limit = FindOpenApiParameter(operation, "limit");
+            Assert.Equal(1, limit.GetProperty("schema").GetProperty("minimum").GetInt32());
+            Assert.Equal(
+                LibraryHandler.MaximumPageSize,
+                limit.GetProperty("schema").GetProperty("maximum").GetInt32());
+            Assert.Equal(
+                LibraryHandler.DefaultPageSize,
+                limit.GetProperty("schema").GetProperty("default").GetInt32());
         }
     }
 

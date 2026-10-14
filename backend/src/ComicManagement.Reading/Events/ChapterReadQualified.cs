@@ -1,6 +1,6 @@
 namespace ComicManagement.Reading.Events;
 
-public static class ReadingEventTypes
+public static partial class ReadingEventTypes
 {
     public const string ChapterReadQualified = "Reading.ChapterReadQualified.v1";
 }

@@ -32,6 +32,7 @@ export function useLogout() {
     mutationFn: logout,
     onSuccess: () => {
       queryClient.clear();
+      queryClient.setQueryData(profileQueryKey, null);
     },
   });
 }

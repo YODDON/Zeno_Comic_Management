@@ -889,6 +889,541 @@ svg {
   background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
+.catalog-heading,
+.library-heading {
+  max-width: 48rem;
+  margin-bottom: 2rem;
+}
+
+.catalog-heading h1,
+.library-heading h1,
+.comic-detail-hero h1,
+.reader-finish h1 {
+  margin: 0;
+  font-family: "Newsreader Variable", Georgia, serif;
+  font-size: clamp(2.8rem, 8vw, 5.5rem);
+  font-weight: 540;
+  letter-spacing: -0.06em;
+  line-height: 0.95;
+}
+
+.catalog-heading > p:last-child,
+.library-heading > p:last-child {
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.catalog-search {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 2rem;
+}
+
+.catalog-search label {
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.catalog-search > div {
+  display: flex;
+  gap: 0.65rem;
+}
+
+.catalog-search input {
+  min-width: 0;
+  min-height: 3rem;
+  flex: 1;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.8rem;
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.75rem 0.9rem;
+  font: inherit;
+}
+
+.catalog-search input:focus-visible,
+.library-tabs button:focus-visible,
+.comic-card a:focus-visible,
+.follow-card a:focus-visible,
+.reader-back:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.comic-grid,
+.follow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.comic-card,
+.follow-card {
+  min-width: 0;
+}
+
+.comic-card a,
+.follow-card > a,
+.follow-unavailable {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.comic-cover {
+  position: relative;
+  display: grid;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 1rem;
+  background:
+    linear-gradient(145deg, transparent 42%, color-mix(in srgb, var(--accent) 76%, transparent) 42% 58%, transparent 58%),
+    linear-gradient(35deg, var(--surface-raised), color-mix(in srgb, var(--signal) 25%, var(--surface)));
+  color: var(--text);
+}
+
+.comic-cover::after {
+  position: absolute;
+  inset: 0.6rem;
+  border: 1px dashed color-mix(in srgb, var(--text) 26%, transparent);
+  border-radius: 0.7rem;
+  content: "";
+}
+
+.comic-cover span {
+  z-index: 1;
+  font-family: "Newsreader Variable", Georgia, serif;
+  font-size: clamp(2rem, 8vw, 4.5rem);
+  font-weight: 700;
+}
+
+.comic-card-copy {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.comic-card-copy span,
+.section-kicker {
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.comic-card h2,
+.follow-card h2,
+.continue-card h2 {
+  margin: 0;
+  font-family: "Newsreader Variable", Georgia, serif;
+  font-size: clamp(1.25rem, 4vw, 1.7rem);
+  line-height: 1.1;
+}
+
+.comic-card p,
+.follow-card p,
+.continue-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.comic-card strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+}
+
+.comic-card strong svg {
+  width: 1rem;
+}
+
+.load-more-row {
+  display: flex;
+  justify-content: center;
+  padding-top: 2rem;
+}
+
+.comic-detail-hero {
+  display: grid;
+  gap: 2rem;
+}
+
+.comic-detail-hero > .comic-cover {
+  width: min(100%, 20rem);
+}
+
+.comic-detail-hero > div:last-child {
+  align-self: center;
+}
+
+.comic-detail-hero > div:last-child > p:not(.eyebrow, .inline-notice) {
+  color: var(--text-muted);
+  line-height: 1.75;
+}
+
+.comic-detail-meta {
+  font-weight: 650;
+}
+
+.tag-row,
+.comic-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.tag-row span {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  padding: 0.4rem 0.7rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.comic-detail-actions {
+  margin-top: 1.5rem;
+}
+
+.inline-notice,
+.access-warning {
+  margin-top: 1rem;
+  color: var(--danger);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.inline-notice a {
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.chapter-section {
+  margin-top: clamp(3rem, 8vw, 6rem);
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 1rem;
+}
+
+.section-heading-row h2 {
+  margin: 0.25rem 0 0;
+  font-family: "Newsreader Variable", Georgia, serif;
+  font-size: clamp(1.8rem, 5vw, 2.8rem);
+}
+
+.section-heading-row > span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.chapter-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chapter-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-block: 1rem;
+}
+
+.chapter-list li > div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.chapter-list small,
+.chapter-order {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.chapter-order {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.chapter-lock {
+  width: 1.2rem;
+  color: var(--text-muted);
+}
+
+.chapter-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-top: 1.5rem;
+  font-size: 0.78rem;
+}
+
+.library-tabs {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 1.5rem;
+}
+
+.library-tabs button {
+  display: inline-flex;
+  min-height: 3rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.45rem;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.65rem 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.library-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.library-tabs svg {
+  width: 1rem;
+}
+
+.continue-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.continue-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  gap: 1rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--surface);
+  padding: 1rem;
+}
+
+.continue-card > .comic-cover {
+  width: 7rem;
+}
+
+.continue-card-copy {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 0.65rem;
+}
+
+.continue-card-unavailable {
+  min-height: 12rem;
+  grid-template-columns: 1fr;
+  align-content: center;
+  padding-left: 2rem;
+}
+
+.reading-ribbon {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0.55rem;
+  background: var(--accent);
+}
+
+.reading-ribbon span {
+  position: absolute;
+  top: 35%;
+  left: 50%;
+  width: 0.95rem;
+  height: 0.95rem;
+  border: 3px solid var(--surface);
+  border-radius: 50%;
+  background: var(--signal);
+  translate: -50% -50%;
+}
+
+.follow-card {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+}
+
+.reader-page {
+  min-height: 100vh;
+  background: color-mix(in srgb, var(--background) 72%, #000);
+}
+
+.reader-toolbar {
+  position: fixed;
+  z-index: 30;
+  top: 0.7rem;
+  left: 50%;
+  display: grid;
+  width: min(calc(100% - 1rem), 52rem);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  box-shadow: 0 1rem 3rem color-mix(in srgb, #000 24%, transparent);
+  padding: 0.55rem;
+  backdrop-filter: blur(16px);
+  translate: -50% 0;
+  transition: translate 180ms ease, opacity 180ms ease;
+}
+
+.reader-toolbar-hidden {
+  opacity: 0;
+  pointer-events: none;
+  translate: -50% calc(-100% - 1.5rem);
+}
+
+.reader-back {
+  display: grid;
+  width: 2.6rem;
+  height: 2.6rem;
+  place-items: center;
+  border-radius: 0.7rem;
+  background: var(--surface-raised);
+}
+
+.reader-toolbar > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.15rem;
+}
+
+.reader-toolbar strong,
+.reader-toolbar span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-toolbar strong {
+  font-size: 0.78rem;
+}
+
+.reader-toolbar span {
+  color: var(--text-muted);
+  font-size: 0.65rem;
+}
+
+.reader-sync-qualified {
+  color: var(--success) !important;
+}
+
+.reader-sync-error,
+.reader-sync-expired {
+  color: var(--danger) !important;
+}
+
+.reader-canvas {
+  width: min(100%, 64rem);
+  margin-inline: auto;
+  padding: 6.5rem 0 4rem;
+}
+
+.reader-opening {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  min-height: 8rem;
+  color: var(--text-muted);
+  padding-inline: 1rem;
+  text-align: center;
+}
+
+.reader-page-frame {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: min(75vh, 64rem);
+  aspect-ratio: var(--page-ratio);
+  place-items: center;
+  margin: 0;
+  background: var(--surface-raised);
+}
+
+.reader-page-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.reader-page-frame figcaption {
+  position: absolute;
+  right: 0.6rem;
+  bottom: 0.6rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  color: var(--text-muted);
+  padding: 0.25rem 0.45rem;
+  font-size: 0.62rem;
+}
+
+.reader-image-error {
+  display: grid;
+  justify-items: center;
+  gap: 0.8rem;
+  color: var(--danger);
+  padding: 2rem;
+  text-align: center;
+}
+
+.reader-finish {
+  display: grid;
+  min-height: 28rem;
+  justify-items: center;
+  align-content: center;
+  gap: 0.8rem;
+  padding: 3rem 1rem;
+  text-align: center;
+}
+
+.reader-finish > svg {
+  color: var(--success);
+}
+
+.reader-finish h1 {
+  font-size: clamp(2.4rem, 7vw, 4.5rem);
+}
+
+.reader-finish > p:not(.section-kicker) {
+  max-width: 35rem;
+  color: var(--text-muted);
+  line-height: 1.65;
+}
+
+.reader-finish > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.7rem;
+}
+
 @keyframes state-spin {
   to {
     rotate: 360deg;
@@ -963,6 +1498,32 @@ svg {
 
   .admin-mobile-region {
     display: none;
+  }
+
+  .comic-grid,
+  .follow-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1.4rem;
+  }
+
+  .comic-detail-hero {
+    grid-template-columns: minmax(15rem, 0.7fr) minmax(0, 1.3fr);
+    gap: clamp(2rem, 6vw, 5rem);
+  }
+
+  .continue-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .reader-toolbar {
+    top: 1rem;
+  }
+}
+
+@media (min-width: 1100px) {
+  .comic-grid,
+  .follow-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
 

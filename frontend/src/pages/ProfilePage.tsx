@@ -106,7 +106,7 @@ function ProfileDetails({ profile }: { profile: Profile }) {
   async function handleLogout() {
     try {
       await logoutMutation.mutateAsync();
-      await navigate("/", { replace: true });
+      await navigate("/", { replace: true, flushSync: true });
     } catch {
       // The mutation error is presented next to the action below.
     }

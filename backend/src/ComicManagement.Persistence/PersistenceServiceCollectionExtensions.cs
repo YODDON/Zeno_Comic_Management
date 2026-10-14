@@ -5,6 +5,7 @@ using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Sessions;
+using ComicManagement.Reading.Library;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -40,6 +41,8 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<ReadingSessionHandler>();
         services.TryAddScoped<IWalletQueryStore, WalletQueryStore>();
         services.TryAddScoped<WalletQueryHandler>();
+        services.TryAddScoped<ILibraryStore, LibraryStore>();
+        services.TryAddScoped<LibraryHandler>();
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();
         services.TryAddScoped<OutboxMessageDispatcher>();
         services.TryAddScoped<OutboxBatchProcessor>();

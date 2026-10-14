@@ -7,6 +7,7 @@ using ComicManagement.Reading.Sessions;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
+using ComicManagement.Reading.Library;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -52,6 +53,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<WalletOperation> WalletOperations => Set<WalletOperation>();
 
     internal DbSet<WalletEntry> WalletEntries => Set<WalletEntry>();
+    internal DbSet<ComicFollow> ComicFollows => Set<ComicFollow>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
