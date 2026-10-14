@@ -164,6 +164,98 @@ public sealed class ReadingSessionPersistenceTests : IAsyncLifetime
         Assert.NotEqual(oldRevision, remapped.State.ManifestRevision);
         Assert.Equal(1, remapped.State.ManifestPageCount);
         Assert.Equal(0, remapped.State.ActiveDurationMs);
+        Assert.Equal(10, remapped.State.CurrentPageOrder);
+        Assert.Equal(1m, remapped.State.CurrentPageOffsetRatio);
+
+        await using var verificationScope = _services.CreateAsyncScope();
+        var progress = await verificationScope.ServiceProvider
+            .GetRequiredService<AppDbContext>()
+            .ReadingProgress
+            .AsNoTracking()
+            .SingleAsync(item =>
+                item.UserId == seed.UserId && item.ComicId == seed.ComicId);
+        Assert.Equal(10, progress.LastPageOrder);
+        Assert.Equal(1m, progress.LastPageOffsetRatio);
+    }
+
+    [Fact]
+    public async Task Qualification_remaps_removed_position_and_emits_current_manifest_revision()
+    {
+        var seed = await SeedPublicChapterAsync(pageOrders: [10, 20]);
+        var session = await CreateSessionAsync(seed);
+        await UpdateAsync(
+            session.SessionId, seed.UserId, 20, 0.8m, 1, 'a', StartedAt.AddSeconds(1));
+        await UpdateAsync(
+            session.SessionId, seed.UserId, 20, 0.8m, 2, 'b', StartedAt.AddSeconds(16));
+
+        await using (var mutationScope = _services.CreateAsyncScope())
+        {
+            await mutationScope.ServiceProvider.GetRequiredService<AppDbContext>()
+                .ChapterPages
+                .Where(page => page.ChapterId == seed.ChapterId && page.PageOrder == 20)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(page => page.AssetStatus, ChapterPageAssetStatuses.Pending)
+                    .SetProperty(page => page.Width, 0)
+                    .SetProperty(page => page.Height, 0));
+        }
+
+        var result = await QualifyInNewScopeAsync(
+            session.SessionId,
+            seed.UserId,
+            StartedAt.AddSeconds(17));
+
+        Assert.Equal(ReadingSessionCommandOutcome.Succeeded, result.Outcome);
+        Assert.NotNull(result.State!.QualifiedAt);
+        Assert.Equal(10, result.State.CurrentPageOrder);
+        Assert.Equal(1m, result.State.CurrentPageOffsetRatio);
+        Assert.NotEqual(session.ManifestRevision, result.State.ManifestRevision);
+        Assert.Equal(1, result.State.ManifestPageCount);
+
+        await using var verificationScope = _services.CreateAsyncScope();
+        var context = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var progress = await context.ReadingProgress
+            .AsNoTracking()
+            .SingleAsync(item =>
+                item.UserId == seed.UserId && item.ComicId == seed.ComicId);
+        Assert.Equal(10, progress.LastPageOrder);
+        Assert.Equal(1m, progress.LastPageOffsetRatio);
+        var payload = await context.OutboxMessages
+            .Where(message => message.EventType == ReadingEventTypes.ChapterReadQualified)
+            .Select(message => message.Payload)
+            .SingleAsync();
+        Assert.Contains(result.State.ManifestRevision, payload, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Heartbeat_does_not_wait_for_catalog_content_row_locks()
+    {
+        var seed = await SeedPublicChapterAsync(pageOrders: [1, 2]);
+        var session = await CreateSessionAsync(seed);
+        await UpdateAsync(
+            session.SessionId, seed.UserId, 1, 0.5m, 1, 'a', StartedAt.AddSeconds(1));
+
+        await using var lockScope = _services.CreateAsyncScope();
+        var lockContext = lockScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await using var lockTransaction = await lockContext.Database.BeginTransactionAsync();
+        await lockContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT 1 FROM catalog.comics WHERE id = {seed.ComicId} FOR UPDATE");
+        await lockContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT 1 FROM catalog.chapters WHERE id = {seed.ChapterId} FOR UPDATE");
+        await lockContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT 1 FROM catalog.chapter_pages WHERE chapter_id = {seed.ChapterId} FOR UPDATE");
+
+        var heartbeat = await UpdateInNewScopeAsync(
+                session.SessionId,
+                seed.UserId,
+                2,
+                0.5m,
+                2,
+                'b',
+                StartedAt.AddSeconds(2))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(ReadingSessionCommandOutcome.Succeeded, heartbeat.Outcome);
+        await lockTransaction.RollbackAsync();
     }
 
     [Fact]

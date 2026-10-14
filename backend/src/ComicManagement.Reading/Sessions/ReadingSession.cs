@@ -34,7 +34,12 @@ public enum ReadingHeartbeatOutcome
 
 public sealed record ReadingHeartbeatApplication(
     ReadingHeartbeatOutcome Outcome,
-    string? ConflictReason = null);
+    string? ConflictReason = null,
+    bool PositionRemapped = false);
+
+public sealed record ReadingManifestSynchronization(
+    bool Changed,
+    bool PositionRemapped);
 
 public enum ReadingQualificationOutcome
 {
@@ -212,6 +217,9 @@ public sealed class ReadingSession
 
         var pageIndex = IndexOf(currentReadyPageOrders, currentPageOrder);
         var pageIsReady = pageIndex >= 0;
+        var manifestSynchronization = SynchronizeManifestCore(
+            currentManifestRevision,
+            currentReadyPageOrders);
 
         var creditedDurationMs = LastActivityAt.HasValue && LastActivityWasReady && pageIsReady
             ? CalculateCreditedDuration(LastActivityAt.Value, receivedAt)
@@ -221,8 +229,6 @@ public sealed class ReadingSession
         LastActivityWasReady = pageIsReady;
         LastAcceptedSequence = sequenceNumber;
         LastRequestFingerprint = requestFingerprint;
-        ManifestRevision = currentManifestRevision;
-        ManifestPageCount = currentReadyPageOrders.Count;
 
         if (pageIsReady)
         {
@@ -238,7 +244,27 @@ public sealed class ReadingSession
         }
 
         Version = checked(Version + 1);
-        return new ReadingHeartbeatApplication(ReadingHeartbeatOutcome.Accepted);
+        return new ReadingHeartbeatApplication(
+            ReadingHeartbeatOutcome.Accepted,
+            PositionRemapped: manifestSynchronization.PositionRemapped);
+    }
+
+    public ReadingManifestSynchronization SynchronizeManifest(
+        string currentManifestRevision,
+        IReadOnlyList<int> currentReadyPageOrders)
+    {
+        ArgumentNullException.ThrowIfNull(currentReadyPageOrders);
+        EnsureManifest(currentManifestRevision, currentReadyPageOrders.Count);
+
+        var synchronization = SynchronizeManifestCore(
+            currentManifestRevision,
+            currentReadyPageOrders);
+        if (synchronization.Changed)
+        {
+            Version = checked(Version + 1);
+        }
+
+        return synchronization;
     }
 
     public ReadingQualificationOutcome Qualify(DateTimeOffset qualifiedAt)
@@ -282,6 +308,50 @@ public sealed class ReadingSession
         }
 
         return -1;
+    }
+
+    private ReadingManifestSynchronization SynchronizeManifestCore(
+        string currentManifestRevision,
+        IReadOnlyList<int> currentReadyPageOrders)
+    {
+        var manifestChanged =
+            !string.Equals(ManifestRevision, currentManifestRevision, StringComparison.Ordinal) ||
+            ManifestPageCount != currentReadyPageOrders.Count;
+        var positionRemapped = false;
+
+        if (CurrentPageOrder.HasValue &&
+            IndexOf(currentReadyPageOrders, CurrentPageOrder.Value) < 0)
+        {
+            var removedPageOrder = CurrentPageOrder.Value;
+            var followingPageOrder = currentReadyPageOrders
+                .Where(pageOrder => pageOrder > removedPageOrder)
+                .DefaultIfEmpty()
+                .Min();
+
+            if (followingPageOrder > 0)
+            {
+                CurrentPageOrder = followingPageOrder;
+                CurrentPageOffsetRatio = 0m;
+            }
+            else
+            {
+                CurrentPageOrder = currentReadyPageOrders
+                    .Where(pageOrder => pageOrder < removedPageOrder)
+                    .Max();
+                CurrentPageOffsetRatio = 1m;
+            }
+
+            // The previous observation no longer identifies a Ready page, so it
+            // cannot form the first half of a credited heartbeat interval.
+            LastActivityWasReady = false;
+            positionRemapped = true;
+        }
+
+        ManifestRevision = currentManifestRevision;
+        ManifestPageCount = currentReadyPageOrders.Count;
+        return new ReadingManifestSynchronization(
+            manifestChanged || positionRemapped,
+            positionRemapped);
     }
 
     private static int CalculateProgressBasisPoints(

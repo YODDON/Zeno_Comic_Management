@@ -1,9 +1,11 @@
+using System.Data.Common;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Persistence;
 using ComicManagement.Reading.Access;
 using ComicManagement.Shared.Time;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
 using Xunit;
@@ -165,6 +167,49 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
         Assert.Null(await finalStore.GetManifestSourceAsync(chapterId, null));
     }
 
+    [Fact]
+    public async Task Manifest_access_and_ready_pages_are_loaded_in_one_database_statement()
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        await using (var seedScope = _services.CreateAsyncScope())
+        {
+            var context = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var comic = Comic.Create(
+                comicId,
+                $"r01-atomic-manifest-{comicId:N}",
+                "R01 Atomic Manifest",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                Now);
+            AddPublishedChapter(context, comicId, chapterId, 1, 0, false);
+            AddReadyPage(context, chapterId, 2, "r01/atomic-page-2");
+            comic.Publish(true, 1, Now.AddMinutes(2));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        var interceptor = new ManifestCommandInterceptor();
+        var options = new DbContextOptionsBuilder<AppDbContext>();
+        PersistenceServiceCollectionExtensions.ConfigurePostgreSql(
+            options,
+            _postgres.GetConnectionString());
+        options.AddInterceptors(interceptor);
+        await using var queryContext = new AppDbContext(options.Options);
+        var store = new ChapterAccessProjectionStore(queryContext);
+
+        var source = await store.GetManifestSourceAsync(chapterId, null);
+
+        Assert.NotNull(source);
+        Assert.Equal(1, interceptor.ManifestReaderCommandCount);
+        Assert.Contains("JOIN", interceptor.ManifestCommandText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("chapter_pages", interceptor.ManifestCommandText, StringComparison.Ordinal);
+        Assert.Contains("publication_status", interceptor.ManifestCommandText, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -296,5 +341,27 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
     private sealed class StubClock(DateTimeOffset utcNow) : IClock
     {
         public DateTimeOffset UtcNow => utcNow;
+    }
+
+    private sealed class ManifestCommandInterceptor : DbCommandInterceptor
+    {
+        internal int ManifestReaderCommandCount { get; private set; }
+
+        internal string ManifestCommandText { get; private set; } = string.Empty;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("catalog.chapter_pages", StringComparison.Ordinal))
+            {
+                ManifestReaderCommandCount++;
+                ManifestCommandText = command.CommandText;
+            }
+
+            return ValueTask.FromResult(result);
+        }
     }
 }

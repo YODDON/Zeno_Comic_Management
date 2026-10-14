@@ -128,6 +128,47 @@ public sealed class ReadingSessionHandlerTests
     }
 
     [Fact]
+    public void Removed_accepted_page_is_remapped_to_next_ready_page_without_advancing_progress()
+    {
+        var session = CreateSession(pageCount: 3);
+        session.ApplyHeartbeat(
+            20, 0.4m, 1, Fingerprint('a'), "revision-1", [10, 20, 30],
+            StartedAt.AddSeconds(1));
+        var acceptedProgress = session.MaxProgressBasisPoints;
+
+        var synchronization = session.SynchronizeManifest(
+            "revision-2",
+            [10, 30]);
+
+        Assert.True(synchronization.Changed);
+        Assert.True(synchronization.PositionRemapped);
+        Assert.Equal(30, session.CurrentPageOrder);
+        Assert.Equal(0m, session.CurrentPageOffsetRatio);
+        Assert.False(session.LastActivityWasReady);
+        Assert.Equal(acceptedProgress, session.MaxProgressBasisPoints);
+        Assert.Equal("revision-2", session.ManifestRevision);
+        Assert.Equal(2, session.ManifestPageCount);
+    }
+
+    [Fact]
+    public void Removed_last_accepted_page_is_remapped_to_end_of_previous_ready_page()
+    {
+        var session = CreateSession(pageCount: 2);
+        session.ApplyHeartbeat(
+            20, 0.9m, 1, Fingerprint('a'), "revision-1", [10, 20],
+            StartedAt.AddSeconds(1));
+
+        var synchronization = session.SynchronizeManifest(
+            "revision-2",
+            [10]);
+
+        Assert.True(synchronization.PositionRemapped);
+        Assert.Equal(10, session.CurrentPageOrder);
+        Assert.Equal(1m, session.CurrentPageOffsetRatio);
+        Assert.Equal(9_500, session.MaxProgressBasisPoints);
+    }
+
+    [Fact]
     public void Qualification_requires_fifteen_seconds_and_is_one_time_per_session()
     {
         var session = CreateSession();

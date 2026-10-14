@@ -30,6 +30,17 @@ internal sealed record ChapterAccessManifestRow(
     IReadOnlyList<ReadyChapterPageRow> Pages,
     string Revision);
 
+internal sealed record ChapterAccessManifestPageRow(
+    Guid ChapterId,
+    Guid ComicId,
+    long EffectivePriceCoins,
+    bool VipEligible,
+    Guid PageId,
+    int PageOrder,
+    int Width,
+    int Height,
+    string AssetKey);
+
 internal static class ChapterAccessQuery
 {
     internal static IQueryable<ChapterAccessQueryRow> PublicReadableChapters(
@@ -58,23 +69,28 @@ internal static class ChapterAccessQuery
         Guid chapterId,
         CancellationToken cancellationToken)
     {
-        var access = await PublicReadableChapters(dbContext)
-            .SingleOrDefaultAsync(row => row.ChapterId == chapterId, cancellationToken);
-        if (access is null)
-        {
-            return null;
-        }
-
-        var pages = await dbContext.ChapterPages
-            .AsNoTracking()
-            .Where(page =>
-                page.ChapterId == chapterId &&
-                page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                page.Width > 0 &&
-                page.Height > 0)
-            .OrderBy(page => page.PageOrder)
-            .ThenBy(page => page.Id)
-            .Select(page => new ReadyChapterPageRow(
+        // Publication/access state and the Ready manifest must come from the same
+        // PostgreSQL statement. Splitting these reads allows a concurrent hide,
+        // reprice or page transition to produce a manifest for stale access state.
+        var rows = await (
+            from chapter in dbContext.Chapters.AsNoTracking()
+            join comic in dbContext.Comics.AsNoTracking()
+                on chapter.ComicId equals comic.Id
+            join page in dbContext.ChapterPages.AsNoTracking()
+                on chapter.Id equals page.ChapterId
+            where chapter.Id == chapterId &&
+                  comic.PublicationStatus == ComicPublicationStatuses.Published &&
+                  comic.FirstPublishedAt != null &&
+                  chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
+                  page.AssetStatus == ChapterPageAssetStatuses.Ready &&
+                  page.Width > 0 &&
+                  page.Height > 0
+            orderby page.PageOrder, page.Id
+            select new ChapterAccessManifestPageRow(
+                chapter.Id,
+                chapter.ComicId,
+                chapter.PriceOverrideCoins ?? comic.DefaultPriceCoins,
+                chapter.VipOverride ?? comic.DefaultVipEligible,
                 page.Id,
                 page.PageOrder,
                 page.Width,
@@ -82,9 +98,29 @@ internal static class ChapterAccessQuery
                 page.CloudinaryPublicId))
             .ToArrayAsync(cancellationToken);
 
-        return pages.Length == 0
-            ? null
-            : new ChapterAccessManifestRow(access, pages, CalculateRevision(pages));
+        if (rows.Length == 0)
+        {
+            return null;
+        }
+
+        var first = rows[0];
+        var access = new ChapterAccessQueryRow
+        {
+            ChapterId = first.ChapterId,
+            ComicId = first.ComicId,
+            EffectivePriceCoins = first.EffectivePriceCoins,
+            VipEligible = first.VipEligible,
+        };
+        var pages = rows
+            .Select(row => new ReadyChapterPageRow(
+                row.PageId,
+                row.PageOrder,
+                row.Width,
+                row.Height,
+                row.AssetKey))
+            .ToArray();
+
+        return new ChapterAccessManifestRow(access, pages, CalculateRevision(pages));
     }
 
     internal static ChapterAccessProjection ToProjection(ChapterAccessQueryRow row) => new(
@@ -93,32 +129,6 @@ internal static class ChapterAccessQuery
         row.VipEligible,
         HasActiveVip: false,
         HasCoinUnlock: false);
-
-    internal static async Task LockAccessRowsAsync(
-        AppDbContext dbContext,
-        Guid chapterId,
-        CancellationToken cancellationToken)
-    {
-        var comicId = await dbContext.Chapters
-            .AsNoTracking()
-            .Where(chapter => chapter.Id == chapterId)
-            .Select(chapter => (Guid?)chapter.ComicId)
-            .SingleOrDefaultAsync(cancellationToken);
-        if (!comicId.HasValue)
-        {
-            return;
-        }
-
-        await dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"SELECT 1 FROM catalog.comics WHERE id = {comicId.Value} FOR UPDATE",
-            cancellationToken);
-        await dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"SELECT 1 FROM catalog.chapters WHERE id = {chapterId} FOR UPDATE",
-            cancellationToken);
-        await dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"SELECT 1 FROM catalog.chapter_pages WHERE chapter_id = {chapterId} FOR UPDATE",
-            cancellationToken);
-    }
 
     private static string CalculateRevision(IReadOnlyList<ReadyChapterPageRow> pages)
     {
