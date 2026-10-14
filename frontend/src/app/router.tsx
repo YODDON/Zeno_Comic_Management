@@ -2,9 +2,13 @@ import { createBrowserRouter } from "react-router-dom";
 import { AdminLayout } from "@/app/layouts/AdminLayout";
 import { UserLayout } from "@/app/layouts/UserLayout";
 import { AdminFoundationPage } from "@/pages/AdminFoundationPage";
+import { CatalogPage } from "@/pages/CatalogPage";
+import { ComicDetailPage } from "@/pages/ComicDetailPage";
 import { HomePage } from "@/pages/HomePage";
+import { LibraryPage } from "@/pages/LibraryPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { ProfilePage } from "@/pages/ProfilePage";
+import { ReaderPage } from "@/pages/ReaderPage";
 import { RoutePlaceholderPage } from "@/pages/RoutePlaceholderPage";
 
 export const router = createBrowserRouter([
@@ -12,26 +16,10 @@ export const router = createBrowserRouter([
     element: <UserLayout />,
     children: [
       { index: true, element: <HomePage /> },
-      {
-        path: "comics",
-        element: (
-          <RoutePlaceholderPage
-            eyebrow="Kho truyện"
-            title="Danh mục sẽ xuất hiện ở đây"
-            description="Khung giao diện đã sẵn sàng; dữ liệu truyện sẽ được kết nối trong các task Catalog."
-          />
-        ),
-      },
-      {
-        path: "library",
-        element: (
-          <RoutePlaceholderPage
-            eyebrow="Tủ truyện"
-            title="Lịch sử đọc chưa có"
-            description="Sau khi đăng nhập và đọc truyện, tiến độ của bạn sẽ được hiển thị tại đây."
-          />
-        ),
-      },
+      { path: "comics", element: <CatalogPage /> },
+      { path: "comics/:slug", element: <ComicDetailPage /> },
+      { path: "chapters/:chapterId/read", element: <ReaderPage /> },
+      { path: "library", element: <LibraryPage /> },
       { path: "profile", element: <ProfilePage /> },
       {
         path: "wallet",
