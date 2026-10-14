@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using ComicManagement.Shared.Messaging;
 using ComicManagement.Shared.Time;
+using ComicManagement.Wallet.Queries;
 
 namespace ComicManagement.Persistence;
 
@@ -38,6 +39,8 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<ChapterAccessHandler>();
         services.TryAddScoped<IReadingSessionStore, ReadingSessionStore>();
         services.TryAddScoped<ReadingSessionHandler>();
+        services.TryAddScoped<IWalletQueryStore, WalletQueryStore>();
+        services.TryAddScoped<WalletQueryHandler>();
         services.TryAddScoped<ILibraryStore, LibraryStore>();
         services.TryAddScoped<LibraryHandler>();
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();

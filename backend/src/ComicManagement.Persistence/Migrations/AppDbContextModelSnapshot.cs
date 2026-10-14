@@ -849,6 +849,258 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Wallet.Accounts.Wallet", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("BonusAvailable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("bonus_available");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("PaidAvailable")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("paid_available");
+
+                    b.Property<long>("PaidReserved")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("paid_reserved");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("UserId")
+                        .HasName("pk_wallets");
+
+                    b.ToTable("wallets", "wallet", t =>
+                        {
+                            t.HasCheckConstraint("ck_wallets_bonus_available", "bonus_available >= 0");
+
+                            t.HasCheckConstraint("ck_wallets_paid_available", "paid_available >= 0");
+
+                            t.HasCheckConstraint("ck_wallets_paid_reserved", "paid_reserved >= 0");
+
+                            t.HasCheckConstraint("ck_wallets_timestamps", "updated_at >= created_at");
+
+                            t.HasCheckConstraint("ck_wallets_total_available", "paid_available::numeric + bonus_available::numeric <= 9223372036854775807");
+
+                            t.HasCheckConstraint("ck_wallets_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Ledger.WalletEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Bucket")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("bucket");
+
+                    b.Property<string>("CoinType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("coin_type");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("DeltaCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("delta_coins");
+
+                    b.Property<int>("LegOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("leg_order");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_wallet_entries");
+
+                    b.HasIndex("OperationId", "LegOrder")
+                        .IsUnique()
+                        .HasDatabaseName("ux_wallet_entries_operation_leg");
+
+                    b.HasIndex("OperationId", "UserId");
+
+                    b.HasIndex("UserId", "CreatedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_wallet_entries_user_created_id");
+
+                    b.ToTable("wallet_entries", "wallet", t =>
+                        {
+                            t.HasCheckConstraint("ck_wallet_entries_bonus_bucket", "coin_type <> 'Bonus' OR bucket = 'Available'");
+
+                            t.HasCheckConstraint("ck_wallet_entries_bucket", "bucket IN ('Available', 'Reserved')");
+
+                            t.HasCheckConstraint("ck_wallet_entries_coin_type", "coin_type IN ('Paid', 'Bonus')");
+
+                            t.HasCheckConstraint("ck_wallet_entries_delta", "delta_coins <> 0");
+
+                            t.HasCheckConstraint("ck_wallet_entries_leg_order", "leg_order >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Ledger.WalletOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("OperationType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("operation_type");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("source_type");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_wallet_operations");
+
+                    b.HasAlternateKey("Id", "UserId")
+                        .HasName("ak_wallet_operations_id_user_id");
+
+                    b.HasIndex("OperationType", "SourceType", "SourceId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_wallet_operations_business_source");
+
+                    b.HasIndex("UserId", "OperationType", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_wallet_operations_user_type_idempotency")
+                        .HasFilter("idempotency_key IS NOT NULL");
+
+                    b.ToTable("wallet_operations", "wallet", t =>
+                        {
+                            t.HasCheckConstraint("ck_wallet_operations_idempotency_key", "idempotency_key IS NULL OR length(btrim(idempotency_key)) > 0");
+
+                            t.HasCheckConstraint("ck_wallet_operations_operation_type", "length(btrim(operation_type)) > 0");
+
+                            t.HasCheckConstraint("ck_wallet_operations_source_type", "length(btrim(source_type)) > 0");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Lots.PaidCoinLot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("GrantedCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("granted_coins");
+
+                    b.Property<long>("RefundedCoins")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("refunded_coins");
+
+                    b.Property<long>("ReservedCoins")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("reserved_coins");
+
+                    b.Property<long>("SpentCoins")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("spent_coins");
+
+                    b.Property<Guid>("TopUpOrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("topup_order_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_paid_coin_lots");
+
+                    b.HasIndex("TopUpOrderId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_paid_coin_lots_topup_order_id");
+
+                    b.HasIndex("UserId", "CreatedAt", "Id")
+                        .HasDatabaseName("ix_paid_coin_lots_user_created_id");
+
+                    b.ToTable("paid_coin_lots", "wallet", t =>
+                        {
+                            t.HasCheckConstraint("ck_paid_coin_lots_capacity", "granted_coins::numeric >= spent_coins::numeric + refunded_coins::numeric + reserved_coins::numeric");
+
+                            t.HasCheckConstraint("ck_paid_coin_lots_granted", "granted_coins > 0");
+
+                            t.HasCheckConstraint("ck_paid_coin_lots_refunded", "refunded_coins >= 0");
+
+                            t.HasCheckConstraint("ck_paid_coin_lots_reserved", "reserved_coins >= 0");
+
+                            t.HasCheckConstraint("ck_paid_coin_lots_spent", "spent_coins >= 0");
+
+                            t.HasCheckConstraint("ck_paid_coin_lots_version", "version >= 1");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
@@ -1002,6 +1254,54 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_reading_sessions_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Accounts.Wallet", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Wallet.Accounts.Wallet", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_wallets_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Ledger.WalletEntry", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_wallet_entries_users");
+
+                    b.HasOne("ComicManagement.Wallet.Ledger.WalletOperation", null)
+                        .WithMany()
+                        .HasForeignKey("OperationId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_wallet_entries_operation_owner");
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Ledger.WalletOperation", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_wallet_operations_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Lots.PaidCoinLot", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_paid_coin_lots_users");
                 });
 #pragma warning restore 612, 618
         }
