@@ -21,6 +21,11 @@ public sealed record FollowState(
     DateTimeOffset FollowedAt,
     bool Created);
 
+public sealed record FollowStatusState(
+    Guid ComicId,
+    bool Followed,
+    DateTimeOffset? FollowedAt);
+
 public sealed record ContinueReadingItem(
     Guid ComicId,
     string Availability,
@@ -32,6 +37,7 @@ public sealed record ContinueReadingItem(
     string? ChapterLabel,
     int? PageOrder,
     decimal? PageOffsetRatio,
+    int? AcceptedMaxProgressBasisPoints,
     DateTimeOffset LastReadAt,
     string? AccessType,
     bool CanRead);
@@ -53,6 +59,10 @@ public sealed record FollowCommandResult(
     LibraryOutcome Outcome,
     FollowState? State = null);
 
+public sealed record FollowStatusQueryResult(
+    LibraryOutcome Outcome,
+    FollowStatusState? State = null);
+
 public sealed record LibraryQueryResult<TItem>(
     LibraryOutcome Outcome,
     LibraryPage<TItem>? Page = null);
@@ -68,6 +78,11 @@ public interface ILibraryStore
         CancellationToken cancellationToken = default);
 
     Task UnfollowAsync(
+        Guid userId,
+        Guid comicId,
+        CancellationToken cancellationToken = default);
+
+    Task<FollowStatusState> GetFollowStatusAsync(
         Guid userId,
         Guid comicId,
         CancellationToken cancellationToken = default);
@@ -120,6 +135,20 @@ public sealed class LibraryHandler(ILibraryStore store, IClock clock)
 
         await store.UnfollowAsync(userId, comicId, cancellationToken);
         return LibraryOutcome.Succeeded;
+    }
+
+    public async Task<FollowStatusQueryResult> GetFollowStatusAsync(
+        Guid userId,
+        Guid comicId,
+        CancellationToken cancellationToken = default)
+    {
+        if (userId == Guid.Empty || comicId == Guid.Empty)
+        {
+            return new FollowStatusQueryResult(LibraryOutcome.ValidationFailed);
+        }
+
+        var state = await store.GetFollowStatusAsync(userId, comicId, cancellationToken);
+        return new FollowStatusQueryResult(LibraryOutcome.Succeeded, state);
     }
 
     public Task<LibraryQueryResult<ContinueReadingItem>> ListContinueAsync(

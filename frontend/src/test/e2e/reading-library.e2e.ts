@@ -5,9 +5,11 @@ const comicId = "4ee9222c-9ea2-4adf-a115-36facdef085a";
 const chapterId = "2744b2b6-f009-4122-b574-1dad21741dc9";
 const sessionId = "70acb9d4-d02c-4a74-b607-9309eb5bdc31";
 
-test("reader can follow, open a Free chapter, and navigate the Library", async ({ page }, testInfo) => {
+test("reader can follow, persist progress, and resume from the Library", async ({ page }, testInfo) => {
   let followed = false;
-  const heartbeatSequences: number[] = [];
+  let progressSaved = false;
+  let sessionCount = 0;
+  const heartbeatPayloads: Array<{ session: number; pageOrder: number; pageOffsetRatio: number; sequenceNumber: number }> = [];
   await page.clock.install();
   await page.route("**/api/v1/**", async (route) => {
     const request = route.request();
@@ -75,7 +77,15 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
       } });
       return;
     }
-    if (path === `/api/v1/comics/${comicId}/follow` && request.method() === "POST") {
+    if (path === `/api/v1/comics/${comicId}/follow-status`) {
+      await route.fulfill({ json: {
+        comicId,
+        followed,
+        followedAt: followed ? "2026-10-14T02:00:00+00:00" : null,
+      } });
+      return;
+    }
+    if (path === `/api/v1/comics/${comicId}/follow` && request.method() === "PUT") {
       expect(request.headers()["x-csrf-token"]).toBe("r03-csrf");
       followed = true;
       await route.fulfill({
@@ -91,13 +101,16 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
     if (path === `/api/v1/chapters/${chapterId}/pages`) {
       await route.fulfill({ json: {
         chapterId,
-        pages: [{ order: 1, width: 800, height: 1200, deliveryUrl: `/api/v1/chapters/${chapterId}/pages/1/content` }],
+        pages: [
+          { order: 1, width: 800, height: 1200, deliveryUrl: `/api/v1/chapters/${chapterId}/pages/1/content` },
+          { order: 2, width: 800, height: 1200, deliveryUrl: `/api/v1/chapters/${chapterId}/pages/2/content` },
+        ],
         manifestIssuedAt: "2026-10-14T02:00:00+00:00",
         refreshHint: "retry-manifest",
       } });
       return;
     }
-    if (path === `/api/v1/chapters/${chapterId}/pages/1/content`) {
+    if (path.startsWith(`/api/v1/chapters/${chapterId}/pages/`) && path.endsWith("/content")) {
       await route.fulfill({
         body: '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="1200"><rect width="800" height="1200" fill="#e7efed"/><path d="M80 200h640v80H80zm0 180h480v80H80zm0 180h600v80H80z" fill="#c73b4b"/></svg>',
         contentType: "image/svg+xml",
@@ -105,13 +118,14 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
       return;
     }
     if (path === "/api/v1/reading/sessions" && request.method() === "POST") {
+      sessionCount += 1;
       await route.fulfill({ status: 201, json: {
         sessionId,
         startedAt: "2026-10-14T02:00:00+00:00",
         expiresAt: "2026-10-14T02:30:00+00:00",
         policy: { revision: "r02-v1", minimumProgressBasisPoints: 9000, minimumActiveDurationMs: 15000 },
         manifestRevision: "manifest-one",
-        manifestPageCount: 1,
+        manifestPageCount: 2,
         version: 1,
       } });
       return;
@@ -122,7 +136,13 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
         currentPageOffsetRatio: number;
         sequenceNumber: number;
       };
-      heartbeatSequences.push(heartbeat.sequenceNumber);
+      heartbeatPayloads.push({
+        session: sessionCount,
+        pageOrder: heartbeat.currentPageOrder,
+        pageOffsetRatio: heartbeat.currentPageOffsetRatio,
+        sequenceNumber: heartbeat.sequenceNumber,
+      });
+      if (sessionCount === 1 && heartbeat.sequenceNumber >= 2) progressSaved = true;
       await route.fulfill({ json: {
         sessionId,
         acceptedPosition: {
@@ -132,7 +152,7 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
         acceptedMaxProgressBasisPoints: heartbeat.sequenceNumber === 1 ? 5000 : 9500,
         activeDurationMs: heartbeat.sequenceNumber === 1 ? 0 : 15000,
         manifestRevision: "manifest-one",
-        manifestPageCount: 1,
+        manifestPageCount: 2,
         lastAcceptedSequence: heartbeat.sequenceNumber,
         expiresAt: "2026-10-14T02:30:00+00:00",
         version: heartbeat.sequenceNumber + 1,
@@ -148,11 +168,29 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
       } });
       return;
     }
-    if (path === "/api/v1/reading/continue") {
-      await route.fulfill({ json: { items: [], nextCursor: null } });
+    if (path === "/api/v1/library/continue") {
+      await route.fulfill({ json: {
+        items: progressSaved ? [{
+          comicId,
+          availability: "Available",
+          slug: "hanh-trinh-r03",
+          title: "Hành trình R03",
+          coverAssetId: null,
+          seriesStatus: "Ongoing",
+          chapterId,
+          chapterLabel: "Chương 1",
+          pageOrder: 2,
+          pageOffsetRatio: 0.4,
+          acceptedMaxProgressBasisPoints: 9500,
+          lastReadAt: "2026-10-14T02:00:20+00:00",
+          accessType: "Free",
+          canRead: true,
+        }] : [],
+        nextCursor: null,
+      } });
       return;
     }
-    if (path === "/api/v1/library/follows") {
+    if (path === "/api/v1/library/following") {
       await route.fulfill({ json: {
         items: followed ? [{
           comicId,
@@ -173,14 +211,14 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
   await page.goto("/comics");
   await page.getByRole("link", { name: "Mở Hành trình R03" }).click();
   await page.getByRole("button", { name: "Theo dõi truyện" }).click();
-  await expect(page.getByRole("button", { name: "Đã theo dõi" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Bỏ theo dõi" })).toBeVisible();
   await page.getByRole("link", { name: "Đọc từ đầu" }).click();
   await expect(page.getByRole("img", { name: "Trang 1" })).toBeVisible();
   await expect(page.getByText(/Đã đồng bộ/)).toBeVisible();
   await page.clock.fastForward(10_001);
-  await expect.poll(() => heartbeatSequences).toEqual([1]);
+  await expect.poll(() => heartbeatPayloads.map((item) => item.sequenceNumber)).toEqual([1]);
   await page.clock.fastForward(10_001);
-  await expect.poll(() => heartbeatSequences).toEqual([1, 2]);
+  await expect.poll(() => heartbeatPayloads.map((item) => item.sequenceNumber)).toEqual([1, 2]);
   await expect(page.getByText("Đã xác nhận hoàn thành")).toBeVisible();
 
   const readerAccessibility = await new AxeBuilder({ page }).analyze();
@@ -196,6 +234,20 @@ test("reader can follow, open a Free chapter, and navigate the Library", async (
   await page.keyboard.press("ArrowRight");
   await expect(page.getByRole("tab", { name: "Đang theo dõi" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("heading", { name: "Hành trình R03" })).toBeVisible();
+  await page.keyboard.press("ArrowLeft");
+  await expect(page.getByRole("tab", { name: "Đọc tiếp" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("Tiến độ đã xác nhận: 95%")).toBeVisible();
   const libraryAccessibility = await new AxeBuilder({ page }).analyze();
   expect(libraryAccessibility.violations).toEqual([]);
+  await page.getByRole("link", { name: "Đọc tiếp" }).click();
+  await expect(page).toHaveURL(new RegExp(`/chapters/${chapterId}/read\\?page=2&offset=0.4$`));
+  await expect(page.getByText("Trang 2 · 0%")).toBeVisible();
+  await page.clock.fastForward(10_001);
+  await expect.poll(() => heartbeatPayloads.at(-1)?.session).toBe(2);
+  const resumedHeartbeat = heartbeatPayloads.at(-1)!;
+  expect(resumedHeartbeat.pageOrder).toBe(2);
+  expect(resumedHeartbeat.pageOffsetRatio).toBeCloseTo(0.4, 2);
+  expect(resumedHeartbeat.sequenceNumber).toBe(1);
+  const resumedReaderAccessibility = await new AxeBuilder({ page }).analyze();
+  expect(resumedReaderAccessibility.violations).toEqual([]);
 });

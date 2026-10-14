@@ -27,8 +27,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261013052440_AddPublicCatalogQueryIndexes",
         "20261013060258_AddChapterPublishedAtAndCatalogPagination",
         "20261013185204_AddReadingSessionsAndProgress",
-        "20261014094117_AddWalletCore",
         "20261014043925_AddComicFollows",
+        "20261014094117_AddWalletCore",
+        "20261014195842_AddReadingProgressAcceptedMaximum",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")

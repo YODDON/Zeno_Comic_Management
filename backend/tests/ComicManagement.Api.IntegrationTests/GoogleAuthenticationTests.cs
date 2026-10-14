@@ -674,7 +674,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         using var anonymousClient = CreateClient();
         Assert.Equal(
             HttpStatusCode.Unauthorized,
-            (await anonymousClient.GetAsync("/api/v1/library/follows")).StatusCode);
+            (await anonymousClient.GetAsync("/api/v1/library/following")).StatusCode);
 
         _factory.TokenEndpoint.SetProfile(
             "google-subject-r03-library",
@@ -684,7 +684,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         using var client = CreateClient();
         await CompleteLoginAsync(client, await BeginLoginAsync(client, "/library"));
 
-        var missingCsrf = await client.PostAsync(
+        var missingCsrf = await client.PutAsync(
             $"/api/v1/comics/{comicId}/follow",
             content: null);
         Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
@@ -695,27 +695,30 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         async Task<HttpResponseMessage> FollowAsync()
         {
             using var request = new HttpRequestMessage(
-                HttpMethod.Post,
+                HttpMethod.Put,
                 $"/api/v1/comics/{comicId}/follow");
             request.Headers.Add("X-CSRF-TOKEN", csrfToken);
             return await client.SendAsync(request);
         }
 
         var created = await FollowAsync();
-        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
         var createdJson = await created.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.True(createdJson.GetProperty("created").GetBoolean());
         Assert.Equal(comicId, createdJson.GetProperty("comicId").GetGuid());
 
         var replay = await FollowAsync();
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
         var replayJson = await replay.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.False(replayJson.GetProperty("created").GetBoolean());
         Assert.Equal(
             createdJson.GetProperty("followedAt").GetDateTimeOffset(),
             replayJson.GetProperty("followedAt").GetDateTimeOffset());
 
-        var followed = await client.GetAsync("/api/v1/library/follows?limit=1");
+        var status = await client.GetAsync($"/api/v1/comics/{comicId}/follow-status");
+        Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+        var statusJson = await status.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(statusJson.GetProperty("followed").GetBoolean());
+
+        var followed = await client.GetAsync("/api/v1/library/following?limit=1");
         Assert.Equal(HttpStatusCode.OK, followed.StatusCode);
         var followedJson = await followed.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(comicId, Assert.Single(
@@ -729,6 +732,12 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             request.Headers.Add("X-CSRF-TOKEN", csrfToken);
             Assert.Equal(HttpStatusCode.NoContent, (await client.SendAsync(request)).StatusCode);
         }
+
+        var unfollowedStatus = await client.GetAsync(
+            $"/api/v1/comics/{comicId}/follow-status");
+        var unfollowedStatusJson = await unfollowedStatus.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(unfollowedStatusJson.GetProperty("followed").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, unfollowedStatusJson.GetProperty("followedAt").ValueKind);
     }
 
     [Fact]
@@ -1815,18 +1824,26 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         var follow = paths
             .GetProperty("/api/v1/comics/{comicId}/follow")
-            .GetProperty("post");
-        foreach (var status in new[] { "200", "201", "400", "401", "403", "404" })
+            .GetProperty("put");
+        foreach (var status in new[] { "200", "400", "401", "403", "404" })
         {
             Assert.True(follow.GetProperty("responses").TryGetProperty(status, out _));
         }
-        var followSchema = ResolveResponseSchema(document, follow, "201");
-        foreach (var property in new[] { "comicId", "followed", "followedAt", "created" })
+        var followSchema = ResolveResponseSchema(document, follow, "200");
+        foreach (var property in new[] { "comicId", "followed", "followedAt" })
         {
             Assert.True(followSchema.GetProperty("properties").TryGetProperty(property, out _));
         }
 
-        foreach (var path in new[] { "/api/v1/reading/continue", "/api/v1/library/follows" })
+        var followStatus = paths
+            .GetProperty("/api/v1/comics/{comicId}/follow-status")
+            .GetProperty("get");
+        foreach (var status in new[] { "200", "400", "401", "403" })
+        {
+            Assert.True(followStatus.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        foreach (var path in new[] { "/api/v1/library/continue", "/api/v1/library/following" })
         {
             var operation = paths.GetProperty(path).GetProperty("get");
             foreach (var status in new[] { "200", "400", "401", "403" })

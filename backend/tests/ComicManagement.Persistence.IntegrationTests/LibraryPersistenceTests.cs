@@ -56,11 +56,16 @@ public sealed class LibraryPersistenceTests : IAsyncLifetime
                 "SELECT indexname AS \"Value\" FROM pg_indexes " +
                 "WHERE schemaname = 'reading' AND tablename = 'comic_follows'")
             .ToListAsync();
+        var progressConstraints = await context.Database.SqlQueryRaw<string>(
+                "SELECT conname AS \"Value\" FROM pg_constraint " +
+                "WHERE conrelid = 'reading.reading_progress'::regclass")
+            .ToListAsync();
 
         Assert.Contains("pk_comic_follows", constraints);
         Assert.Contains("fk_comic_follows_users", constraints);
         Assert.Contains("fk_comic_follows_comics", constraints);
         Assert.Contains("ix_comic_follows_user_followed_comic", indexes);
+        Assert.Contains("ck_reading_progress_accepted_progress", progressConstraints);
     }
 
     [Fact]
@@ -81,6 +86,10 @@ public sealed class LibraryPersistenceTests : IAsyncLifetime
         Assert.Equal(1, await context.ComicFollows.CountAsync());
         Assert.Equal(1, await context.OutboxMessages.CountAsync(message =>
             message.EventType == ReadingEventTypes.ComicFollowed));
+        var status = await scope.ServiceProvider.GetRequiredService<ILibraryStore>()
+            .GetFollowStatusAsync(seed.UserId, seed.ComicId);
+        Assert.True(status.Followed);
+        Assert.Equal(Now, status.FollowedAt);
     }
 
     [Fact]
@@ -141,6 +150,7 @@ public sealed class LibraryPersistenceTests : IAsyncLifetime
             Assert.True(item.CanRead);
             Assert.Equal(1, item.PageOrder);
             Assert.Equal(0.6m, item.PageOffsetRatio);
+            Assert.Equal(3_000, item.AcceptedMaxProgressBasisPoints);
         }
 
         await using (var pageMutationScope = _services.CreateAsyncScope())
@@ -184,6 +194,7 @@ public sealed class LibraryPersistenceTests : IAsyncLifetime
         Assert.Null(hidden.Title);
         Assert.Null(hidden.ChapterId);
         Assert.Null(hidden.PageOrder);
+        Assert.Null(hidden.AcceptedMaxProgressBasisPoints);
         Assert.False(hidden.CanRead);
     }
 

@@ -659,6 +659,12 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("comic_id");
 
+                    b.Property<int>("AcceptedMaxProgressBasisPoints")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0)
+                        .HasColumnName("accepted_max_progress_basis_points");
+
                     b.Property<Guid>("LastChapterId")
                         .HasColumnType("uuid")
                         .HasColumnName("last_chapter_id");
@@ -706,6 +712,8 @@ namespace ComicManagement.Persistence.Migrations
 
                     b.ToTable("reading_progress", "reading", t =>
                         {
+                            t.HasCheckConstraint("ck_reading_progress_accepted_progress", "accepted_max_progress_basis_points BETWEEN 0 AND 10000");
+
                             t.HasCheckConstraint("ck_reading_progress_offset", "last_page_offset_ratio BETWEEN 0 AND 1");
 
                             t.HasCheckConstraint("ck_reading_progress_page_order", "last_page_order >= 1");

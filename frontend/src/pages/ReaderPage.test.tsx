@@ -82,6 +82,32 @@ describe("reader page", () => {
     expect(await screen.findByText("Khách · không lưu tiến độ")).toBeVisible();
     expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).endsWith("/api/v1/reading/sessions"))).toBe(false);
   });
+
+  it("falls back to the first Ready page with zero offset when a saved page disappeared", async () => {
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = requestUrl(input);
+      if (url.endsWith(`/chapters/${chapterId}/access`)) {
+        return jsonResponse({ chapterId, accessType: "Free", canRead: true, priceCoins: 0, needsLogin: false });
+      }
+      if (url.endsWith(`/chapters/${chapterId}/pages`)) {
+        return jsonResponse({
+          chapterId,
+          pages: [{ order: 3, width: 800, height: 1200, deliveryUrl: `/api/v1/chapters/${chapterId}/pages/3/content` }],
+          manifestIssuedAt: "2026-10-14T02:00:00+00:00",
+          refreshHint: "retry-manifest",
+        });
+      }
+      if (url.endsWith("/api/v1/me")) {
+        return jsonResponse({ title: "Authentication required", status: 401, errorCode: "AUTH_REQUIRED" }, 401);
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderReader(`/chapters/${chapterId}/read?page=2&offset=0.8`);
+
+    expect(await screen.findByText("Trang 3 · 0%")).toBeVisible();
+  });
 });
 
 function requestUrl(input: string | URL | Request) {

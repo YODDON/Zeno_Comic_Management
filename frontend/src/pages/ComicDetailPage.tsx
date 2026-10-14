@@ -3,7 +3,11 @@ import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ComicCover } from "@/features/catalog/ComicCover";
 import { useChaptersQuery, useComicQuery } from "@/features/catalog/use-catalog";
-import { useFollowComic } from "@/features/library/use-library";
+import {
+  useFollowComic,
+  useFollowStatusQuery,
+  useUnfollowComic,
+} from "@/features/library/use-library";
 import { useProfileQuery } from "@/features/profile/use-profile";
 import { ApiError } from "@/shared/api/problem-details";
 import { ApiErrorState, LoadingState } from "@/shared/ui/AsyncState";
@@ -15,7 +19,9 @@ export function ComicDetailPage() {
   const comic = useComicQuery(slug);
   const chapters = useChaptersQuery(comic.data?.id, page);
   const follow = useFollowComic();
+  const unfollow = useUnfollowComic();
   const profile = useProfileQuery();
+  const followStatus = useFollowStatusQuery(comic.data?.id, Boolean(profile.data));
 
   if (comic.isPending) {
     return <div className="shell-container page-section"><LoadingState title="Đang mở hồ sơ truyện" /></div>;
@@ -26,10 +32,14 @@ export function ComicDetailPage() {
   }
 
   const detail = comic.data;
+  const isFollowed = followStatus.data?.followed ?? false;
+  const followStatusLoading = Boolean(profile.data) && followStatus.isPending;
+  const followMutationPending = follow.isPending || unfollow.isPending;
   const firstReadable = chapters.data?.items.find((chapter) => chapter.accessSummary.canRead);
   const followNeedsLogin =
     (!profile.isPending && !profile.data && profile.error instanceof ApiError && profile.error.status === 401) ||
-    (follow.error instanceof ApiError && follow.error.status === 401);
+    (follow.error instanceof ApiError && follow.error.status === 401) ||
+    (followStatus.error instanceof ApiError && followStatus.error.status === 401);
 
   return (
     <article className="comic-detail-page shell-container page-section">
@@ -52,12 +62,19 @@ export function ComicDetailPage() {
               <Button disabled>Chưa có chương có thể đọc</Button>
             )}
             <Button
-              disabled={profile.isPending || !profile.data || follow.isPending || follow.isSuccess}
-              onClick={() => void follow.mutateAsync(detail.id).catch(() => undefined)}
+              aria-pressed={isFollowed}
+              disabled={profile.isPending || !profile.data || followStatusLoading || followMutationPending}
+              onClick={() => void (isFollowed
+                ? unfollow.mutateAsync(detail.id)
+                : follow.mutateAsync(detail.id)).catch(() => undefined)}
               variant="outline"
             >
               <Bookmark aria-hidden="true" />
-              {profile.isPending ? "Đang kiểm tra phiên…" : follow.isPending ? "Đang lưu…" : follow.isSuccess ? "Đã theo dõi" : "Theo dõi truyện"}
+              {profile.isPending || followStatusLoading
+                ? "Đang kiểm tra…"
+                : followMutationPending
+                  ? "Đang lưu…"
+                  : isFollowed ? "Bỏ theo dõi" : "Theo dõi truyện"}
             </Button>
           </div>
           {followNeedsLogin ? (
@@ -67,7 +84,9 @@ export function ComicDetailPage() {
               </a>{" "}để theo dõi truyện.
             </p>
           ) : null}
-          {follow.isError && !followNeedsLogin ? <p className="field-error" role="alert">Không thể theo dõi lúc này. Hãy thử lại.</p> : null}
+          {(follow.isError || unfollow.isError || followStatus.isError) && !followNeedsLogin
+            ? <p className="field-error" role="alert">Không thể cập nhật theo dõi lúc này. Hãy thử lại.</p>
+            : null}
         </div>
       </header>
 

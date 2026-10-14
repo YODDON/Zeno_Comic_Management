@@ -14,6 +14,7 @@ const continueItemSchema = z.object({
   chapterLabel: z.string().nullable(),
   pageOrder: z.number().int().positive().nullable(),
   pageOffsetRatio: z.number().min(0).max(1).nullable(),
+  acceptedMaxProgressBasisPoints: z.number().int().min(0).max(10_000).nullable(),
   lastReadAt: z.iso.datetime({ offset: true }),
   accessType: z.enum(["Free", "VipIncluded", "CoinUnlocked", "Locked"]).nullable(),
   canRead: z.boolean(),
@@ -43,19 +44,25 @@ const followResponseSchema = z.object({
   comicId: z.string().uuid(),
   followed: z.literal(true),
   followedAt: z.iso.datetime({ offset: true }),
-  created: z.boolean(),
+});
+
+const followStatusSchema = z.object({
+  comicId: z.string().uuid(),
+  followed: z.boolean(),
+  followedAt: z.iso.datetime({ offset: true }).nullable(),
 });
 
 export type ContinueItem = z.infer<typeof continueItemSchema>;
 export type FollowedItem = z.infer<typeof followedItemSchema>;
 export type ContinuePage = z.infer<typeof continuePageSchema>;
 export type FollowedPage = z.infer<typeof followedPageSchema>;
+export type FollowStatus = z.infer<typeof followStatusSchema>;
 
 export async function getContinue(cursor?: string): Promise<ContinuePage> {
   const params = new URLSearchParams({ limit: "20" });
   if (cursor) params.set("cursor", cursor);
   return continuePageSchema.parse(
-    await apiRequest<unknown>(`/api/v1/reading/continue?${params.toString()}`),
+    await apiRequest<unknown>(`/api/v1/library/continue?${params.toString()}`),
   );
 }
 
@@ -63,13 +70,19 @@ export async function getFollows(cursor?: string): Promise<FollowedPage> {
   const params = new URLSearchParams({ limit: "20" });
   if (cursor) params.set("cursor", cursor);
   return followedPageSchema.parse(
-    await apiRequest<unknown>(`/api/v1/library/follows?${params.toString()}`),
+    await apiRequest<unknown>(`/api/v1/library/following?${params.toString()}`),
   );
 }
 
 export async function followComic(comicId: string) {
   return followResponseSchema.parse(
-    await apiRequest<unknown>(`/api/v1/comics/${comicId}/follow`, { method: "POST" }),
+    await apiRequest<unknown>(`/api/v1/comics/${comicId}/follow`, { method: "PUT" }),
+  );
+}
+
+export async function getFollowStatus(comicId: string): Promise<FollowStatus> {
+  return followStatusSchema.parse(
+    await apiRequest<unknown>(`/api/v1/comics/${comicId}/follow-status`),
   );
 }
 

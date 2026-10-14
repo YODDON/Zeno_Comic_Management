@@ -193,7 +193,7 @@ function ReaderContent({
     if (!target) return;
     initialScrollDone.current = true;
     const top = target.offsetTop + target.offsetHeight * position.pageOffsetRatio;
-    window.scrollTo({ top: Math.max(0, top - window.innerHeight * 0.2), behavior: "auto" });
+    window.scrollTo({ top: Math.max(0, top - window.innerHeight * 0.45), behavior: "auto" });
   }, [manifest.pages, position.pageOffsetRatio, position.pageOrder]);
 
   useEffect(() => {
@@ -326,9 +326,12 @@ function SyncBadge({ status, activeDurationMs }: { status: ReaderSyncStatus; act
 function initialPosition(manifest: ChapterManifest, params: URLSearchParams): ReaderPosition {
   const requestedOrder = Number(params.get("page"));
   const requestedOffset = Number(params.get("offset"));
+  const requestedPageIsReady = manifest.pages.some((page) => page.order === requestedOrder);
   return {
-    pageOrder: manifest.pages.some((page) => page.order === requestedOrder) ? requestedOrder : manifest.pages[0]?.order ?? 1,
-    pageOffsetRatio: Number.isFinite(requestedOffset) ? Math.min(1, Math.max(0, requestedOffset)) : 0,
+    pageOrder: requestedPageIsReady ? requestedOrder : manifest.pages[0]?.order ?? 1,
+    pageOffsetRatio: requestedPageIsReady && Number.isFinite(requestedOffset)
+      ? Math.min(1, Math.max(0, requestedOffset))
+      : 0,
   };
 }
 

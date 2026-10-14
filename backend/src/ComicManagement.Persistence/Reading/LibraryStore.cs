@@ -79,6 +79,19 @@ internal sealed class LibraryStore(
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<FollowStatusState> GetFollowStatusAsync(
+        Guid userId,
+        Guid comicId,
+        CancellationToken cancellationToken = default)
+    {
+        var followedAt = await dbContext.ComicFollows
+            .AsNoTracking()
+            .Where(follow => follow.UserId == userId && follow.ComicId == comicId)
+            .Select(follow => (DateTimeOffset?)follow.FollowedAt)
+            .SingleOrDefaultAsync(cancellationToken);
+        return new FollowStatusState(comicId, followedAt.HasValue, followedAt);
+    }
+
     public async Task<IReadOnlyList<ContinueReadingItem>> ListContinueAsync(
         Guid userId,
         LibraryCursor? cursor,
@@ -146,6 +159,7 @@ internal sealed class LibraryStore(
         return rows.Select(row =>
         {
             var isAvailable =
+                row.Chapter.ComicId == row.Comic.Id &&
                 row.Comic.PublicationStatus == ComicPublicationStatuses.Published &&
                 row.Comic.FirstPublishedAt.HasValue &&
                 row.Chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
@@ -179,6 +193,7 @@ internal sealed class LibraryStore(
                 isAvailable ? row.Chapter.ChapterLabel : null,
                 canExposePosition ? remappedPage : null,
                 canExposePosition ? remappedOffset : null,
+                canExposePosition ? row.Progress.AcceptedMaxProgressBasisPoints : null,
                 row.Progress.LastReadAt,
                 access?.AccessType.ToString(),
                 access?.CanRead == true);

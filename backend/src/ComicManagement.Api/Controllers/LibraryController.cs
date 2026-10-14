@@ -14,9 +14,8 @@ namespace ComicManagement.Api.Controllers;
 [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
 public sealed class LibraryController(LibraryHandler handler) : ControllerBase
 {
-    [HttpPost("comics/{comicId:guid}/follow")]
+    [HttpPut("comics/{comicId:guid}/follow")]
     [ProducesResponseType<FollowComicResponse>(StatusCodes.Status200OK)]
-    [ProducesResponseType<FollowComicResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
@@ -38,14 +37,10 @@ public sealed class LibraryController(LibraryHandler handler) : ControllerBase
 
         var state = result.State ?? throw new InvalidOperationException(
             "A successful follow command requires state.");
-        var response = new FollowComicResponse(
+        return Ok(new FollowComicResponse(
             state.ComicId,
             Followed: true,
-            state.FollowedAt,
-            state.Created);
-        return state.Created
-            ? StatusCode(StatusCodes.Status201Created, response)
-            : Ok(response);
+            state.FollowedAt));
     }
 
     [HttpDelete("comics/{comicId:guid}/follow")]
@@ -63,7 +58,33 @@ public sealed class LibraryController(LibraryHandler handler) : ControllerBase
             : BadRequest(ValidationProblem("A valid Comic ID is required."));
     }
 
-    [HttpGet("reading/continue")]
+    [HttpGet("comics/{comicId:guid}/follow-status")]
+    [ProducesResponseType<FollowStatusResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<FollowStatusResponse>> FollowStatus(
+        Guid comicId,
+        CancellationToken cancellationToken)
+    {
+        var result = await handler.GetFollowStatusAsync(
+            GetUserId(),
+            comicId,
+            cancellationToken);
+        if (result.Outcome == LibraryOutcome.ValidationFailed)
+        {
+            return BadRequest(ValidationProblem("A valid Comic ID is required."));
+        }
+
+        var state = result.State ?? throw new InvalidOperationException(
+            "A successful follow-status query requires state.");
+        return Ok(new FollowStatusResponse(
+            state.ComicId,
+            state.Followed,
+            state.FollowedAt));
+    }
+
+    [HttpGet("library/continue")]
     [ProducesResponseType<ContinueReadingPageResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
@@ -93,7 +114,7 @@ public sealed class LibraryController(LibraryHandler handler) : ControllerBase
             page.NextCursor));
     }
 
-    [HttpGet("library/follows")]
+    [HttpGet("library/following")]
     [ProducesResponseType<FollowedComicPageResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
@@ -164,6 +185,7 @@ public sealed class LibraryController(LibraryHandler handler) : ControllerBase
         item.ChapterLabel,
         item.PageOrder,
         item.PageOffsetRatio,
+        item.AcceptedMaxProgressBasisPoints,
         item.LastReadAt,
         item.AccessType,
         item.CanRead);
@@ -181,8 +203,12 @@ public sealed class LibraryController(LibraryHandler handler) : ControllerBase
 public sealed record FollowComicResponse(
     Guid ComicId,
     bool Followed,
-    DateTimeOffset FollowedAt,
-    bool Created);
+    DateTimeOffset FollowedAt);
+
+public sealed record FollowStatusResponse(
+    Guid ComicId,
+    bool Followed,
+    DateTimeOffset? FollowedAt);
 
 public sealed record ContinueReadingPageResponse(
     IReadOnlyList<ContinueReadingItemResponse> Items,
@@ -199,6 +225,7 @@ public sealed record ContinueReadingItemResponse(
     string? ChapterLabel,
     int? PageOrder,
     decimal? PageOffsetRatio,
+    int? AcceptedMaxProgressBasisPoints,
     DateTimeOffset LastReadAt,
     string? AccessType,
     bool CanRead);
