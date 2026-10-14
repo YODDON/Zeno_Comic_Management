@@ -1,5 +1,6 @@
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
+using ComicManagement.Wallet.Spending;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using Xunit;
 
@@ -105,5 +106,34 @@ public sealed class WalletModelTests
         Assert.Equal(long.MaxValue, wallet.PaidAvailable);
         Assert.Equal(0, wallet.BonusAvailable);
         Assert.Equal(2, wallet.Version);
+    }
+
+    [Fact]
+    public void Allocation_requires_matching_owner_and_positive_amount()
+    {
+        var userId = Guid.NewGuid();
+        var operation = WalletOperation.Create(
+            Guid.NewGuid(),
+            userId,
+            "ChapterUnlock",
+            "ReadingUnlock",
+            Guid.NewGuid(),
+            "unlock-key",
+            Now);
+        var ownedLot = PaidCoinLot.Create(
+            Guid.NewGuid(), userId, Guid.NewGuid(), 100, Now);
+        var otherLot = PaidCoinLot.Create(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 100, Now);
+
+        var allocation = WalletAllocation.Create(
+            Guid.NewGuid(), operation, ownedLot, 25, Now);
+
+        Assert.Equal(operation.Id, allocation.OperationId);
+        Assert.Equal(ownedLot.Id, allocation.PaidCoinLotId);
+        Assert.Equal(25, allocation.AmountCoins);
+        Assert.Throws<ArgumentException>(() => WalletAllocation.Create(
+            Guid.NewGuid(), operation, otherLot, 25, Now));
+        Assert.Throws<ArgumentOutOfRangeException>(() => WalletAllocation.Create(
+            Guid.NewGuid(), operation, ownedLot, 0, Now));
     }
 }

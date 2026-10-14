@@ -26,6 +26,7 @@ public static class PersistenceServiceCollectionExtensions
 
         services.AddDbContext<AppDbContext>(options =>
             ConfigurePostgreSql(options, connectionString));
+        services.AddLogging();
         services.TryAddSingleton<IClock, SystemClock>();
         services.TryAddScoped<IGoogleIdentityStore, GoogleIdentityStore>();
         services.TryAddScoped<IUserProfileStore, UserProfileStore>();
@@ -41,6 +42,7 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<ReadingSessionHandler>();
         services.TryAddScoped<IWalletQueryStore, WalletQueryStore>();
         services.TryAddScoped<WalletQueryHandler>();
+        services.TryAddScoped<WalletSpendEngine>();
         services.TryAddScoped<ILibraryStore, LibraryStore>();
         services.TryAddScoped<LibraryHandler>();
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();
