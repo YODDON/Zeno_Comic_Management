@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "@/app/App";
 import { router } from "@/app/router";
@@ -84,8 +84,7 @@ describe("profile display name", () => {
     await router.navigate("/profile");
     render(<App />);
     const input = await screen.findByRole("textbox", { name: "Tên hiển thị" });
-    await user.clear(input);
-    await user.type(input, "a".repeat(121));
+    fireEvent.change(input, { target: { value: "a".repeat(121) } });
     await user.click(screen.getByRole("button", { name: "Lưu tên hiển thị" }));
 
     expect(

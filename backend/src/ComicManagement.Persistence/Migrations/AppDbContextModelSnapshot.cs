@@ -622,6 +622,33 @@ namespace ComicManagement.Persistence.Migrations
                     b.ToTable("processed_messages", "infrastructure");
                 });
 
+            modelBuilder.Entity("ComicManagement.Reading.Library.ComicFollow", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<DateTimeOffset>("FollowedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("followed_at");
+
+                    b.HasKey("UserId", "ComicId")
+                        .HasName("pk_comic_follows");
+
+                    b.HasIndex("ComicId")
+                        .HasDatabaseName("ix_comic_follows_comic_id");
+
+                    b.HasIndex("UserId", "FollowedAt", "ComicId")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_comic_follows_user_followed_comic");
+
+                    b.ToTable("comic_follows", "reading");
+                });
+
             modelBuilder.Entity("ComicManagement.Reading.Sessions.ReadingProgress", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -903,6 +930,23 @@ namespace ComicManagement.Persistence.Migrations
                         .HasConstraintName("fk_google_identities_users_user_id");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ComicManagement.Reading.Library.ComicFollow", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_follows_comics");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_follows_users");
                 });
 
             modelBuilder.Entity("ComicManagement.Reading.Sessions.ReadingProgress", b =>

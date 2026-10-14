@@ -37,7 +37,7 @@ test("user shell supports navigation and a persisted theme", async ({ page }, te
 
   await page.getByRole("link", { name: "Khám phá kho truyện" }).click();
   await expect(page).toHaveURL("/comics");
-  await expect(page.getByRole("heading", { name: "Danh mục sẽ xuất hiện ở đây" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Tìm nhịp đọc tiếp theo." })).toBeVisible();
 });
 
 test("admin shell remains light, accessible and keyboard navigable", async ({ page }, testInfo) => {
