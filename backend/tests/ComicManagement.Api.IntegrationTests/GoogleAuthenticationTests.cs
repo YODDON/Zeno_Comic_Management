@@ -17,6 +17,8 @@ using ComicManagement.Identity.Users;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Sessions;
 using ComicManagement.Workflows.Reading;
+using ComicManagement.Wallet.Ledger;
+using ComicManagement.Wallet.Queries;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -114,6 +116,76 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicChapterListWorkflow>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReadingSessionHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IReadingSessionStore>());
+    }
+
+    [Fact]
+    public async Task Production_composition_registers_the_wallet_query_slice()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<WalletQueryHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWalletQueryStore>());
+    }
+
+    [Fact]
+    public async Task Wallet_endpoints_require_authentication_and_return_only_owner_ledger()
+    {
+        using var anonymousClient = CreateClient();
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymousClient.GetAsync("/api/v1/wallet")).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymousClient.GetAsync("/api/v1/wallet/entries")).StatusCode);
+
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/wallet"));
+        var me = await client.GetFromJsonAsync<JsonElement>("/api/v1/me");
+        var userId = me.GetProperty("id").GetGuid();
+
+        var balanceResponse = await client.GetAsync("/api/v1/wallet");
+        Assert.Equal(HttpStatusCode.OK, balanceResponse.StatusCode);
+        Assert.Equal("no-store", balanceResponse.Headers.CacheControl!.ToString());
+        var balance = await balanceResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, balance.GetProperty("paidAvailable").GetInt64());
+        Assert.Equal(0, balance.GetProperty("paidReserved").GetInt64());
+        Assert.Equal(0, balance.GetProperty("bonusAvailable").GetInt64());
+        Assert.Equal(0, balance.GetProperty("totalAvailable").GetInt64());
+        Assert.Equal(1, balance.GetProperty("version").GetInt64());
+
+        var invalidResponse = await client.GetAsync("/api/v1/wallet/entries?limit=101");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidResponse.StatusCode);
+        var invalidProblem = await invalidResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("VALIDATION_FAILED", invalidProblem.GetProperty("errorCode").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(invalidProblem.GetProperty("traceId").GetString()));
+
+        await SeedWalletEntriesAsync(userId, 31);
+
+        var firstResponse = await client.GetAsync("/api/v1/wallet/entries");
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal("no-store", firstResponse.Headers.CacheControl!.ToString());
+        var firstPage = await firstResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(30, firstPage.GetProperty("items").GetArrayLength());
+        var nextCursor = firstPage.GetProperty("nextCursor").GetString();
+        Assert.Equal(WalletQueryHandler.CursorLength, nextCursor!.Length);
+        Assert.All(
+            firstPage.GetProperty("items").EnumerateArray(),
+            item => Assert.StartsWith(
+                "OwnerCredit",
+                item.GetProperty("operationType").GetString(),
+                StringComparison.Ordinal));
+        var firstPageIds = firstPage.GetProperty("items")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("id").GetGuid())
+            .ToHashSet();
+
+        var secondPage = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/v1/wallet/entries?cursor={Uri.EscapeDataString(nextCursor)}");
+        Assert.Single(secondPage.GetProperty("items").EnumerateArray());
+        Assert.DoesNotContain(
+            secondPage.GetProperty("items")[0].GetProperty("id").GetGuid(),
+            firstPageIds);
+        Assert.Equal(JsonValueKind.Null, secondPage.GetProperty("nextCursor").ValueKind);
     }
 
     [Fact]
@@ -1254,6 +1326,64 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenApi_document_contains_wallet_contracts_and_query_constraints()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+        var balance = paths.GetProperty("/api/v1/wallet").GetProperty("get");
+        foreach (var status in new[] { "200", "401", "403" })
+        {
+            Assert.True(balance.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var balanceSchema = ResolveResponseSchema(document, balance, "200");
+        foreach (var property in new[]
+                 {
+                     "paidAvailable", "paidReserved", "bonusAvailable", "totalAvailable", "version",
+                 })
+        {
+            Assert.True(balanceSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var entries = paths.GetProperty("/api/v1/wallet/entries").GetProperty("get");
+        foreach (var status in new[] { "200", "400", "401", "403" })
+        {
+            Assert.True(entries.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var cursor = FindOpenApiParameter(entries, "cursor").GetProperty("schema");
+        Assert.Equal(32, cursor.GetProperty("minLength").GetInt32());
+        Assert.Equal(32, cursor.GetProperty("maxLength").GetInt32());
+        var limit = FindOpenApiParameter(entries, "limit").GetProperty("schema");
+        Assert.Equal(1, limit.GetProperty("minimum").GetInt32());
+        Assert.Equal(100, limit.GetProperty("maximum").GetInt32());
+        Assert.Equal(30, limit.GetProperty("default").GetInt32());
+
+        var pageSchema = ResolveResponseSchema(document, entries, "200");
+        Assert.True(pageSchema.GetProperty("properties").TryGetProperty("items", out var items));
+        Assert.True(pageSchema.GetProperty("properties").TryGetProperty("nextCursor", out _));
+        var itemSchema = ResolveOpenApiSchema(document, items.GetProperty("items"));
+        foreach (var property in new[]
+                 {
+                     "id", "operationId", "operationType", "sourceType", "sourceId",
+                     "coinType", "bucket", "deltaCoins", "occurredAt",
+                 })
+        {
+            Assert.True(itemSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var errorSchema = ResolveResponseSchema(document, entries, "400");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+    }
+
+    [Fact]
     public async Task OpenApi_document_contains_catalog_publication_contracts()
     {
         using var client = CreateClient();
@@ -2038,6 +2168,60 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .GetProperty("content")
             .GetProperty("application/json")
             .GetProperty("schema"));
+
+    private async Task SeedWalletEntriesAsync(Guid ownerUserId, int ownerEntryCount)
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var now = new DateTimeOffset(2026, 10, 14, 11, 0, 0, TimeSpan.Zero);
+        var otherUserId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(
+            otherUserId,
+            "Other Wallet User",
+            null,
+            null,
+            now));
+
+        for (var index = 0; index < ownerEntryCount; index++)
+        {
+            var operation = WalletOperation.Create(
+                Guid.NewGuid(),
+                ownerUserId,
+                $"OwnerCredit{index}",
+                "ApiTest",
+                Guid.NewGuid(),
+                null,
+                now);
+            context.WalletOperations.Add(operation);
+            context.WalletEntries.Add(WalletEntry.Create(
+                Guid.NewGuid(),
+                operation,
+                WalletCoinTypes.Paid,
+                WalletBuckets.Available,
+                1,
+                1,
+                now));
+        }
+
+        var otherOperation = WalletOperation.Create(
+            Guid.NewGuid(),
+            otherUserId,
+            "OtherCredit",
+            "ApiTest",
+            Guid.NewGuid(),
+            null,
+            now.AddMinutes(1));
+        context.WalletOperations.Add(otherOperation);
+        context.WalletEntries.Add(WalletEntry.Create(
+            Guid.NewGuid(),
+            otherOperation,
+            WalletCoinTypes.Paid,
+            WalletBuckets.Available,
+            1,
+            1,
+            now.AddMinutes(1)));
+        await context.SaveChangesAsync();
+    }
 
     private HttpClient CreateClient() => _factory.CreateClient(
         new WebApplicationFactoryClientOptions

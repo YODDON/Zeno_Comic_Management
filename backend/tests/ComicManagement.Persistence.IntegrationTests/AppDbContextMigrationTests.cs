@@ -27,6 +27,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261013052440_AddPublicCatalogQueryIndexes",
         "20261013060258_AddChapterPublishedAtAndCatalogPagination",
         "20261013185204_AddReadingSessionsAndProgress",
+        "20261014094117_AddWalletCore",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -75,6 +76,10 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "administration.audit_logs"));
         Assert.True(await TableExists(context, "reading.reading_sessions"));
         Assert.True(await TableExists(context, "reading.reading_progress"));
+        Assert.True(await TableExists(context, "wallet.wallets"));
+        Assert.True(await TableExists(context, "wallet.paid_coin_lots"));
+        Assert.True(await TableExists(context, "wallet.wallet_operations"));
+        Assert.True(await TableExists(context, "wallet.wallet_entries"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(
@@ -82,6 +87,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             "catalog",
             "ix_chapters_public_comic_published_id"));
         Assert.True(await ColumnExists(context, "catalog", "chapters", "published_at"));
+        Assert.True(await IndexExists(context, "wallet", "ix_paid_coin_lots_user_created_id"));
+        Assert.True(await IndexExists(context, "wallet", "ix_wallet_entries_user_created_id"));
+        Assert.True(await IndexExists(context, "wallet", "ux_wallet_operations_business_source"));
 
         var now = new DateTimeOffset(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
         var comicId = Guid.NewGuid();
@@ -155,6 +163,10 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.False(await TableExists(context, "administration.audit_logs"));
         Assert.False(await TableExists(context, "reading.reading_sessions"));
         Assert.False(await TableExists(context, "reading.reading_progress"));
+        Assert.False(await TableExists(context, "wallet.wallets"));
+        Assert.False(await TableExists(context, "wallet.paid_coin_lots"));
+        Assert.False(await TableExists(context, "wallet.wallet_operations"));
+        Assert.False(await TableExists(context, "wallet.wallet_entries"));
 
         await context.Database.MigrateAsync();
 

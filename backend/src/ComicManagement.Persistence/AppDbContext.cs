@@ -4,6 +4,9 @@ using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Taxonomy;
 using ComicManagement.Identity.Users;
 using ComicManagement.Reading.Sessions;
+using ComicManagement.Wallet.Ledger;
+using ComicManagement.Wallet.Lots;
+using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -42,9 +45,17 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<ReadingProgress> ReadingProgress => Set<ReadingProgress>();
 
+    internal DbSet<WalletAccount> Wallets => Set<WalletAccount>();
+
+    internal DbSet<PaidCoinLot> PaidCoinLots => Set<PaidCoinLot>();
+
+    internal DbSet<WalletOperation> WalletOperations => Set<WalletOperation>();
+
+    internal DbSet<WalletEntry> WalletEntries => Set<WalletEntry>();
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
-        EnsureAuditLogsAreAppendOnly();
+        EnsureAppendOnlyRecords();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -52,7 +63,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
-        EnsureAuditLogsAreAppendOnly();
+        EnsureAppendOnlyRecords();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
@@ -62,12 +73,20 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
     }
 
-    private void EnsureAuditLogsAreAppendOnly()
+    private void EnsureAppendOnlyRecords()
     {
         if (ChangeTracker.Entries<AuditLog>().Any(entry =>
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
             throw new InvalidOperationException("Audit logs are append-only.");
+        }
+
+        if (ChangeTracker.Entries<WalletOperation>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted) ||
+            ChangeTracker.Entries<WalletEntry>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException("Wallet ledger records are append-only.");
         }
     }
 }
