@@ -228,6 +228,166 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Billing.Payments.ProviderTransaction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AccountNumberLast4")
+                        .IsRequired()
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)")
+                        .HasColumnName("account_number_last4");
+
+                    b.Property<long>("AmountVnd")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_vnd");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("direction");
+
+                    b.Property<Guid?>("MatchedOrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("matched_order_id");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<string>("PayloadFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("payload_fingerprint");
+
+                    b.Property<string>("PaymentCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("payment_code");
+
+                    b.Property<string>("ProcessingStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("processing_status");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderTransactionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("provider_transaction_id");
+
+                    b.Property<string>("ReconciliationReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("reconciliation_reason");
+
+                    b.Property<string>("ReferenceCode")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("reference_code");
+
+                    b.Property<DateTimeOffset>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_provider_transactions");
+
+                    b.HasIndex("MatchedOrderId")
+                        .HasDatabaseName("ix_provider_transactions_matched_order_id");
+
+                    b.HasIndex("Provider", "ProviderTransactionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_provider_transactions_provider_external_id");
+
+                    b.HasIndex("ProcessingStatus", "VerifiedAt", "Id")
+                        .HasDatabaseName("ix_provider_transactions_status_verified_id");
+
+                    b.ToTable("provider_transactions", "billing", t =>
+                        {
+                            t.HasCheckConstraint("ck_provider_transactions_amount", "amount_vnd > 0");
+
+                            t.HasCheckConstraint("ck_provider_transactions_direction", "direction IN ('Incoming', 'Outgoing')");
+
+                            t.HasCheckConstraint("ck_provider_transactions_payload_fingerprint", "payload_fingerprint ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_provider_transactions_processing", "(processing_status = 'Received' AND reconciliation_reason IS NULL) OR (processing_status = 'ReconciliationRequired' AND reconciliation_reason IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_provider_transactions_provider", "provider IN ('SePay')");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Payments.WebhookDelivery", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<bool>("AuthVerified")
+                        .HasColumnType("boolean")
+                        .HasColumnName("auth_verified");
+
+                    b.Property<string>("DeliveryReference")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("delivery_reference");
+
+                    b.Property<string>("ErrorCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("error_code");
+
+                    b.Property<string>("PayloadReference")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("payload_reference");
+
+                    b.Property<string>("ProcessingResult")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("processing_result");
+
+                    b.Property<Guid?>("ProviderTransactionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("provider_transaction_id");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("received_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_webhook_deliveries");
+
+                    b.HasIndex("ProviderTransactionId")
+                        .HasDatabaseName("ix_webhook_deliveries_provider_transaction_id");
+
+                    b.HasIndex("ReceivedAt", "Id")
+                        .IsDescending()
+                        .HasDatabaseName("ix_webhook_deliveries_received_id");
+
+                    b.ToTable("webhook_deliveries", "billing", t =>
+                        {
+                            t.HasCheckConstraint("ck_webhook_deliveries_authenticated_transaction", "auth_verified = TRUE AND provider_transaction_id IS NOT NULL");
+
+                            t.HasCheckConstraint("ck_webhook_deliveries_payload_reference", "payload_reference ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_webhook_deliveries_processing", "(processing_result IN ('Accepted', 'Duplicate') AND error_code IS NULL) OR (processing_result = 'ReconciliationRequired' AND error_code IS NOT NULL)");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1305,6 +1465,24 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_payment_orders_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Payments.ProviderTransaction", b =>
+                {
+                    b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
+                        .WithMany()
+                        .HasForeignKey("MatchedOrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_provider_transactions_payment_orders");
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Payments.WebhookDelivery", b =>
+                {
+                    b.HasOne("ComicManagement.Billing.Payments.ProviderTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("ProviderTransactionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_webhook_deliveries_provider_transactions");
                 });
 
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>

@@ -25,6 +25,7 @@ builder.Services.AddControllers();
 builder.Services.AddOpenApi(options =>
 {
     options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>();
+    options.AddOperationTransformer<SePayWebhookOpenApiOperationTransformer>();
     options.AddSchemaTransformer<TopUpAmountOpenApiSchemaTransformer>();
 });
 builder.Services.AddProblemDetails();
@@ -40,6 +41,39 @@ builder.Services.AddSingleton(serviceProvider =>
     var options = serviceProvider.GetRequiredService<IOptions<TopUpOrderOptions>>().Value;
     return new TopUpOrderPolicy(TimeSpan.FromMinutes(options.TopUpOrderTtlMinutes));
 });
+builder.Services.AddOptions<SePayWebhookOptions>()
+    .Bind(builder.Configuration.GetSection(SePayWebhookOptions.SectionName))
+    .Validate(
+        options => options.TimestampToleranceSeconds is >= 1 and <= 900,
+        "Billing:SePayWebhook:TimestampToleranceSeconds must be between 1 and 900.")
+    .Validate(
+        options => options.MaximumBodyBytes is >= 1024 and <= 1024 * 1024,
+        "Billing:SePayWebhook:MaximumBodyBytes must be between 1024 and 1048576.")
+    .Validate(
+        options => options.PermitLimitPerMinute is >= 1 and <= 10_000,
+        "Billing:SePayWebhook:PermitLimitPerMinute must be between 1 and 10000.")
+    .Validate(
+        options => !options.Enabled ||
+                   options.Secret is { Length: >= 32 and <= 500 },
+        "Billing:SePayWebhook:Secret must contain between 32 and 500 characters when enabled.")
+    .Validate(
+        options => !options.Enabled ||
+                   !string.IsNullOrWhiteSpace(options.ExpectedAccountNumber) &&
+                   options.ExpectedAccountNumber.Length <=
+                       SePayNormalizedTransaction.MaximumAccountNumberLength,
+        "Billing:SePayWebhook:ExpectedAccountNumber is required when enabled.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(serviceProvider =>
+{
+    var options = serviceProvider.GetRequiredService<IOptions<SePayWebhookOptions>>().Value;
+    return new SePayWebhookPolicy(
+        options.Enabled,
+        options.Secret,
+        options.ExpectedAccountNumber,
+        TimeSpan.FromSeconds(options.TimestampToleranceSeconds),
+        options.MaximumBodyBytes);
+});
+builder.Services.AddSingleton<SePayWebhookAdapter>();
 builder.Services.AddCloudinaryChapterPageAssets(options =>
 {
     var section = builder.Configuration.GetSection(CloudinaryOptions.SectionName);

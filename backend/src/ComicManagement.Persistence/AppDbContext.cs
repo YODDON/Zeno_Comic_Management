@@ -62,6 +62,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<PaymentOrder> PaymentOrders => Set<PaymentOrder>();
 
+    internal DbSet<ProviderTransaction> ProviderTransactions => Set<ProviderTransaction>();
+
+    internal DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnsureAppendOnlyRecords();

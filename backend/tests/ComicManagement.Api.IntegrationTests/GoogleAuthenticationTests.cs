@@ -47,6 +47,9 @@ namespace ComicManagement.Api.IntegrationTests;
 public sealed class GoogleAuthenticationTests : IAsyncLifetime
 {
     private const string CertificatePassword = "i01-test-certificate-password";
+    private const string SePayWebhookSecret =
+        "0123456789abcdef0123456789abcdef";
+    private const string SePayAccountNumber = "0123456789";
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
         .WithDatabase("comic_management_api_tests")
@@ -411,6 +414,134 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             await client.SendAsync(request),
             HttpStatusCode.Forbidden,
             "FORBIDDEN");
+    }
+
+    [Fact]
+    public async Task Sepay_webhook_requires_valid_hmac_and_persists_normalized_evidence()
+    {
+        await using var factory = CreateSePayFactory();
+        using var client = CreateClient(factory);
+        var providerId = $"92{Random.Shared.Next(100_000, 999_999)}";
+
+        using var request = SePayRequest(providerId, 100_000);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var acknowledgement = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(acknowledgement.GetProperty("success").GetBoolean());
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var transaction = await context.ProviderTransactions
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.ProviderTransactionId == providerId);
+        Assert.Equal(ProviderTransactionProcessingStatuses.Received, transaction.ProcessingStatus);
+        Assert.Equal(100_000, transaction.AmountVnd);
+        Assert.Equal(SePayAccountNumber[^4..], transaction.AccountNumberLast4);
+        var delivery = await context.WebhookDeliveries
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.ProviderTransactionId == transaction.Id);
+        Assert.True(delivery.AuthVerified);
+        Assert.Equal(WebhookDeliveryProcessingResults.Accepted, delivery.ProcessingResult);
+    }
+
+    [Fact]
+    public async Task Sepay_retry_is_acknowledged_and_deduplicated_by_financial_transaction_id()
+    {
+        await using var factory = CreateSePayFactory();
+        using var client = CreateClient(factory);
+        var providerId = $"93{Random.Shared.Next(100_000, 999_999)}";
+
+        using var firstRequest = SePayRequest(providerId, 100_000);
+        using var replayRequest = SePayRequest(providerId, 100_000);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(firstRequest)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(replayRequest)).StatusCode);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var transaction = await context.ProviderTransactions
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.ProviderTransactionId == providerId);
+        Assert.Equal(
+            2,
+            await context.WebhookDeliveries.CountAsync(candidate =>
+                candidate.ProviderTransactionId == transaction.Id));
+    }
+
+    [Fact]
+    public async Task Sepay_same_identity_with_changed_payload_is_held_for_reconciliation()
+    {
+        await using var factory = CreateSePayFactory();
+        using var client = CreateClient(factory);
+        var providerId = $"94{Random.Shared.Next(100_000, 999_999)}";
+
+        using var firstRequest = SePayRequest(providerId, 100_000);
+        using var conflictRequest = SePayRequest(providerId, 101_000);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(firstRequest)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(conflictRequest)).StatusCode);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var transaction = await context.ProviderTransactions
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.ProviderTransactionId == providerId);
+        Assert.Equal(
+            ProviderTransactionProcessingStatuses.ReconciliationRequired,
+            transaction.ProcessingStatus);
+        Assert.Equal(
+            SePayReconciliationReasons.ProviderTransactionConflict,
+            transaction.ReconciliationReason);
+    }
+
+    [Fact]
+    public async Task Sepay_invalid_hmac_and_stale_timestamp_are_rejected_without_persistence()
+    {
+        await using var factory = CreateSePayFactory();
+        using var client = CreateClient(factory);
+        var invalidId = $"95{Random.Shared.Next(100_000, 999_999)}";
+        var staleId = $"96{Random.Shared.Next(100_000, 999_999)}";
+
+        using var invalidRequest = SePayRequest(invalidId, 100_000);
+        invalidRequest.Headers.Remove(SePayWebhookHeaders.Signature);
+        invalidRequest.Headers.TryAddWithoutValidation(
+            SePayWebhookHeaders.Signature,
+            "sha256=" + new string('0', 64));
+        using var staleRequest = SePayRequest(
+            staleId,
+            100_000,
+            DateTimeOffset.UtcNow.AddMinutes(-6));
+
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await client.SendAsync(invalidRequest)).StatusCode);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await client.SendAsync(staleRequest)).StatusCode);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.False(await context.ProviderTransactions.AnyAsync(candidate =>
+            candidate.ProviderTransactionId == invalidId ||
+            candidate.ProviderTransactionId == staleId));
+    }
+
+    [Fact]
+    public async Task Sepay_webhook_rate_limit_returns_standardized_429()
+    {
+        await using var factory = CreateSePayFactory(sePayPermitLimitPerMinute: 1);
+        using var client = CreateClient(factory);
+
+        using var firstRequest = SePayRequest(
+            $"97{Random.Shared.Next(100_000, 999_999)}",
+            100_000);
+        using var rejectedRequest = SePayRequest(
+            $"98{Random.Shared.Next(100_000, 999_999)}",
+            100_000);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(firstRequest)).StatusCode);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(rejectedRequest),
+            HttpStatusCode.TooManyRequests,
+            "RATE_LIMITED");
     }
 
     [Fact]
@@ -1831,6 +1962,55 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenApi_document_contains_sepay_raw_body_headers_and_ack_contract()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var operation = document.GetProperty("paths")
+            .GetProperty("/api/v1/webhooks/sepay/ipn")
+            .GetProperty("post");
+        foreach (var status in new[] { "200", "400", "401", "413", "429", "503" })
+        {
+            Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        foreach (var headerName in new[]
+                 {
+                     SePayWebhookHeaders.Signature,
+                     SePayWebhookHeaders.Timestamp,
+                 })
+        {
+            var header = FindOpenApiParameter(operation, headerName);
+            Assert.Equal("header", header.GetProperty("in").GetString());
+            Assert.True(header.GetProperty("required").GetBoolean());
+            Assert.False(string.IsNullOrWhiteSpace(
+                header.GetProperty("schema").GetProperty("pattern").GetString()));
+        }
+
+        var requestSchema = ResolveOpenApiSchema(
+            document,
+            operation.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        foreach (var property in new[]
+                 {
+                     "id", "gateway", "transactionDate", "accountNumber", "subAccount",
+                     "code", "content", "transferType", "description", "transferAmount",
+                     "accumulated", "referenceCode",
+                 })
+        {
+            Assert.True(requestSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var acknowledgement = ResolveResponseSchema(document, operation, "200");
+        Assert.True(acknowledgement.GetProperty("properties").TryGetProperty("success", out _));
+    }
+
+    [Fact]
     public async Task OpenApi_document_contains_catalog_publication_contracts()
     {
         using var client = CreateClient();
@@ -2890,6 +3070,53 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         return request;
     }
 
+    private AuthenticationApplicationFactory CreateSePayFactory(
+        int sePayPermitLimitPerMinute = 120) => new(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            sePayWebhookEnabled: true,
+            sePayPermitLimitPerMinute: sePayPermitLimitPerMinute);
+
+    private static HttpRequestMessage SePayRequest(
+        string providerTransactionId,
+        long amountVnd,
+        DateTimeOffset? signedAt = null)
+    {
+        var timestamp = (signedAt ?? DateTimeOffset.UtcNow)
+            .ToUnixTimeSeconds()
+            .ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var payload = JsonSerializer.Serialize(new
+        {
+            id = long.Parse(providerTransactionId, System.Globalization.CultureInfo.InvariantCulture),
+            gateway = "MBBank",
+            transactionDate = "2026-10-16 10:30:00",
+            accountNumber = SePayAccountNumber,
+            subAccount = string.Empty,
+            code = "ZENO-0123456789abcdef",
+            content = "ZENO-0123456789abcdef chuyen tien",
+            transferType = "in",
+            description = "NGUYEN VAN A chuyen tien",
+            transferAmount = amountVnd,
+            accumulated = 5_000_000,
+            referenceCode = "FT24012345678",
+        });
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(SePayWebhookSecret));
+        var signature = hmac.ComputeHash(Encoding.UTF8.GetBytes($"{timestamp}.{payload}"));
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/webhooks/sepay/ipn")
+        {
+            Content = new StringContent(payload, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation(
+            SePayWebhookHeaders.Timestamp,
+            timestamp);
+        request.Headers.TryAddWithoutValidation(
+            SePayWebhookHeaders.Signature,
+            $"sha256={Convert.ToHexString(signature).ToLowerInvariant()}");
+        return request;
+    }
+
     private Task<LoginFlow> BeginLoginAsync(HttpClient client, string returnUrl) =>
         BeginLoginAsync(client, returnUrl, _factory.TokenEndpoint);
 
@@ -3025,7 +3252,9 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         bool forceProfileConflicts = false,
         int readingProgressPermitLimit = 60,
         int topUpOrderTtlMinutes = 30,
-        bool useInsufficientRoleTestAuthentication = false) : WebApplicationFactory<Program>
+        bool useInsufficientRoleTestAuthentication = false,
+        bool sePayWebhookEnabled = false,
+        int sePayPermitLimitPerMinute = 120) : WebApplicationFactory<Program>
     {
         private readonly string _keysPath = Path.Combine(securityDirectory, "keys");
         private readonly string _certificatePath = Path.Combine(
@@ -3071,6 +3300,20 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 .UseSetting(
                     "Billing:TopUpOrderTtlMinutes",
                     topUpOrderTtlMinutes.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture))
+                .UseSetting(
+                    "Billing:SePayWebhook:Enabled",
+                    sePayWebhookEnabled.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture))
+                .UseSetting("Billing:SePayWebhook:Secret", SePayWebhookSecret)
+                .UseSetting(
+                    "Billing:SePayWebhook:ExpectedAccountNumber",
+                    SePayAccountNumber)
+                .UseSetting("Billing:SePayWebhook:TimestampToleranceSeconds", "300")
+                .UseSetting("Billing:SePayWebhook:MaximumBodyBytes", "65536")
+                .UseSetting(
+                    "Billing:SePayWebhook:PermitLimitPerMinute",
+                    sePayPermitLimitPerMinute.ToString(
                         System.Globalization.CultureInfo.InvariantCulture))
                 .UseSetting("ReverseProxy:KnownNetworks:0", "0.0.0.0/0")
                 .UseSetting("ReverseProxy:KnownNetworks:1", "::/0");
