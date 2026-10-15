@@ -1338,6 +1338,35 @@ svg {
   color: var(--danger) !important;
 }
 
+.reader-sync-recovery {
+  position: fixed;
+  z-index: 12;
+  top: 5.75rem;
+  left: 50%;
+  display: flex;
+  width: min(calc(100% - 2rem), 42rem);
+  transform: translateX(-50%);
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-lg);
+  padding: 0.85rem 1rem;
+}
+
+.reader-sync-recovery div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.reader-sync-recovery span {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
 .reader-canvas {
   width: min(100%, 64rem);
   margin-inline: auto;
@@ -1517,6 +1546,11 @@ svg {
 
   .reader-toolbar {
     top: 1rem;
+  }
+
+  .reader-sync-recovery {
+    flex-direction: row;
+    align-items: center;
   }
 }
 

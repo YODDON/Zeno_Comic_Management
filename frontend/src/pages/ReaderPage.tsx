@@ -19,6 +19,7 @@ import { Button } from "@/shared/ui/Button";
 const heartbeatIntervalMs = 10_000;
 type ReaderSyncStatus = "guest" | "starting" | "active" | "qualified" | "expired" | "error";
 interface ReaderPosition { pageOrder: number; pageOffsetRatio: number }
+interface AuthoritativeScrollRequest { id: number; position: ReaderPosition }
 
 export function ReaderPage() {
   const { chapterId = "" } = useParams();
@@ -98,12 +99,18 @@ function ReaderContent({
   const qualificationRequested = useRef(false);
   const manifestRevision = useRef<string | undefined>(undefined);
   const [syncStatus, setSyncStatus] = useState<ReaderSyncStatus>("starting");
+  const [sessionStartFailed, setSessionStartFailed] = useState(false);
+  const [sessionStartAttempt, setSessionStartAttempt] = useState(0);
   const [acceptedProgress, setAcceptedProgress] = useState(0);
   const [activeDurationMs, setActiveDurationMs] = useState(0);
   const [toolbarVisible, setToolbarVisible] = useState(true);
   const [failedPages, setFailedPages] = useState<Set<number>>(new Set());
   const [imageAttempt, setImageAttempt] = useState(0);
   const initialScrollDone = useRef(false);
+  const authoritativeScrollId = useRef(0);
+  const appliedAuthoritativeScrollId = useRef(0);
+  const [authoritativeScroll, setAuthoritativeScroll] =
+    useState<AuthoritativeScrollRequest | undefined>(undefined);
   const lastScrollY = useRef(0);
 
   useEffect(() => { positionRef.current = position; }, [position]);
@@ -121,9 +128,30 @@ function ReaderContent({
         setSyncStatus("active");
       })
       .catch((error: unknown) => {
-        setSyncStatus(error instanceof ApiError && error.status === 401 ? "guest" : "error");
+        if (error instanceof ApiError && error.status === 401) {
+          setSyncStatus("guest");
+          return;
+        }
+
+        setSessionStartFailed(true);
+        setSyncStatus("error");
       });
-  }, [chapterId, profile.data, profile.isPending]);
+  }, [chapterId, profile.data, profile.isPending, sessionStartAttempt]);
+
+  const retrySessionStart = useCallback(() => {
+    startedSession.current = false;
+    sessionRef.current = undefined;
+    pendingHeartbeat.current = undefined;
+    heartbeatRunning.current = false;
+    qualificationRequested.current = false;
+    manifestRevision.current = undefined;
+    nextSequence.current = 1;
+    setAcceptedProgress(0);
+    setActiveDurationMs(0);
+    setSessionStartFailed(false);
+    setSyncStatus("starting");
+    setSessionStartAttempt((attempt) => attempt + 1);
+  }, []);
 
   const sendHeartbeat = useCallback(async () => {
     const session = sessionRef.current;
@@ -150,6 +178,20 @@ function ReaderContent({
       if (manifestRevision.current !== heartbeat.manifestRevision) {
         manifestRevision.current = heartbeat.manifestRevision;
         await refreshManifest();
+      }
+
+      const acceptedPosition = heartbeat.acceptedPosition;
+      if (acceptedPosition && !samePosition(acceptedPosition, positionRef.current)) {
+        const authoritativePosition = {
+          pageOrder: acceptedPosition.pageOrder,
+          pageOffsetRatio: acceptedPosition.pageOffsetRatio,
+        };
+        positionRef.current = authoritativePosition;
+        setPosition(authoritativePosition);
+        setAuthoritativeScroll({
+          id: ++authoritativeScrollId.current,
+          position: authoritativePosition,
+        });
       }
       if (
         !qualificationRequested.current &&
@@ -192,9 +234,18 @@ function ReaderContent({
     const target = pageElements.current.get(position.pageOrder);
     if (!target) return;
     initialScrollDone.current = true;
-    const top = target.offsetTop + target.offsetHeight * position.pageOffsetRatio;
-    window.scrollTo({ top: Math.max(0, top - window.innerHeight * 0.45), behavior: "auto" });
-  }, [manifest.pages, position.pageOffsetRatio, position.pageOrder]);
+    scrollToReaderPosition(target, position);
+  }, [manifest.pages, position]);
+
+  useEffect(() => {
+    if (!authoritativeScroll ||
+        appliedAuthoritativeScrollId.current === authoritativeScroll.id) return;
+    const target = pageElements.current.get(authoritativeScroll.position.pageOrder);
+    if (!target) return;
+
+    appliedAuthoritativeScrollId.current = authoritativeScroll.id;
+    scrollToReaderPosition(target, authoritativeScroll.position);
+  }, [authoritativeScroll, manifest.pages]);
 
   useEffect(() => {
     let frame = 0;
@@ -260,6 +311,18 @@ function ReaderContent({
         <div><strong>Chương đang đọc</strong><span>Trang {position.pageOrder} · {Math.round(displayProgress / 100)}%</span></div>
         <SyncBadge activeDurationMs={activeDurationMs} status={resolvedSyncStatus} />
       </header>
+
+      {sessionStartFailed ? (
+        <div className="reader-sync-recovery" role="alert">
+          <div>
+            <strong>Tiến độ hiện không được lưu</strong>
+            <span>Không thể mở phiên đọc với máy chủ. Bạn có thể tiếp tục xem trang hoặc thử lại.</span>
+          </div>
+          <Button onClick={retrySessionStart} variant="outline">
+            <RefreshCw aria-hidden="true" /> Thử lưu tiến độ lại
+          </Button>
+        </div>
+      ) : null}
 
       <div aria-label="Trang truyện" className="reader-canvas" id="reader-content" role="region">
         <div className="reader-opening"><BookOpen aria-hidden="true" /><p>Cuộn dọc để đọc · tiến độ xác nhận bởi máy chủ</p></div>
@@ -341,3 +404,13 @@ function clientProgress(manifest: ChapterManifest, position: ReaderPosition) {
 }
 
 function roundOffset(value: number) { return Math.round(value * 10_000) / 10_000; }
+
+function samePosition(left: ReaderPosition, right: ReaderPosition) {
+  return left.pageOrder === right.pageOrder &&
+    Math.abs(left.pageOffsetRatio - right.pageOffsetRatio) < 0.0001;
+}
+
+function scrollToReaderPosition(target: HTMLElement, position: ReaderPosition) {
+  const top = target.offsetTop + target.offsetHeight * position.pageOffsetRatio;
+  window.scrollTo({ top: Math.max(0, top - window.innerHeight * 0.45), behavior: "auto" });
+}

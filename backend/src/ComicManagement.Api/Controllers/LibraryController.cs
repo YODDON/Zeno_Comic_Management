@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using System.Security.Claims;
 using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Authorization;
@@ -176,7 +177,7 @@ public sealed class LibraryController(LibraryHandler handler) : ControllerBase
 
     private static ContinueReadingItemResponse ToResponse(ContinueReadingItem item) => new(
         item.ComicId,
-        item.Availability,
+        ToAvailability(item.Availability),
         item.Slug,
         item.Title,
         item.CoverAssetId,
@@ -192,12 +193,26 @@ public sealed class LibraryController(LibraryHandler handler) : ControllerBase
 
     private static FollowedComicItemResponse ToResponse(FollowedComicItem item) => new(
         item.ComicId,
-        item.Availability,
+        ToAvailability(item.Availability),
         item.Slug,
         item.Title,
         item.CoverAssetId,
         item.SeriesStatus,
         item.FollowedAt);
+
+    private static LibraryAvailabilityResponse ToAvailability(string availability) => availability switch
+    {
+        LibraryAvailability.Available => LibraryAvailabilityResponse.Available,
+        LibraryAvailability.Unavailable => LibraryAvailabilityResponse.Unavailable,
+        _ => throw new InvalidOperationException($"Unsupported Library availability '{availability}'."),
+    };
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<LibraryAvailabilityResponse>))]
+public enum LibraryAvailabilityResponse
+{
+    Available = 0,
+    Unavailable = 1,
 }
 
 public sealed record FollowComicResponse(
@@ -216,7 +231,7 @@ public sealed record ContinueReadingPageResponse(
 
 public sealed record ContinueReadingItemResponse(
     Guid ComicId,
-    string Availability,
+    LibraryAvailabilityResponse Availability,
     string? Slug,
     string? Title,
     string? CoverAssetId,
@@ -224,7 +239,9 @@ public sealed record ContinueReadingItemResponse(
     Guid? ChapterId,
     string? ChapterLabel,
     int? PageOrder,
+    [property: Range(0d, 1d)]
     decimal? PageOffsetRatio,
+    [property: Range(0, 10_000)]
     int? AcceptedMaxProgressBasisPoints,
     DateTimeOffset LastReadAt,
     string? AccessType,
@@ -236,7 +253,7 @@ public sealed record FollowedComicPageResponse(
 
 public sealed record FollowedComicItemResponse(
     Guid ComicId,
-    string Availability,
+    LibraryAvailabilityResponse Availability,
     string? Slug,
     string? Title,
     string? CoverAssetId,

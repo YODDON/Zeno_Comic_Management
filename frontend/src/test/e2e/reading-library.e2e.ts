@@ -89,8 +89,8 @@ test("reader can follow, persist progress, and resume from the Library", async (
       expect(request.headers()["x-csrf-token"]).toBe("r03-csrf");
       followed = true;
       await route.fulfill({
-        status: 201,
-        json: { comicId, followed: true, followedAt: "2026-10-14T02:00:00+00:00", created: true },
+        status: 200,
+        json: { comicId, followed: true, followedAt: "2026-10-14T02:00:00+00:00" },
       });
       return;
     }

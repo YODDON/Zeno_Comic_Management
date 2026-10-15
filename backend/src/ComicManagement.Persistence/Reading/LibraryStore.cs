@@ -1,6 +1,5 @@
 using System.Data;
 using ComicManagement.Catalog.Chapters;
-using ComicManagement.Catalog.Comics;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Events;
 using ComicManagement.Reading.Library;
@@ -110,11 +109,6 @@ internal sealed class LibraryStore(
                 Progress = progress,
                 Comic = comic,
                 Chapter = chapter,
-                HasReadyPage = dbContext.ChapterPages.Any(page =>
-                    page.ChapterId == chapter.Id &&
-                    page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                    page.Width > 0 &&
-                    page.Height > 0),
                 CurrentPageReady = dbContext.ChapterPages.Any(page =>
                     page.ChapterId == chapter.Id &&
                     page.PageOrder == progress.LastPageOrder &&
@@ -139,7 +133,6 @@ internal sealed class LibraryStore(
                         page.Height > 0)
                     .Select(page => (int?)page.PageOrder)
                     .Max(),
-                EffectivePriceCoins = chapter.PriceOverrideCoins ?? comic.DefaultPriceCoins,
             };
 
         if (cursor is not null)
@@ -156,22 +149,23 @@ internal sealed class LibraryStore(
             .Take(take)
             .ToListAsync(cancellationToken);
 
+        var chapterIds = rows.Select(row => row.Chapter.Id).ToArray();
+        var accessByChapterId = await ChapterAccessQuery.PublicReadableChapters(dbContext)
+            .Where(row => chapterIds.Contains(row.ChapterId))
+            .ToDictionaryAsync(
+                row => row.ChapterId,
+                ChapterAccessQuery.ToProjection,
+                cancellationToken);
+
         return rows.Select(row =>
         {
+            accessByChapterId.TryGetValue(row.Chapter.Id, out var projection);
             var isAvailable =
                 row.Chapter.ComicId == row.Comic.Id &&
-                row.Comic.PublicationStatus == ComicPublicationStatuses.Published &&
-                row.Comic.FirstPublishedAt.HasValue &&
-                row.Chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
-                row.HasReadyPage;
-            var access = isAvailable
+                projection is not null;
+            var access = isAvailable && projection is not null
                 ? ChapterAccessPolicy.Resolve(
-                    new ChapterAccessProjection(
-                        row.Chapter.Id,
-                        row.EffectivePriceCoins,
-                        row.Chapter.VipOverride ?? row.Comic.DefaultVipEligible,
-                        HasActiveVip: false,
-                        HasCoinUnlock: false),
+                    projection,
                     isAuthenticated: true)
                 : null;
             var canExposePosition = access?.CanRead == true;
@@ -215,16 +209,8 @@ internal sealed class LibraryStore(
             {
                 Follow = follow,
                 Comic = comic,
-                IsPublic = comic.PublicationStatus == ComicPublicationStatuses.Published &&
-                    comic.FirstPublishedAt != null &&
-                    dbContext.Chapters.Any(chapter =>
-                        chapter.ComicId == comic.Id &&
-                        chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
-                        dbContext.ChapterPages.Any(page =>
-                            page.ChapterId == chapter.Id &&
-                            page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                            page.Width > 0 &&
-                            page.Height > 0)),
+                IsPublic = ChapterAccessQuery.PublicReadableChapters(dbContext)
+                    .Any(chapter => chapter.ComicId == comic.Id),
             };
 
         if (cursor is not null)
@@ -251,20 +237,9 @@ internal sealed class LibraryStore(
             row.Follow.FollowedAt)).ToArray();
     }
 
-    private IQueryable<Comic> IsPublicComic(Guid comicId) => dbContext.Comics
-        .AsNoTracking()
-        .Where(comic =>
-            comic.Id == comicId &&
-            comic.PublicationStatus == ComicPublicationStatuses.Published &&
-            comic.FirstPublishedAt != null &&
-            dbContext.Chapters.Any(chapter =>
-                chapter.ComicId == comic.Id &&
-                chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
-                dbContext.ChapterPages.Any(page =>
-                    page.ChapterId == chapter.Id &&
-                    page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                    page.Width > 0 &&
-                    page.Height > 0)));
+    private IQueryable<ChapterAccessQueryRow> IsPublicComic(Guid comicId) =>
+        ChapterAccessQuery.PublicReadableChapters(dbContext)
+            .Where(chapter => chapter.ComicId == comicId);
 
     private Task LockFollowAsync(
         Guid userId,

@@ -15,8 +15,26 @@ namespace ComicManagement.Persistence.Migrations
                 schema: "reading",
                 table: "reading_progress",
                 type: "integer",
+                nullable: true);
+
+            migrationBuilder.Sql(
+                """
+                UPDATE reading.reading_progress AS progress
+                SET accepted_max_progress_basis_points = session.max_progress_basis_points
+                FROM reading.reading_sessions AS session
+                WHERE session.id = progress.source_session_id;
+                """);
+
+            migrationBuilder.AlterColumn<int>(
+                name: "accepted_max_progress_basis_points",
+                schema: "reading",
+                table: "reading_progress",
+                type: "integer",
                 nullable: false,
-                defaultValue: 0);
+                defaultValue: 0,
+                oldClrType: typeof(int),
+                oldType: "integer",
+                oldNullable: true);
 
             migrationBuilder.AddCheckConstraint(
                 name: "ck_reading_progress_accepted_progress",
