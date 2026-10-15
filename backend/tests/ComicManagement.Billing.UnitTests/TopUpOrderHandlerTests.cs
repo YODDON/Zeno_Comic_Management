@@ -1,5 +1,4 @@
 using ComicManagement.Billing.Payments;
-using ComicManagement.Shared.Time;
 using Xunit;
 
 namespace ComicManagement.Billing.UnitTests;
@@ -41,7 +40,7 @@ public sealed class TopUpOrderHandlerTests
         Assert.Equal(expectedCoins, result.State!.PaidCoinsExpected);
         Assert.Equal(Now.AddMinutes(45), result.State.ExpiresAt);
         Assert.Equal(TopUpOrderStatuses.Pending, result.State.Status);
-        Assert.Equal(Now, store.LastCandidate!.CreatedAt);
+        Assert.Equal(TimeSpan.FromMinutes(45), store.LastRequest!.TimeToLive);
     }
 
     [Fact]
@@ -57,6 +56,7 @@ public sealed class TopUpOrderHandlerTests
             new string('a', 64),
             Now.AddMinutes(-31),
             Now.AddMinutes(-1));
+        existing.ExpireIfDue(Now);
         var store = new StubStore(existing);
         var handler = CreateHandler(store);
 
@@ -65,6 +65,30 @@ public sealed class TopUpOrderHandlerTests
         Assert.Equal(TopUpOrderOutcome.Succeeded, result.Outcome);
         Assert.Equal(existing.Id, result.State!.OrderId);
         Assert.Equal(TopUpOrderStatuses.Expired, result.State.Status);
+    }
+
+    [Fact]
+    public void Expiry_is_monotonic_even_if_the_clock_moves_backwards()
+    {
+        var order = PaymentOrder.CreateTopUp(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "ZENO-MONOTONIC",
+            10_000,
+            1_000,
+            "monotonic-key",
+            new string('b', 64),
+            Now.AddMinutes(-31),
+            Now.AddMinutes(-1));
+
+        Assert.True(order.ExpireIfDue(Now));
+        var expiredAt = order.ExpiredAt;
+        var version = order.Version;
+
+        Assert.False(order.ExpireIfDue(Now.AddHours(-1)));
+        Assert.Equal(TopUpOrderStatuses.Expired, order.OrderStatus);
+        Assert.Equal(expiredAt, order.ExpiredAt);
+        Assert.Equal(version, order.Version);
     }
 
     [Fact]
@@ -79,29 +103,33 @@ public sealed class TopUpOrderHandlerTests
         StubStore store,
         TimeSpan? ttl = null) => new(
             store,
-            new StubClock(Now),
             new TopUpOrderPolicy(ttl ?? TimeSpan.FromMinutes(30)));
 
     private sealed class StubStore(PaymentOrder? replay = null) : ITopUpOrderStore
     {
         internal int CallCount { get; private set; }
 
-        internal PaymentOrder? LastCandidate { get; private set; }
+        internal CreateTopUpOrderStoreRequest? LastRequest { get; private set; }
 
         public Task<TopUpOrderStoreResult> CreateOrReplayAsync(
-            PaymentOrder candidate,
+            CreateTopUpOrderStoreRequest request,
             CancellationToken cancellationToken = default)
         {
             CallCount++;
-            LastCandidate = candidate;
+            LastRequest = request;
+            var candidate = PaymentOrder.CreateTopUp(
+                request.OrderId,
+                request.UserId,
+                $"ZENO-{request.OrderId:N}",
+                request.AmountVnd,
+                request.PaidCoins,
+                request.IdempotencyKey,
+                request.RequestFingerprint,
+                Now,
+                Now.Add(request.TimeToLive));
             return Task.FromResult(new TopUpOrderStoreResult(
                 TopUpOrderOutcome.Succeeded,
                 replay ?? candidate));
         }
-    }
-
-    private sealed class StubClock(DateTimeOffset utcNow) : IClock
-    {
-        public DateTimeOffset UtcNow { get; } = utcNow;
     }
 }

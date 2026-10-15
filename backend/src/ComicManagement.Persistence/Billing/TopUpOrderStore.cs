@@ -5,30 +5,73 @@ using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ComicManagement.Persistence;
 
-internal sealed class TopUpOrderStore(AppDbContext dbContext) : ITopUpOrderStore
+internal interface ITopUpOrderCriticalSectionObserver
+{
+    Task AfterLockAcquiredAsync(
+        Guid userId,
+        string orderType,
+        string idempotencyKey,
+        CancellationToken cancellationToken);
+}
+
+internal sealed class NoOpTopUpOrderCriticalSectionObserver :
+    ITopUpOrderCriticalSectionObserver
+{
+    public Task AfterLockAcquiredAsync(
+        Guid userId,
+        string orderType,
+        string idempotencyKey,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+internal sealed class TopUpOrderStore(
+    AppDbContext dbContext,
+    ITopUpOrderCriticalSectionObserver criticalSectionObserver) : ITopUpOrderStore
 {
     public async Task<TopUpOrderStoreResult> CreateOrReplayAsync(
-        PaymentOrder candidate,
+        CreateTopUpOrderStoreRequest request,
         CancellationToken cancellationToken = default)
     {
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.ReadCommitted,
             cancellationToken);
-        await AcquireIdempotencyLockAsync(candidate, cancellationToken);
+        await AcquireIdempotencyLockAsync(request, cancellationToken);
+        await criticalSectionObserver.AfterLockAcquiredAsync(
+            request.UserId,
+            PaymentOrderTypes.TopUp,
+            request.IdempotencyKey,
+            cancellationToken);
+        var serverNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
 
         var existing = await dbContext.PaymentOrders.SingleOrDefaultAsync(
-            order => order.UserId == candidate.UserId &&
-                     order.OrderType == candidate.OrderType &&
-                     order.IdempotencyKey == candidate.IdempotencyKey,
+            order => order.UserId == request.UserId &&
+                     order.OrderType == PaymentOrderTypes.TopUp &&
+                     order.IdempotencyKey == request.IdempotencyKey,
             cancellationToken);
         if (existing is not null)
         {
+            var expired = existing.ExpireIfDue(serverNow);
+            if (expired)
+            {
+                await dbContext.SaveChangesAsync(cancellationToken);
+            }
+
             await transaction.CommitAsync(cancellationToken);
-            return existing.RequestFingerprint == candidate.RequestFingerprint
+            return existing.RequestFingerprint == request.RequestFingerprint
                 ? new TopUpOrderStoreResult(TopUpOrderOutcome.Succeeded, existing)
                 : new TopUpOrderStoreResult(TopUpOrderOutcome.IdempotencyConflict);
         }
 
+        var candidate = PaymentOrder.CreateTopUp(
+            request.OrderId,
+            request.UserId,
+            $"ZENO-{request.OrderId:N}",
+            request.AmountVnd,
+            request.PaidCoins,
+            request.IdempotencyKey,
+            request.RequestFingerprint,
+            serverNow,
+            serverNow.Add(request.TimeToLive));
         dbContext.PaymentOrders.Add(candidate);
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -36,7 +79,7 @@ internal sealed class TopUpOrderStore(AppDbContext dbContext) : ITopUpOrderStore
     }
 
     private async Task AcquireIdempotencyLockAsync(
-        PaymentOrder candidate,
+        CreateTopUpOrderStoreRequest request,
         CancellationToken cancellationToken)
     {
         var connection = dbContext.Database.GetDbConnection();
@@ -48,12 +91,29 @@ internal sealed class TopUpOrderStore(AppDbContext dbContext) : ITopUpOrderStore
         var parameter = command.CreateParameter();
         parameter.ParameterName = "lock_key";
         parameter.Value = string.Concat(
-            candidate.UserId.ToString("N"),
+            request.UserId.ToString("N"),
             ":",
-            candidate.OrderType,
+            PaymentOrderTypes.TopUp,
             ":",
-            candidate.IdempotencyKey);
+            request.IdempotencyKey);
         command.Parameters.Add(parameter);
         await command.ExecuteScalarAsync(cancellationToken);
+    }
+
+    private async Task<DateTimeOffset> GetAuthoritativeServerTimeAsync(
+        CancellationToken cancellationToken)
+    {
+        var connection = dbContext.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction()
+            ?? throw new InvalidOperationException("Server time requires a transaction.");
+        command.CommandText = "SELECT clock_timestamp();";
+        var value = await command.ExecuteScalarAsync(cancellationToken);
+        return value switch
+        {
+            DateTimeOffset timestamp => timestamp.ToUniversalTime(),
+            DateTime timestamp => new DateTimeOffset(timestamp.ToUniversalTime()),
+            _ => throw new InvalidOperationException("PostgreSQL did not return server time."),
+        };
     }
 }

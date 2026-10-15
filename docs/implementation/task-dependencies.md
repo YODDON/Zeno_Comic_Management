@@ -20,7 +20,7 @@
 | R03 | Follow + Continue/Library UI | R02,F05 | read/follow E2E |
 | W01 | Wallet, operations, entries, Paid lots | F03,I01 | ledger reconciliation |
 | W02 | Atomic spending, allocations and deterministic locks | W01 | FIFO/race tests |
-| B01 | PaymentOrder and idempotent create API | F03,I01 | amount/idempotency |
+| B01 | PaymentOrder and idempotent create API | F03,I01 | amount/idempotency, monotonic expiry, per-user rate limit, PostgreSQL contention |
 | B02 | Provider adapter and webhook transaction/delivery tables | B01 | SePay contract verification PENDING |
 | B03 | TopUp provider verified fulfillment | B02,W01,F04 | exactly-once credit |
 | V01 | VIP plan/order snapshots and renewal | B03,I01 | concurrent renewal tests |

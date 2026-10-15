@@ -1,8 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using ComicManagement.Shared.Time;
-
 namespace ComicManagement.Billing.Payments;
 
 public enum TopUpOrderOutcome
@@ -28,16 +26,24 @@ public sealed record TopUpOrderStoreResult(
     TopUpOrderOutcome Outcome,
     PaymentOrder? Order = null);
 
+public sealed record CreateTopUpOrderStoreRequest(
+    Guid OrderId,
+    Guid UserId,
+    long AmountVnd,
+    long PaidCoins,
+    string IdempotencyKey,
+    string RequestFingerprint,
+    TimeSpan TimeToLive);
+
 public interface ITopUpOrderStore
 {
     Task<TopUpOrderStoreResult> CreateOrReplayAsync(
-        PaymentOrder candidate,
+        CreateTopUpOrderStoreRequest request,
         CancellationToken cancellationToken = default);
 }
 
 public sealed class TopUpOrderHandler(
     ITopUpOrderStore store,
-    IClock clock,
     TopUpOrderPolicy policy)
 {
     public async Task<TopUpOrderResult> CreateAsync(
@@ -55,20 +61,18 @@ public sealed class TopUpOrderHandler(
             return new TopUpOrderResult(TopUpOrderOutcome.ValidationFailed);
         }
 
-        var createdAt = NormalizeUtc(clock.UtcNow);
         var orderId = Guid.NewGuid();
         var fingerprint = Fingerprint(amountVnd);
-        var order = PaymentOrder.CreateTopUp(
-            orderId,
-            userId,
-            $"ZENO-{orderId:N}",
-            amountVnd,
-            TopUpAmountPolicy.CalculatePaidCoins(amountVnd),
-            idempotencyKey,
-            fingerprint,
-            createdAt,
-            NormalizeUtc(createdAt.Add(policy.TimeToLive)));
-        var stored = await store.CreateOrReplayAsync(order, cancellationToken);
+        var stored = await store.CreateOrReplayAsync(
+            new CreateTopUpOrderStoreRequest(
+                orderId,
+                userId,
+                amountVnd,
+                TopUpAmountPolicy.CalculatePaidCoins(amountVnd),
+                idempotencyKey,
+                fingerprint,
+                policy.TimeToLive),
+            cancellationToken);
         if (stored.Outcome != TopUpOrderOutcome.Succeeded || stored.Order is null)
         {
             return new TopUpOrderResult(stored.Outcome);
@@ -83,7 +87,7 @@ public sealed class TopUpOrderHandler(
                 authoritative.AmountVnd,
                 authoritative.PaidCoinsSnapshot ?? throw new InvalidOperationException(
                     "A TopUp order requires its Paid Coins snapshot."),
-                authoritative.GetTopUpStatus(createdAt),
+                authoritative.OrderStatus,
                 authoritative.ExpiresAt));
     }
 
@@ -94,11 +98,5 @@ public sealed class TopUpOrderHandler(
             $"TopUp|amountVnd={amountVnd}");
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
             .ToLowerInvariant();
-    }
-
-    private static DateTimeOffset NormalizeUtc(DateTimeOffset value)
-    {
-        var utc = value.ToUniversalTime();
-        return new DateTimeOffset(utc.Ticks - utc.Ticks % 10, TimeSpan.Zero);
     }
 }

@@ -14,7 +14,8 @@ A task is Done only if:
 | Capability | Required proof |
 |---|---|
 | Wallet | Sum lots and ledger agrees, no negative balance, `spent` distinct from `refunded` |
-| TopUp | Verify provider event, correct amount/order, duplicate webhook same grant |
+| B01 TopUp order slice | PaymentOrder create contract, amount constraints, permanent idempotency, monotonic persisted expiry, authorization/CSRF/rate limit, PostgreSQL contention and upgrade migration evidence |
+| TopUp capability (B02/B03) | Verify provider event, correct amount/order, duplicate webhook same grant and exactly-once wallet credit; remains incomplete while SePay is Verification Required |
 | VIP | Concurrent extensions exact 720h each; old order price unchanged |
 | Unlock | Bonus-first FIFO, quote 5 min, unique entitlement, no double debit |
 | Refund | Single request/order; original lot full, reserve only after Admin approval; manual bank evidence, unknown state holds coins |

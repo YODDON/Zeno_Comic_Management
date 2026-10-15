@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -30,6 +31,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261014043925_AddComicFollows",
         "20261014094117_AddWalletCore",
         "20261015141141_AddPaymentOrders",
+        "20261015145756_HardenB01PaymentOrderInvariants",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -184,6 +186,66 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.Equal(ExpectedMigrations, await context.Database.GetAppliedMigrationsAsync());
     }
 
+    [Fact]
+    public async Task B01_upgrade_preserves_valid_W01_paid_lots_and_enforces_new_ownership_links()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync("20261014094117_AddWalletCore");
+
+        var now = new DateTimeOffset(2026, 10, 15, 2, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var legacyOrderId = Guid.NewGuid();
+        var legacyLotId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "Legacy Wallet User",
+            null,
+            null,
+            now));
+        await context.SaveChangesAsync();
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO wallet.paid_coin_lots
+                (id, user_id, topup_order_id, granted_coins, spent_coins,
+                 refunded_coins, reserved_coins, created_at, version)
+            VALUES
+                ({legacyLotId}, {userId}, {legacyOrderId}, {1_000L}, {0L},
+                 {0L}, {0L}, {now}, {1L});
+            """);
+
+        await context.Database.MigrateAsync();
+
+        Assert.Equal(
+            1,
+            await context.Database.SqlQueryRaw<int>(
+                    "SELECT 1 AS \"Value\" FROM wallet.paid_coin_lots WHERE id = {0}",
+                    legacyLotId)
+                .SingleAsync());
+        Assert.False(await ConstraintIsValidated(
+            context,
+            "wallet",
+            "paid_coin_lots",
+            "fk_paid_coin_lots_topup_payment_orders"));
+
+        var newLotId = Guid.NewGuid();
+        var newOrderId = Guid.NewGuid();
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            context.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO wallet.paid_coin_lots
+                    (id, user_id, topup_order_id, granted_coins, spent_coins,
+                     refunded_coins, reserved_coins, created_at, version)
+                VALUES
+                    ({newLotId}, {userId}, {newOrderId}, {1_000L}, {0L},
+                     {0L}, {0L}, {now}, {1L});
+                """));
+    }
+
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)
     {
         var connection = context.Database.GetDbConnection();
@@ -224,6 +286,41 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 
         return (bool)(await command.ExecuteScalarAsync()
             ?? throw new InvalidOperationException("Table existence query returned null."));
+    }
+
+    private static async Task<bool> ConstraintIsValidated(
+        AppDbContext context,
+        string schema,
+        string table,
+        string constraint)
+    {
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT pg_constraint.convalidated
+            FROM pg_constraint
+            JOIN pg_class ON pg_class.oid = pg_constraint.conrelid
+            JOIN pg_namespace ON pg_namespace.oid = pg_class.relnamespace
+            WHERE pg_namespace.nspname = @schema
+              AND pg_class.relname = @table
+              AND pg_constraint.conname = @constraint;
+            """;
+        foreach (var (name, value) in new[]
+                 {
+                     ("schema", schema),
+                     ("table", table),
+                     ("constraint", constraint),
+                 })
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
+        }
+
+        return (bool)(await command.ExecuteScalarAsync() ?? false);
     }
 
     private static async Task<bool> ColumnExists(

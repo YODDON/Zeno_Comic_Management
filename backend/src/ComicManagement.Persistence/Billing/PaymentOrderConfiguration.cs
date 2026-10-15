@@ -18,6 +18,10 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
                 "ck_payment_orders_expiry",
                 "expires_at > created_at");
             table.HasCheckConstraint(
+                "ck_payment_orders_order_status",
+                "(order_status = 'Pending' AND expired_at IS NULL) OR " +
+                "(order_status = 'Expired' AND expired_at IS NOT NULL AND expired_at >= expires_at)");
+            table.HasCheckConstraint(
                 "ck_payment_orders_type_snapshots",
                 "(order_type = 'TopUp' AND amount_vnd BETWEEN 10000 AND 2000000 " +
                 "AND amount_vnd % 1000 = 0 AND paid_coins_snapshot = amount_vnd / 10 " +
@@ -45,6 +49,8 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
         });
 
         builder.HasKey(order => order.Id).HasName("pk_payment_orders");
+        builder.HasAlternateKey(order => new { order.Id, order.UserId })
+            .HasName("ak_payment_orders_id_user_id");
         builder.HasIndex(order => order.OrderCode)
             .IsUnique()
             .HasDatabaseName("ux_payment_orders_order_code");
@@ -94,8 +100,15 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
             .HasColumnName("request_fingerprint")
             .HasMaxLength(PaymentOrder.RequestFingerprintLength)
             .IsRequired();
+        builder.Property(order => order.OrderStatus)
+            .HasColumnName("order_status")
+            .HasMaxLength(PaymentOrder.MaximumStatusLength)
+            .IsRequired();
         builder.Property(order => order.ExpiresAt)
             .HasColumnName("expires_at")
+            .HasColumnType("timestamp with time zone");
+        builder.Property(order => order.ExpiredAt)
+            .HasColumnName("expired_at")
             .HasColumnType("timestamp with time zone");
         builder.Property(order => order.VerifiedPaidAt)
             .HasColumnName("verified_paid_at")

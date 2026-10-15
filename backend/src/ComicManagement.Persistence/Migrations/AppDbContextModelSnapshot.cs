@@ -96,6 +96,10 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
+                    b.Property<DateTimeOffset?>("ExpiredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expired_at");
+
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
@@ -121,6 +125,12 @@ namespace ComicManagement.Persistence.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("order_code");
+
+                    b.Property<string>("OrderStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("order_status");
 
                     b.Property<string>("OrderType")
                         .IsRequired()
@@ -178,6 +188,9 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_payment_orders");
 
+                    b.HasAlternateKey("Id", "UserId")
+                        .HasName("ak_payment_orders_id_user_id");
+
                     b.HasIndex("OrderCode")
                         .IsUnique()
                         .HasDatabaseName("ux_payment_orders_order_code");
@@ -202,6 +215,8 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_payment_orders_fulfillment_status", "fulfillment_status IN ('NotStarted', 'Retryable', 'Fulfilled', 'ManualReview')");
 
                             t.HasCheckConstraint("ck_payment_orders_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_payment_orders_order_status", "(order_status = 'Pending' AND expired_at IS NULL) OR (order_status = 'Expired' AND expired_at IS NOT NULL AND expired_at >= expires_at)");
 
                             t.HasCheckConstraint("ck_payment_orders_provider", "provider IN ('SePay')");
 
@@ -1213,6 +1228,10 @@ namespace ComicManagement.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_paid_coin_lots_topup_order_id");
 
+                    b.HasIndex("TopUpOrderId", "UserId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_paid_coin_lots_topup_order_user");
+
                     b.HasIndex("UserId", "CreatedAt", "Id")
                         .HasDatabaseName("ix_paid_coin_lots_user_created_id");
 
@@ -1437,19 +1456,20 @@ namespace ComicManagement.Persistence.Migrations
 
             modelBuilder.Entity("ComicManagement.Wallet.Lots.PaidCoinLot", b =>
                 {
-                    b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
-                        .WithOne()
-                        .HasForeignKey("ComicManagement.Wallet.Lots.PaidCoinLot", "TopUpOrderId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
-                        .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");
-
                     b.HasOne("ComicManagement.Identity.Users.User", null)
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_paid_coin_lots_users");
+
+                    b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Wallet.Lots.PaidCoinLot", "TopUpOrderId", "UserId")
+                        .HasPrincipalKey("ComicManagement.Billing.Payments.PaymentOrder", "Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");
                 });
 #pragma warning restore 612, 618
         }

@@ -86,15 +86,30 @@ namespace ComicManagement.Persistence.Migrations
                 columns: new[] { "user_id", "order_type", "idempotency_key" },
                 unique: true);
 
-            migrationBuilder.AddForeignKey(
-                name: "fk_paid_coin_lots_topup_payment_orders",
-                schema: "wallet",
-                table: "paid_coin_lots",
-                column: "topup_order_id",
-                principalSchema: "billing",
-                principalTable: "payment_orders",
-                principalColumn: "id",
-                onDelete: ReferentialAction.Restrict);
+            migrationBuilder.Sql(
+                """
+                ALTER TABLE wallet.paid_coin_lots
+                ADD CONSTRAINT fk_paid_coin_lots_topup_payment_orders
+                FOREIGN KEY (topup_order_id)
+                REFERENCES billing.payment_orders (id)
+                ON DELETE RESTRICT
+                NOT VALID;
+
+                DO $migration$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM wallet.paid_coin_lots AS lot
+                        LEFT JOIN billing.payment_orders AS payment_order
+                          ON payment_order.id = lot.topup_order_id
+                        WHERE payment_order.id IS NULL)
+                    THEN
+                        ALTER TABLE wallet.paid_coin_lots
+                        VALIDATE CONSTRAINT fk_paid_coin_lots_topup_payment_orders;
+                    END IF;
+                END
+                $migration$;
+                """);
         }
 
         /// <inheritdoc />

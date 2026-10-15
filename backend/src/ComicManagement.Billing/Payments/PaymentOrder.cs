@@ -82,7 +82,11 @@ public sealed class PaymentOrder
 
     public string RequestFingerprint { get; private set; } = string.Empty;
 
+    public string OrderStatus { get; private set; } = string.Empty;
+
     public DateTimeOffset ExpiresAt { get; private set; }
+
+    public DateTimeOffset? ExpiredAt { get; private set; }
 
     public DateTimeOffset? VerifiedPaidAt { get; private set; }
 
@@ -138,19 +142,27 @@ public sealed class PaymentOrder
             FulfillmentStatus = PaymentFulfillmentStatuses.NotStarted,
             IdempotencyKey = idempotencyKey,
             RequestFingerprint = requestFingerprint,
+            OrderStatus = TopUpOrderStatuses.Pending,
             CreatedAt = createdAt,
             ExpiresAt = expiresAt,
             Version = 1,
         };
     }
 
-    public string GetTopUpStatus(DateTimeOffset serverNow)
+    public bool ExpireIfDue(DateTimeOffset serverNow)
     {
         EnsureUtc(serverNow, nameof(serverNow));
-        return ProviderPaymentStatus == ProviderPaymentStatuses.Pending &&
-               serverNow >= ExpiresAt
-            ? TopUpOrderStatuses.Expired
-            : TopUpOrderStatuses.Pending;
+        if (OrderStatus != TopUpOrderStatuses.Pending ||
+            ProviderPaymentStatus != ProviderPaymentStatuses.Pending ||
+            serverNow < ExpiresAt)
+        {
+            return false;
+        }
+
+        OrderStatus = TopUpOrderStatuses.Expired;
+        ExpiredAt = serverNow;
+        Version++;
+        return true;
     }
 
     private static void EnsureFingerprint(string value)

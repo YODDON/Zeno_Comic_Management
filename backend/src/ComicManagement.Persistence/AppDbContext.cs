@@ -61,15 +61,17 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnsureAppendOnlyRecords();
+        EnsurePaidCoinLotsReferenceTopUpOrders();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
-    public override Task<int> SaveChangesAsync(
+    public override async Task<int> SaveChangesAsync(
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
         EnsureAppendOnlyRecords();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+        await EnsurePaidCoinLotsReferenceTopUpOrdersAsync(cancellationToken);
+        return await base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -94,4 +96,64 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
             throw new InvalidOperationException("Wallet ledger records are append-only.");
         }
     }
+
+    private void EnsurePaidCoinLotsReferenceTopUpOrders()
+    {
+        var orderIds = AddedPaidCoinLotOrderIds();
+        if (orderIds.Count == 0)
+        {
+            return;
+        }
+
+        var invalidTrackedOrder = ChangeTracker.Entries<PaymentOrder>()
+            .Any(entry => orderIds.Contains(entry.Entity.Id) &&
+                          entry.Entity.OrderType != PaymentOrderTypes.TopUp);
+        var trackedOrderIds = ChangeTracker.Entries<PaymentOrder>()
+            .Select(entry => entry.Entity.Id)
+            .ToHashSet();
+        var databaseOrderIds = orderIds.Except(trackedOrderIds).ToArray();
+        var invalidPersistedOrder = databaseOrderIds.Length > 0 &&
+            PaymentOrders.AsNoTracking().Any(order =>
+                databaseOrderIds.Contains(order.Id) &&
+                order.OrderType != PaymentOrderTypes.TopUp);
+        if (invalidTrackedOrder || invalidPersistedOrder)
+        {
+            throw new InvalidOperationException(
+                "PaidCoinLot must reference a TopUp PaymentOrder.");
+        }
+    }
+
+    private async Task EnsurePaidCoinLotsReferenceTopUpOrdersAsync(
+        CancellationToken cancellationToken)
+    {
+        var orderIds = AddedPaidCoinLotOrderIds();
+        if (orderIds.Count == 0)
+        {
+            return;
+        }
+
+        var invalidTrackedOrder = ChangeTracker.Entries<PaymentOrder>()
+            .Any(entry => orderIds.Contains(entry.Entity.Id) &&
+                          entry.Entity.OrderType != PaymentOrderTypes.TopUp);
+        var trackedOrderIds = ChangeTracker.Entries<PaymentOrder>()
+            .Select(entry => entry.Entity.Id)
+            .ToHashSet();
+        var databaseOrderIds = orderIds.Except(trackedOrderIds).ToArray();
+        var invalidPersistedOrder = databaseOrderIds.Length > 0 &&
+            await PaymentOrders.AsNoTracking().AnyAsync(
+                order => databaseOrderIds.Contains(order.Id) &&
+                         order.OrderType != PaymentOrderTypes.TopUp,
+                cancellationToken);
+        if (invalidTrackedOrder || invalidPersistedOrder)
+        {
+            throw new InvalidOperationException(
+                "PaidCoinLot must reference a TopUp PaymentOrder.");
+        }
+    }
+
+    private HashSet<Guid> AddedPaidCoinLotOrderIds() => ChangeTracker
+        .Entries<PaidCoinLot>()
+        .Where(entry => entry.State == EntityState.Added)
+        .Select(entry => entry.Entity.TopUpOrderId)
+        .ToHashSet();
 }

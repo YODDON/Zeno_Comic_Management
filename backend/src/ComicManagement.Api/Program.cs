@@ -1,4 +1,5 @@
 using ComicManagement.Api.Authentication;
+using ComicManagement.Api.Billing;
 using ComicManagement.Api.OpenApi;
 using ComicManagement.Api.Reading;
 using ComicManagement.Identity.Authentication;
@@ -22,7 +23,10 @@ var authenticationSettings = IdentityAuthenticationSettings.FromConfiguration(
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi(options =>
-    options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>());
+{
+    options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>();
+    options.AddSchemaTransformer<TopUpAmountOpenApiSchemaTransformer>();
+});
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
 builder.Services.AddOptions<TopUpOrderOptions>()
@@ -60,6 +64,7 @@ builder.Services.AddScoped<PublicChapterListWorkflow>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddIdentityAuthentication(authenticationSettings);
 builder.Services.AddReadingRateLimiting(builder.Configuration);
+builder.Services.AddBillingRateLimiting();
 builder.Services.Configure<OutboxOptions>(
     builder.Configuration.GetSection(OutboxOptions.SectionName));
 builder.Services.AddOutboxWorker();

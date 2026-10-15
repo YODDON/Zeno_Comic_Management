@@ -3,9 +3,11 @@ using System.Security.Claims;
 using System.Text.Json.Serialization;
 using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Authorization;
+using ComicManagement.Api.Billing;
 using ComicManagement.Billing.Payments;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace ComicManagement.Api.Controllers;
 
@@ -16,11 +18,13 @@ namespace ComicManagement.Api.Controllers;
 public sealed class BillingController(TopUpOrderHandler handler) : ControllerBase
 {
     [HttpPost("topups")]
+    [EnableRateLimiting(BillingRateLimitConstants.TopUpCreatePolicy)]
     [ProducesResponseType<CreateTopUpResponse>(StatusCodes.Status201Created)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<CreateTopUpResponse>> CreateTopUp(
         CreateTopUpRequest request,
         [FromHeader(Name = "Idempotency-Key"), Required, StringLength(

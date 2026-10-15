@@ -26,6 +26,9 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
         builder.HasIndex(lot => lot.TopUpOrderId)
             .IsUnique()
             .HasDatabaseName("ux_paid_coin_lots_topup_order_id");
+        builder.HasIndex(lot => new { lot.TopUpOrderId, lot.UserId })
+            .IsUnique()
+            .HasDatabaseName("ux_paid_coin_lots_topup_order_user");
         builder.HasIndex(lot => new { lot.UserId, lot.CreatedAt, lot.Id })
             .HasDatabaseName("ix_paid_coin_lots_user_created_id");
 
@@ -57,7 +60,8 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
             .HasConstraintName("fk_paid_coin_lots_users");
         builder.HasOne<PaymentOrder>()
             .WithOne()
-            .HasForeignKey<PaidCoinLot>(lot => lot.TopUpOrderId)
+            .HasForeignKey<PaidCoinLot>(lot => new { lot.TopUpOrderId, lot.UserId })
+            .HasPrincipalKey<PaymentOrder>(order => new { order.Id, order.UserId })
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");
     }

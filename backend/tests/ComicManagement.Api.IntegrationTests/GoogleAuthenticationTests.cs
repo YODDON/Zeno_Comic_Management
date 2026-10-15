@@ -21,20 +21,24 @@ using ComicManagement.Workflows.Reading;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Billing.Payments;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 using Npgsql;
+using System.Text.Encodings.Web;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -243,6 +247,170 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var response = await client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Topup_validation_csrf_and_server_owned_expiry_use_standardized_errors()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
+        factory.TokenEndpoint.SetProfile(
+            $"billing-validation-{Guid.NewGuid():N}",
+            "Billing Validation User",
+            null,
+            null);
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/wallet", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var missingCsrf = TopUpRequest("missing-csrf", 10_000);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(missingCsrf),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var missingHeader = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/billing/topups")
+        {
+            Content = JsonContent.Create(new { amountVnd = 10_000 }),
+        };
+        missingHeader.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(missingHeader),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var emptyHeader = TopUpRequest(string.Empty, 10_000, csrfToken);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(emptyHeader),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var longHeader = TopUpRequest(
+            new string('x', PaymentOrder.MaximumIdempotencyKeyLength + 1),
+            10_000,
+            csrfToken);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(longHeader),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        var clientExpiry = DateTimeOffset.UtcNow.AddYears(1);
+        using var overrideRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/billing/topups")
+        {
+            Content = JsonContent.Create(new { amountVnd = 10_000, expiresAt = clientExpiry }),
+        };
+        overrideRequest.Headers.Add("Idempotency-Key", "server-owned-expiry");
+        overrideRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        var overrideResponse = await client.SendAsync(overrideRequest);
+        Assert.Equal(HttpStatusCode.Created, overrideResponse.StatusCode);
+        var body = await overrideResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.NotEqual(clientExpiry, body.GetProperty("expiresAt").GetDateTimeOffset());
+    }
+
+    [Fact]
+    public async Task Topup_create_is_limited_to_ten_requests_per_minute_per_user()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
+        factory.TokenEndpoint.SetProfile(
+            $"billing-rate-{Guid.NewGuid():N}",
+            "Billing Rate User",
+            null,
+            null);
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/wallet", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        for (var attempt = 1; attempt <= 10; attempt++)
+        {
+            using var request = TopUpRequest($"rate-{attempt}", 10_000, csrfToken);
+            Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(request)).StatusCode);
+        }
+
+        using var rejectedRequest = TopUpRequest("rate-11", 10_000, csrfToken);
+        var rejected = await client.SendAsync(rejectedRequest);
+        await AssertStandardizedErrorAsync(
+            rejected,
+            HttpStatusCode.TooManyRequests,
+            "RATE_LIMITED");
+        Assert.True(rejected.Headers.RetryAfter is not null ||
+                    rejected.Headers.TryGetValues("Retry-After", out _));
+    }
+
+    [Fact]
+    public async Task Topup_http_replay_after_expiry_returns_and_persists_the_original_order()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
+        factory.TokenEndpoint.SetProfile(
+            $"billing-expiry-{Guid.NewGuid():N}",
+            "Billing Expiry User",
+            null,
+            null);
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/wallet", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var createRequest = TopUpRequest("expired-http-replay", 10_000, csrfToken);
+        var createdResponse = await client.SendAsync(createRequest);
+        var created = await createdResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var orderId = created.GetProperty("orderId").GetGuid();
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            await context.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE billing.payment_orders
+                SET created_at = {now.AddMinutes(-31)}, expires_at = {now.AddMinutes(-1)}
+                WHERE id = {orderId};
+                """);
+        }
+
+        using var replayRequest = TopUpRequest("expired-http-replay", 10_000, csrfToken);
+        var replayResponse = await client.SendAsync(replayRequest);
+        Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+        var replay = await replayResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(orderId, replay.GetProperty("orderId").GetGuid());
+        Assert.Equal("Expired", replay.GetProperty("status").GetString());
+
+        await using var verificationScope = factory.Services.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persisted = await verification.PaymentOrders.SingleAsync(order => order.Id == orderId);
+        Assert.Equal(TopUpOrderStatuses.Expired, persisted.OrderStatus);
+        Assert.NotNull(persisted.ExpiredAt);
+    }
+
+    [Fact]
+    public async Task Topup_create_returns_forbidden_for_authenticated_principal_without_user_role()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            useInsufficientRoleTestAuthentication: true);
+        using var client = CreateClient(factory);
+        using var request = TopUpRequest("insufficient-role", 10_000);
+
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(request),
+            HttpStatusCode.Forbidden,
+            "FORBIDDEN");
     }
 
     [Fact]
@@ -1596,7 +1764,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var operation = document.GetProperty("paths")
             .GetProperty("/api/v1/billing/topups")
             .GetProperty("post");
-        foreach (var status in new[] { "201", "400", "401", "403", "409" })
+        foreach (var status in new[] { "201", "400", "401", "403", "409", "429" })
         {
             Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _));
         }
@@ -1617,6 +1785,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var amount = requestSchema.GetProperty("properties").GetProperty("amountVnd");
         Assert.Equal(TopUpAmountPolicy.MinimumAmountVnd, amount.GetProperty("minimum").GetInt64());
         Assert.Equal(TopUpAmountPolicy.MaximumAmountVnd, amount.GetProperty("maximum").GetInt64());
+        Assert.Equal(TopUpAmountPolicy.AmountStepVnd, amount.GetProperty("multipleOf").GetInt64());
 
         var responseSchema = ResolveResponseSchema(document, operation, "201");
         foreach (var property in new[]
@@ -2537,6 +2706,26 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             HandleCookies = true,
         });
 
+    private static HttpClient CreateClient(AuthenticationApplicationFactory factory) =>
+        factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = true,
+        });
+
+    private static async Task AssertStandardizedErrorAsync(
+        HttpResponseMessage response,
+        HttpStatusCode expectedStatus,
+        string expectedErrorCode)
+    {
+        Assert.Equal(expectedStatus, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(expectedErrorCode, body.GetProperty("errorCode").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("message").GetString()));
+        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("traceId").GetString()));
+    }
+
     private static HttpRequestMessage TopUpRequest(
         string idempotencyKey,
         long amountVnd,
@@ -2546,7 +2735,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         {
             Content = JsonContent.Create(new { amountVnd }),
         };
-        request.Headers.Add("Idempotency-Key", idempotencyKey);
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
         if (csrfToken is not null)
         {
             request.Headers.Add("X-CSRF-TOKEN", csrfToken);
@@ -2689,7 +2878,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         bool forceIdentityConflicts = false,
         bool forceProfileConflicts = false,
         int readingProgressPermitLimit = 60,
-        int topUpOrderTtlMinutes = 30) : WebApplicationFactory<Program>
+        int topUpOrderTtlMinutes = 30,
+        bool useInsufficientRoleTestAuthentication = false) : WebApplicationFactory<Program>
     {
         private readonly string _keysPath = Path.Combine(securityDirectory, "keys");
         private readonly string _certificatePath = Path.Combine(
@@ -2764,6 +2954,23 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 services.RemoveAll<IChapterPageContentProvider>();
                 services.AddSingleton<IChapterPageContentProvider, FakeChapterPageContentProvider>();
 
+                if (useInsufficientRoleTestAuthentication)
+                {
+                    services.AddAuthentication(options =>
+                        {
+                            options.DefaultAuthenticateScheme =
+                                InsufficientRoleAuthenticationHandler.SchemeName;
+                            options.DefaultChallengeScheme =
+                                InsufficientRoleAuthenticationHandler.SchemeName;
+                            options.DefaultForbidScheme =
+                                InsufficientRoleAuthenticationHandler.SchemeName;
+                        })
+                        .AddScheme<AuthenticationSchemeOptions,
+                            InsufficientRoleAuthenticationHandler>(
+                            InsufficientRoleAuthenticationHandler.SchemeName,
+                            _ => { });
+                }
+
                 if (forceIdentityConflicts)
                 {
                     services.RemoveAll<IGoogleIdentityStore>();
@@ -2782,6 +2989,39 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         {
             base.Dispose(disposing);
             TokenEndpoint.Dispose();
+        }
+    }
+
+    private sealed class InsufficientRoleAuthenticationHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder) :
+        AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
+    {
+        internal const string SchemeName = "InsufficientRole";
+
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            var identity = new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString("D"))],
+                SchemeName);
+            return Task.FromResult(AuthenticateResult.Success(
+                new AuthenticationTicket(new ClaimsPrincipal(identity), SchemeName)));
+        }
+
+        protected override Task HandleForbiddenAsync(AuthenticationProperties properties)
+        {
+            Response.StatusCode = StatusCodes.Status403Forbidden;
+            Response.ContentType = "application/problem+json";
+            return Response.WriteAsJsonAsync(new
+            {
+                type = "https://docs.example.test/errors/FORBIDDEN",
+                title = "Forbidden",
+                status = StatusCodes.Status403Forbidden,
+                errorCode = "FORBIDDEN",
+                message = "The current user does not have permission to perform this action.",
+                traceId = Context.TraceIdentifier,
+            });
         }
     }
 

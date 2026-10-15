@@ -43,6 +43,8 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<IWalletQueryStore, WalletQueryStore>();
         services.TryAddScoped<WalletQueryHandler>();
         services.TryAddScoped<ITopUpOrderStore, TopUpOrderStore>();
+        services.TryAddSingleton<ITopUpOrderCriticalSectionObserver,
+            NoOpTopUpOrderCriticalSectionObserver>();
         services.TryAddScoped<TopUpOrderHandler>();
         services.TryAddScoped<ILibraryStore, LibraryStore>();
         services.TryAddScoped<LibraryHandler>();
