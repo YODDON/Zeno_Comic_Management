@@ -34,6 +34,23 @@ public sealed class LibraryHandlerTests
     }
 
     [Fact]
+    public async Task Follow_status_returns_current_user_owned_state()
+    {
+        var comicId = Guid.NewGuid();
+        var store = new StubStore
+        {
+            FollowStatus = new FollowStatusState(comicId, true, Now),
+        };
+        var handler = new LibraryHandler(store, new StubClock(Now));
+
+        var result = await handler.GetFollowStatusAsync(Guid.NewGuid(), comicId);
+
+        Assert.Equal(LibraryOutcome.Succeeded, result.Outcome);
+        Assert.True(result.State!.Followed);
+        Assert.Equal(Now, result.State.FollowedAt);
+    }
+
+    [Fact]
     public async Task Continue_uses_stable_cursor_and_bounded_page_size()
     {
         var userId = Guid.NewGuid();
@@ -77,6 +94,7 @@ public sealed class LibraryHandlerTests
         "Chapter 1",
         1,
         0.5m,
+        5_000,
         lastReadAt,
         "Free",
         true);
@@ -90,6 +108,8 @@ public sealed class LibraryHandlerTests
         internal LibraryCursor? LastCursor { get; private set; }
 
         internal IReadOnlyList<ContinueReadingItem> ContinueItems { get; init; } = [];
+
+        internal FollowStatusState? FollowStatus { get; init; }
 
         public Task<FollowCommandResult> FollowAsync(
             Guid userId,
@@ -106,6 +126,12 @@ public sealed class LibraryHandlerTests
             Guid userId,
             Guid comicId,
             CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<FollowStatusState> GetFollowStatusAsync(
+            Guid userId,
+            Guid comicId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(FollowStatus ?? new FollowStatusState(comicId, false, null));
 
         public Task<IReadOnlyList<ContinueReadingItem>> ListContinueAsync(
             Guid userId,

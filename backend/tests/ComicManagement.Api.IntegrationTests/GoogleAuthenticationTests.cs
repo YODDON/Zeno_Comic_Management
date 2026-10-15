@@ -957,7 +957,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         using var anonymousClient = CreateClient();
         Assert.Equal(
             HttpStatusCode.Unauthorized,
-            (await anonymousClient.GetAsync("/api/v1/library/follows")).StatusCode);
+            (await anonymousClient.GetAsync("/api/v1/library/following")).StatusCode);
 
         _factory.TokenEndpoint.SetProfile(
             "google-subject-r03-library",
@@ -967,7 +967,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         using var client = CreateClient();
         await CompleteLoginAsync(client, await BeginLoginAsync(client, "/library"));
 
-        var missingCsrf = await client.PostAsync(
+        var missingCsrf = await client.PutAsync(
             $"/api/v1/comics/{comicId}/follow",
             content: null);
         Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
@@ -978,27 +978,30 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         async Task<HttpResponseMessage> FollowAsync()
         {
             using var request = new HttpRequestMessage(
-                HttpMethod.Post,
+                HttpMethod.Put,
                 $"/api/v1/comics/{comicId}/follow");
             request.Headers.Add("X-CSRF-TOKEN", csrfToken);
             return await client.SendAsync(request);
         }
 
         var created = await FollowAsync();
-        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
         var createdJson = await created.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.True(createdJson.GetProperty("created").GetBoolean());
         Assert.Equal(comicId, createdJson.GetProperty("comicId").GetGuid());
 
         var replay = await FollowAsync();
         Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
         var replayJson = await replay.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.False(replayJson.GetProperty("created").GetBoolean());
         Assert.Equal(
             createdJson.GetProperty("followedAt").GetDateTimeOffset(),
             replayJson.GetProperty("followedAt").GetDateTimeOffset());
 
-        var followed = await client.GetAsync("/api/v1/library/follows?limit=1");
+        var status = await client.GetAsync($"/api/v1/comics/{comicId}/follow-status");
+        Assert.Equal(HttpStatusCode.OK, status.StatusCode);
+        var statusJson = await status.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(statusJson.GetProperty("followed").GetBoolean());
+
+        var followed = await client.GetAsync("/api/v1/library/following?limit=1");
         Assert.Equal(HttpStatusCode.OK, followed.StatusCode);
         var followedJson = await followed.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(comicId, Assert.Single(
@@ -1012,6 +1015,12 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             request.Headers.Add("X-CSRF-TOKEN", csrfToken);
             Assert.Equal(HttpStatusCode.NoContent, (await client.SendAsync(request)).StatusCode);
         }
+
+        var unfollowedStatus = await client.GetAsync(
+            $"/api/v1/comics/{comicId}/follow-status");
+        var unfollowedStatusJson = await unfollowedStatus.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(unfollowedStatusJson.GetProperty("followed").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, unfollowedStatusJson.GetProperty("followedAt").ValueKind);
     }
 
     [Fact]
@@ -2166,18 +2175,53 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         var follow = paths
             .GetProperty("/api/v1/comics/{comicId}/follow")
-            .GetProperty("post");
-        foreach (var status in new[] { "200", "201", "400", "401", "403", "404" })
+            .GetProperty("put");
+        foreach (var status in new[] { "200", "400", "401", "403", "404" })
         {
             Assert.True(follow.GetProperty("responses").TryGetProperty(status, out _));
         }
-        var followSchema = ResolveResponseSchema(document, follow, "201");
-        foreach (var property in new[] { "comicId", "followed", "followedAt", "created" })
+        var followSchema = ResolveResponseSchema(document, follow, "200");
+        foreach (var property in new[] { "comicId", "followed", "followedAt" })
         {
             Assert.True(followSchema.GetProperty("properties").TryGetProperty(property, out _));
         }
+        Assert.False(followSchema.GetProperty("properties").TryGetProperty("created", out _));
 
-        foreach (var path in new[] { "/api/v1/reading/continue", "/api/v1/library/follows" })
+        var unfollow = paths
+            .GetProperty("/api/v1/comics/{comicId}/follow")
+            .GetProperty("delete");
+        foreach (var status in new[] { "204", "400", "401", "403" })
+        {
+            Assert.True(unfollow.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var followStatus = paths
+            .GetProperty("/api/v1/comics/{comicId}/follow-status")
+            .GetProperty("get");
+        foreach (var status in new[] { "200", "400", "401", "403" })
+        {
+            Assert.True(followStatus.GetProperty("responses").TryGetProperty(status, out _));
+        }
+        var followStatusSchema = ResolveResponseSchema(document, followStatus, "200");
+        foreach (var property in new[] { "comicId", "followed", "followedAt" })
+        {
+            Assert.True(followStatusSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+        AssertOpenApiSchemaIsNullable(
+            ResolveOpenApiSchema(
+                document,
+                followStatusSchema.GetProperty("properties").GetProperty("followedAt")));
+
+        foreach (var operation in new[] { follow, unfollow, followStatus })
+        {
+            var followErrorSchema = ResolveResponseSchema(document, operation, "400");
+            foreach (var property in new[] { "errorCode", "message", "traceId" })
+            {
+                Assert.True(followErrorSchema.GetProperty("properties").TryGetProperty(property, out _));
+            }
+        }
+
+        foreach (var path in new[] { "/api/v1/library/continue", "/api/v1/library/following" })
         {
             var operation = paths.GetProperty(path).GetProperty("get");
             foreach (var status in new[] { "200", "400", "401", "403" })
@@ -2199,6 +2243,83 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             Assert.Equal(
                 LibraryHandler.DefaultPageSize,
                 limit.GetProperty("schema").GetProperty("default").GetInt32());
+
+            var libraryPageSchema = ResolveResponseSchema(document, operation, "200");
+            foreach (var property in new[] { "items", "nextCursor" })
+            {
+                Assert.True(libraryPageSchema.GetProperty("properties").TryGetProperty(property, out _));
+            }
+            AssertOpenApiSchemaIsNullable(
+                ResolveOpenApiSchema(
+                    document,
+                    libraryPageSchema.GetProperty("properties").GetProperty("nextCursor")));
+
+            var itemSchema = ResolveOpenApiSchema(
+                document,
+                libraryPageSchema.GetProperty("properties").GetProperty("items").GetProperty("items"));
+            foreach (var property in new[]
+                     {
+                         "comicId", "availability", "slug", "title", "coverAssetId", "seriesStatus",
+                     })
+            {
+                Assert.True(itemSchema.GetProperty("properties").TryGetProperty(property, out _));
+            }
+
+            var availability = ResolveOpenApiSchema(
+                document,
+                itemSchema.GetProperty("properties").GetProperty("availability"));
+            Assert.Equal(
+                ["Available", "Unavailable"],
+                availability.GetProperty("enum").EnumerateArray().Select(value => value.GetString()));
+
+            foreach (var nullableProperty in new[] { "slug", "title", "coverAssetId", "seriesStatus" })
+            {
+                AssertOpenApiSchemaIsNullable(
+                    ResolveOpenApiSchema(
+                        document,
+                        itemSchema.GetProperty("properties").GetProperty(nullableProperty)));
+            }
+
+            if (path.EndsWith("/continue", StringComparison.Ordinal))
+            {
+                foreach (var property in new[]
+                         {
+                             "chapterId", "chapterLabel", "pageOrder", "pageOffsetRatio",
+                             "acceptedMaxProgressBasisPoints", "lastReadAt", "accessType", "canRead",
+                         })
+                {
+                    Assert.True(itemSchema.GetProperty("properties").TryGetProperty(property, out _));
+                }
+
+                foreach (var nullableProperty in new[]
+                         {
+                             "chapterId", "chapterLabel", "pageOrder", "pageOffsetRatio",
+                             "acceptedMaxProgressBasisPoints", "accessType",
+                         })
+                {
+                    AssertOpenApiSchemaIsNullable(
+                        ResolveOpenApiSchema(
+                            document,
+                            itemSchema.GetProperty("properties").GetProperty(nullableProperty)));
+                }
+
+                var acceptedMaximum = ResolveOpenApiSchema(
+                    document,
+                    itemSchema.GetProperty("properties")
+                        .GetProperty("acceptedMaxProgressBasisPoints"));
+                Assert.Equal(0, acceptedMaximum.GetProperty("minimum").GetInt32());
+                Assert.Equal(10_000, acceptedMaximum.GetProperty("maximum").GetInt32());
+            }
+            else
+            {
+                Assert.True(itemSchema.GetProperty("properties").TryGetProperty("followedAt", out _));
+            }
+
+            var libraryErrorSchema = ResolveResponseSchema(document, operation, "400");
+            foreach (var property in new[] { "errorCode", "message", "traceId" })
+            {
+                Assert.True(libraryErrorSchema.GetProperty("properties").TryGetProperty(property, out _));
+            }
         }
     }
 
@@ -2643,6 +2764,31 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .GetProperty("content")
             .GetProperty("application/json")
             .GetProperty("schema"));
+
+    private static void AssertOpenApiSchemaIsNullable(JsonElement schema)
+    {
+        if (schema.TryGetProperty("nullable", out var nullable) && nullable.GetBoolean())
+        {
+            return;
+        }
+
+        if (schema.TryGetProperty("type", out var type) &&
+            type.ValueKind == JsonValueKind.Array &&
+            type.EnumerateArray().Any(value => value.GetString() == "null"))
+        {
+            return;
+        }
+
+        if (schema.TryGetProperty("anyOf", out var anyOf) &&
+            anyOf.EnumerateArray().Any(option =>
+                option.TryGetProperty("type", out var optionType) &&
+                optionType.GetString() == "null"))
+        {
+            return;
+        }
+
+        Assert.Fail("Expected an OpenAPI nullable schema.");
+    }
 
     private async Task SeedWalletEntriesAsync(Guid ownerUserId, int ownerEntryCount)
     {

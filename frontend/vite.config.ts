@@ -3,6 +3,8 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+const apiProxyTarget = process.env.R03_E2E_API_URL?.trim();
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
@@ -17,4 +19,12 @@ export default defineConfig({
     setupFiles: "./src/test/setup.ts",
     css: true,
   },
+  server: apiProxyTarget ? {
+    proxy: {
+      "/api": {
+        target: apiProxyTarget,
+        changeOrigin: false,
+      },
+    },
+  } : undefined,
 });

@@ -312,6 +312,7 @@ internal sealed class ReadingSessionStore(
                 session.ChapterId,
                 pageOrder,
                 pageOffsetRatio,
+                session.MaxProgressBasisPoints,
                 readAt,
                 session.Id,
                 session.StartedAt));
@@ -322,6 +323,7 @@ internal sealed class ReadingSessionStore(
             session.ChapterId,
             pageOrder,
             pageOffsetRatio,
+            session.MaxProgressBasisPoints,
             readAt,
             session.Id,
             session.StartedAt);
