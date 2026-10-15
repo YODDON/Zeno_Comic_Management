@@ -123,6 +123,9 @@ function ContinueCard({ item }: { item: ContinueItem }) {
         <span className="section-kicker">Đọc gần đây · {formatDate(item.lastReadAt)}</span>
         <h2>{item.title}</h2>
         <p>{item.chapterLabel ?? "Chương đang đọc"}{item.pageOrder ? ` · trang ${item.pageOrder}` : ""}</p>
+        {item.acceptedMaxProgressBasisPoints !== null ? (
+          <p>Tiến độ đã xác nhận: {Math.floor(item.acceptedMaxProgressBasisPoints / 100)}%</p>
+        ) : null}
         {item.canRead && resumeUrl ? (
           <Button asChild="link"><Link to={resumeUrl}><BookOpen aria-hidden="true" /> Đọc tiếp</Link></Button>
         ) : (

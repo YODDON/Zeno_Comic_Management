@@ -9,10 +9,11 @@
 | Public/User | GET | `/api/v1/chapters/{id}/access`, `/api/v1/chapters/{id}/pages` | Reading |
 | User | POST/PATCH | `/api/v1/reading/sessions`, `/api/v1/reading/sessions/{id}` | Reading |
 | User | POST | `/api/v1/reading/sessions/{id}/qualify` | Reading |
-| User | GET | `/api/v1/reading/continue` | Reading (R03 implemented) |
+| User | GET | `/api/v1/library/continue` | Reading (R03 implemented) |
 | User | GET | `/api/v1/reading/history` | Reading (post-MVP/not implemented) |
-| User | GET | `/api/v1/library/follows` | Reading (R03 implemented) |
-| User | POST/DELETE | `/api/v1/comics/{id}/follow` | Reading (R03 implemented) |
+| User | GET | `/api/v1/library/following` | Reading (R03 implemented) |
+| User | PUT/DELETE | `/api/v1/comics/{id}/follow` | Reading (R03 implemented) |
+| User | GET | `/api/v1/comics/{id}/follow-status` | Reading (R03 implemented) |
 | User | POST | `/api/v1/chapters/{id}/unlock-quotes`, `/api/v1/chapters/{id}/unlock` | Wallet/Workflows |
 | User | GET | `/api/v1/wallet`, `/api/v1/wallet/entries` | Wallet |
 | User | POST | `/api/v1/billing/topups` | Billing |

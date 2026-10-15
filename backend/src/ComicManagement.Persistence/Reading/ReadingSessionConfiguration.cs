@@ -142,6 +142,9 @@ internal sealed class ReadingProgressConfiguration : IEntityTypeConfiguration<Re
             table.HasCheckConstraint(
                 "ck_reading_progress_offset",
                 "last_page_offset_ratio BETWEEN 0 AND 1");
+            table.HasCheckConstraint(
+                "ck_reading_progress_accepted_progress",
+                "accepted_max_progress_basis_points BETWEEN 0 AND 10000");
             table.HasCheckConstraint("ck_reading_progress_version", "version >= 1");
         });
 
@@ -164,6 +167,9 @@ internal sealed class ReadingProgressConfiguration : IEntityTypeConfiguration<Re
         builder.Property(progress => progress.LastPageOffsetRatio)
             .HasColumnName("last_page_offset_ratio")
             .HasColumnType("numeric");
+        builder.Property(progress => progress.AcceptedMaxProgressBasisPoints)
+            .HasColumnName("accepted_max_progress_basis_points")
+            .HasDefaultValue(0);
         builder.Property(progress => progress.LastReadAt)
             .HasColumnName("last_read_at")
             .HasColumnType("timestamp with time zone");

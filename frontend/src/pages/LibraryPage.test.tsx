@@ -34,7 +34,7 @@ describe("library page", () => {
     const user = userEvent.setup();
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request) => {
       const url = requestUrl(input);
-      if (url.includes("/api/v1/reading/continue")) {
+      if (url.includes("/api/v1/library/continue")) {
         return jsonResponse({
           items: [{
             comicId,
@@ -47,6 +47,7 @@ describe("library page", () => {
             chapterLabel: null,
             pageOrder: null,
             pageOffsetRatio: null,
+            acceptedMaxProgressBasisPoints: null,
             lastReadAt: "2026-10-14T02:00:00+00:00",
             accessType: null,
             canRead: false,
@@ -54,7 +55,7 @@ describe("library page", () => {
           nextCursor: null,
         });
       }
-      if (url.includes("/api/v1/library/follows")) {
+      if (url.includes("/api/v1/library/following")) {
         return jsonResponse({ items: [], nextCursor: null });
       }
       throw new Error(`Unexpected request: ${url}`);
@@ -80,8 +81,8 @@ describe("library page", () => {
     const deleteResponse = new Promise<Response>((resolve) => { resolveDelete = resolve; });
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) => {
       const url = requestUrl(input);
-      if (url.includes("/api/v1/reading/continue")) return jsonResponse({ items: [], nextCursor: null });
-      if (url.includes("/api/v1/library/follows")) {
+      if (url.includes("/api/v1/library/continue")) return jsonResponse({ items: [], nextCursor: null });
+      if (url.includes("/api/v1/library/following")) {
         return jsonResponse({
           items: [{
             comicId,

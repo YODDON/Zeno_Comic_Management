@@ -203,6 +203,7 @@ public sealed class ReadingSessionHandlerTests
             Guid.NewGuid(),
             3,
             0.5m,
+            7_500,
             StartedAt.AddMinutes(2),
             newerSessionId,
             StartedAt.AddMinutes(1));
@@ -211,6 +212,7 @@ public sealed class ReadingSessionHandlerTests
             Guid.NewGuid(),
             1,
             0.1m,
+            2_500,
             StartedAt.AddMinutes(3),
             Guid.NewGuid(),
             StartedAt);
@@ -218,6 +220,7 @@ public sealed class ReadingSessionHandlerTests
         Assert.False(applied);
         Assert.Equal(newerSessionId, progress.SourceSessionId);
         Assert.Equal(3, progress.LastPageOrder);
+        Assert.Equal(7_500, progress.AcceptedMaxProgressBasisPoints);
     }
 
     private static ReadingSession CreateSession(int pageCount = 1) => ReadingSession.Create(

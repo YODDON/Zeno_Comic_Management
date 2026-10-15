@@ -16,6 +16,8 @@ public sealed class ReadingProgress
 
     public decimal LastPageOffsetRatio { get; private set; }
 
+    public int AcceptedMaxProgressBasisPoints { get; private set; }
+
     public DateTimeOffset LastReadAt { get; private set; }
 
     public Guid SourceSessionId { get; private set; }
@@ -30,6 +32,7 @@ public sealed class ReadingProgress
         Guid chapterId,
         int pageOrder,
         decimal pageOffsetRatio,
+        int acceptedMaxProgressBasisPoints,
         DateTimeOffset readAt,
         Guid sourceSessionId,
         DateTimeOffset sourceSessionStartedAt)
@@ -40,6 +43,7 @@ public sealed class ReadingProgress
             chapterId,
             pageOrder,
             pageOffsetRatio,
+            acceptedMaxProgressBasisPoints,
             readAt,
             sourceSessionId,
             sourceSessionStartedAt);
@@ -51,6 +55,7 @@ public sealed class ReadingProgress
             LastChapterId = chapterId,
             LastPageOrder = pageOrder,
             LastPageOffsetRatio = pageOffsetRatio,
+            AcceptedMaxProgressBasisPoints = acceptedMaxProgressBasisPoints,
             LastReadAt = readAt,
             SourceSessionId = sourceSessionId,
             SourceSessionStartedAt = sourceSessionStartedAt,
@@ -62,6 +67,7 @@ public sealed class ReadingProgress
         Guid chapterId,
         int pageOrder,
         decimal pageOffsetRatio,
+        int acceptedMaxProgressBasisPoints,
         DateTimeOffset readAt,
         Guid sourceSessionId,
         DateTimeOffset sourceSessionStartedAt)
@@ -72,6 +78,7 @@ public sealed class ReadingProgress
             chapterId,
             pageOrder,
             pageOffsetRatio,
+            acceptedMaxProgressBasisPoints,
             readAt,
             sourceSessionId,
             sourceSessionStartedAt);
@@ -84,6 +91,7 @@ public sealed class ReadingProgress
         LastChapterId = chapterId;
         LastPageOrder = pageOrder;
         LastPageOffsetRatio = pageOffsetRatio;
+        AcceptedMaxProgressBasisPoints = acceptedMaxProgressBasisPoints;
         LastReadAt = readAt;
         SourceSessionId = sourceSessionId;
         SourceSessionStartedAt = sourceSessionStartedAt;
@@ -102,6 +110,7 @@ public sealed class ReadingProgress
         Guid chapterId,
         int pageOrder,
         decimal pageOffsetRatio,
+        int acceptedMaxProgressBasisPoints,
         DateTimeOffset readAt,
         Guid sourceSessionId,
         DateTimeOffset sourceSessionStartedAt)
@@ -111,7 +120,8 @@ public sealed class ReadingProgress
             chapterId == Guid.Empty ||
             sourceSessionId == Guid.Empty ||
             pageOrder < 1 ||
-            pageOffsetRatio is < 0 or > 1)
+            pageOffsetRatio is < 0 or > 1 ||
+            acceptedMaxProgressBasisPoints is < 0 or > 10_000)
         {
             throw new ArgumentException("The reading progress state is invalid.");
         }

@@ -29,6 +29,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261013185204_AddReadingSessionsAndProgress",
         "20261014043925_AddComicFollows",
         "20261014094117_AddWalletCore",
+        "20261014195842_AddReadingProgressAcceptedMaximum",
         "20261014160437_AddWalletSpending",
     ];
 
@@ -145,7 +146,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
                  NULL, {ChapterPublicationStatuses.Published}, {1L}, {now}, {now});
             """);
 
-        await context.Database.MigrateAsync();
+        const string PreR03Migration = "20261014094117_AddWalletCore";
+        await migrator.MigrateAsync(PreR03Migration);
         context.ChangeTracker.Clear();
         var migratedPage = await context.ChapterPages.SingleAsync(page => page.Id == pageId);
         Assert.Equal(ChapterPageAssetStatuses.Pending, migratedPage.AssetStatus);
@@ -154,7 +156,49 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             chapter => chapter.Id == legacyPublishedChapterId);
         Assert.Equal(now, migratedChapter.PublishedAt);
 
+        var legacyUserId = Guid.NewGuid();
+        var legacySessionId = Guid.NewGuid();
+        const int legacyAcceptedMaximum = 8_750;
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO identity.users
+                (id, display_name, email, avatar_url, role, status,
+                 created_at, updated_at, version)
+            VALUES
+                ({legacyUserId}, {"R02 Migration User"}, NULL, NULL, {"User"}, {"Active"},
+                 {now}, {now}, {1L});
+
+            INSERT INTO reading.reading_sessions
+                (id, user_id, comic_id, chapter_id, started_at, expires_at,
+                 last_activity_at, last_activity_was_ready, active_duration_ms,
+                 current_page_order, current_page_offset_ratio,
+                 max_progress_basis_points, manifest_revision, manifest_page_count,
+                 last_accepted_sequence, last_request_fingerprint,
+                 minimum_progress_basis_points, minimum_active_duration_ms,
+                 policy_revision, qualified_at, status, version)
+            VALUES
+                ({legacySessionId}, {legacyUserId}, {comicId}, {chapterId}, {now},
+                 {now.AddMinutes(30)}, {now.AddSeconds(15)}, TRUE, {15_000L},
+                 {1}, {0.75m}, {legacyAcceptedMaximum}, {new string('a', 64)}, {1},
+                 {1L}, {new string('b', 64)}, {9_000}, {15_000L}, {"r02-v1"},
+                 NULL, {"Active"}, {2L});
+
+            INSERT INTO reading.reading_progress
+                (user_id, comic_id, last_chapter_id, last_page_order,
+                 last_page_offset_ratio, last_read_at, source_session_id,
+                 source_session_started_at, version)
+            VALUES
+                ({legacyUserId}, {comicId}, {chapterId}, {1}, {0.75m},
+                 {now.AddSeconds(15)}, {legacySessionId}, {now}, {1L});
+            """);
+
         await context.Database.MigrateAsync();
+
+        var preservedAcceptedMaximum = await context.Database.SqlQueryRaw<int>(
+                "SELECT accepted_max_progress_basis_points AS \"Value\" " +
+                "FROM reading.reading_progress")
+            .SingleAsync();
+        Assert.Equal(legacyAcceptedMaximum, preservedAcceptedMaximum);
 
         Assert.Equal(ExpectedMigrations, await context.Database.GetAppliedMigrationsAsync());
 
