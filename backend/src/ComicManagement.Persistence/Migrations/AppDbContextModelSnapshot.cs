@@ -1109,6 +1109,44 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Wallet.Spending.WalletAllocation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("AmountCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_coins");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("OperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("operation_id");
+
+                    b.Property<Guid>("PaidCoinLotId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("paid_coin_lot_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_wallet_allocations");
+
+                    b.HasIndex("PaidCoinLotId")
+                        .HasDatabaseName("ix_wallet_allocations_paid_coin_lot_id");
+
+                    b.HasIndex("OperationId", "PaidCoinLotId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_wallet_allocations_operation_lot");
+
+                    b.ToTable("wallet_allocations", "wallet", t =>
+                        {
+                            t.HasCheckConstraint("ck_wallet_allocations_amount", "amount_coins > 0");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
@@ -1310,6 +1348,23 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_paid_coin_lots_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Spending.WalletAllocation", b =>
+                {
+                    b.HasOne("ComicManagement.Wallet.Ledger.WalletOperation", null)
+                        .WithMany()
+                        .HasForeignKey("OperationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_wallet_allocations_operations");
+
+                    b.HasOne("ComicManagement.Wallet.Lots.PaidCoinLot", null)
+                        .WithMany()
+                        .HasForeignKey("PaidCoinLotId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_wallet_allocations_paid_coin_lots");
                 });
 #pragma warning restore 612, 618
         }

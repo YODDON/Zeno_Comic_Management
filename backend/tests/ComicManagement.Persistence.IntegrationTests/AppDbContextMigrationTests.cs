@@ -30,6 +30,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261014043925_AddComicFollows",
         "20261014094117_AddWalletCore",
         "20261014195842_AddReadingProgressAcceptedMaximum",
+        "20261014160437_AddWalletSpending",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -82,6 +83,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "wallet.paid_coin_lots"));
         Assert.True(await TableExists(context, "wallet.wallet_operations"));
         Assert.True(await TableExists(context, "wallet.wallet_entries"));
+        Assert.True(await TableExists(context, "wallet.wallet_allocations"));
         Assert.True(await TableExists(context, "reading.comic_follows"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
@@ -93,6 +95,12 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await IndexExists(context, "wallet", "ix_paid_coin_lots_user_created_id"));
         Assert.True(await IndexExists(context, "wallet", "ix_wallet_entries_user_created_id"));
         Assert.True(await IndexExists(context, "wallet", "ux_wallet_operations_business_source"));
+        Assert.True(await IndexExists(context, "wallet", "ux_wallet_allocations_operation_lot"));
+        Assert.True(await TriggerExists(
+            context,
+            "wallet",
+            "wallet_allocations",
+            "wallet_allocations_enforce_ownership"));
 
         var now = new DateTimeOffset(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
         var comicId = Guid.NewGuid();
@@ -213,6 +221,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.False(await TableExists(context, "wallet.paid_coin_lots"));
         Assert.False(await TableExists(context, "wallet.wallet_operations"));
         Assert.False(await TableExists(context, "wallet.wallet_entries"));
+        Assert.False(await TableExists(context, "wallet.wallet_allocations"));
 
         await context.Database.MigrateAsync();
 
@@ -328,5 +337,36 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 
         return (bool)(await command.ExecuteScalarAsync()
             ?? throw new InvalidOperationException("Index existence query returned null."));
+    }
+
+    private static async Task<bool> TriggerExists(
+        AppDbContext context,
+        string schemaName,
+        string tableName,
+        string triggerName)
+    {
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            "SELECT EXISTS (SELECT 1 FROM information_schema.triggers " +
+            "WHERE event_object_schema = @schema_name AND event_object_table = @table_name " +
+            "AND trigger_name = @trigger_name);";
+        foreach (var (name, value) in new[]
+                 {
+                     ("schema_name", schemaName),
+                     ("table_name", tableName),
+                     ("trigger_name", triggerName),
+                 })
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
+        }
+
+        return (bool)(await command.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("Trigger existence query returned null."));
     }
 }
