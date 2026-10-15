@@ -1,4 +1,5 @@
 using ComicManagement.Identity.Users;
+using ComicManagement.Billing.Payments;
 using ComicManagement.Wallet.Lots;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -54,5 +55,10 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
             .HasForeignKey(lot => lot.UserId)
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_paid_coin_lots_users");
+        builder.HasOne<PaymentOrder>()
+            .WithOne()
+            .HasForeignKey<PaidCoinLot>(lot => lot.TopUpOrderId)
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");
     }
 }

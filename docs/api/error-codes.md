@@ -13,7 +13,7 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 409 | READING_SEQUENCE_CONFLICT | Heartbeat sequence is stale, has a gap, or reuses a sequence with another payload |
 | 409 | READING_SESSION_EXPIRED | Absolute 30-minute session expiry has been reached |
 | 409 | SLUG_CONFLICT | Choose another unique comic slug |
-| 409 | IDEMPOTENCY_CONFLICT | Reused key with different request body |
+| 409 | IDEMPOTENCY_CONFLICT | Reused User + operation + key with a different canonical request; expiry never releases the key |
 | 409 | OPERATION_IN_PROGRESS | Poll/retry with same key after Retry-After |
 | 409 | QUOTE_EXPIRED | Get fresh five-minute quote |
 | 409 | PRICE_CHANGED | Get quote with current pricing |

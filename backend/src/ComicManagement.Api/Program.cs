@@ -6,6 +6,8 @@ using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
 using ComicManagement.Shared.Identity;
 using ComicManagement.Workflows.Reading;
+using ComicManagement.Billing.Payments;
+using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.HttpOverrides;
 using System.Net;
 using System.Globalization;
@@ -23,6 +25,17 @@ builder.Services.AddOpenApi(options =>
     options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>());
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
+builder.Services.AddOptions<TopUpOrderOptions>()
+    .Bind(builder.Configuration.GetSection(TopUpOrderOptions.SectionName))
+    .Validate(
+        options => options.TopUpOrderTtlMinutes > 0,
+        "Billing:TopUpOrderTtlMinutes must be greater than zero.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(serviceProvider =>
+{
+    var options = serviceProvider.GetRequiredService<IOptions<TopUpOrderOptions>>().Value;
+    return new TopUpOrderPolicy(TimeSpan.FromMinutes(options.TopUpOrderTtlMinutes));
+});
 builder.Services.AddCloudinaryChapterPageAssets(options =>
 {
     var section = builder.Configuration.GetSection(CloudinaryOptions.SectionName);

@@ -82,6 +82,137 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Billing.Payments.PaymentOrder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("AmountVnd")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_vnd");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset?>("FulfilledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("fulfilled_at");
+
+                    b.Property<string>("FulfillmentStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("fulfillment_status");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("OrderCode")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("order_code");
+
+                    b.Property<string>("OrderType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("order_type");
+
+                    b.Property<long?>("PaidCoinsSnapshot")
+                        .HasColumnType("bigint")
+                        .HasColumnName("paid_coins_snapshot");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("provider");
+
+                    b.Property<string>("ProviderPaymentStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("provider_payment_status");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_fingerprint");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<DateTimeOffset?>("VerifiedPaidAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_paid_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<int?>("VipDiscountPercentSnapshot")
+                        .HasColumnType("integer")
+                        .HasColumnName("vip_discount_percent_snapshot");
+
+                    b.Property<int?>("VipDurationHoursSnapshot")
+                        .HasColumnType("integer")
+                        .HasColumnName("vip_duration_hours_snapshot");
+
+                    b.Property<Guid?>("VipPlanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("vip_plan_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_payment_orders");
+
+                    b.HasIndex("OrderCode")
+                        .IsUnique()
+                        .HasDatabaseName("ux_payment_orders_order_code");
+
+                    b.HasIndex("ProviderPaymentStatus", "ExpiresAt")
+                        .HasDatabaseName("ix_payment_orders_pending_expiry");
+
+                    b.HasIndex("UserId", "CreatedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_payment_orders_user_created_id");
+
+                    b.HasIndex("UserId", "OrderType", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_payment_orders_user_operation_idempotency");
+
+                    b.ToTable("payment_orders", "billing", t =>
+                        {
+                            t.HasCheckConstraint("ck_payment_orders_amount", "amount_vnd > 0");
+
+                            t.HasCheckConstraint("ck_payment_orders_expiry", "expires_at > created_at");
+
+                            t.HasCheckConstraint("ck_payment_orders_fulfillment_status", "fulfillment_status IN ('NotStarted', 'Retryable', 'Fulfilled', 'ManualReview')");
+
+                            t.HasCheckConstraint("ck_payment_orders_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_payment_orders_provider", "provider IN ('SePay')");
+
+                            t.HasCheckConstraint("ck_payment_orders_provider_status", "provider_payment_status IN ('Pending', 'Verified', 'Rejected', 'ReconciliationRequired')");
+
+                            t.HasCheckConstraint("ck_payment_orders_type_snapshots", "(order_type = 'TopUp' AND amount_vnd BETWEEN 10000 AND 2000000 AND amount_vnd % 1000 = 0 AND paid_coins_snapshot = amount_vnd / 10 AND vip_plan_id IS NULL AND vip_duration_hours_snapshot IS NULL AND vip_discount_percent_snapshot IS NULL) OR (order_type = 'VipPurchase' AND paid_coins_snapshot IS NULL AND vip_plan_id IS NOT NULL AND vip_duration_hours_snapshot > 0 AND vip_discount_percent_snapshot BETWEEN 0 AND 100)");
+
+                            t.HasCheckConstraint("ck_payment_orders_version", "version >= 1");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1101,6 +1232,16 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Billing.Payments.PaymentOrder", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_payment_orders_users");
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
@@ -1296,6 +1437,13 @@ namespace ComicManagement.Persistence.Migrations
 
             modelBuilder.Entity("ComicManagement.Wallet.Lots.PaidCoinLot", b =>
                 {
+                    b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Wallet.Lots.PaidCoinLot", "TopUpOrderId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");
+
                     b.HasOne("ComicManagement.Identity.Users.User", null)
                         .WithMany()
                         .HasForeignKey("UserId")

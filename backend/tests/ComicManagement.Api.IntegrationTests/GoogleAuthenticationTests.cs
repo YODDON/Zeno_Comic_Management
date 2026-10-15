@@ -20,6 +20,7 @@ using ComicManagement.Reading.Sessions;
 using ComicManagement.Workflows.Reading;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Queries;
+using ComicManagement.Billing.Payments;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -128,6 +129,120 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<WalletQueryHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IWalletQueryStore>());
+    }
+
+    [Fact]
+    public async Task Production_composition_registers_the_topup_order_slice()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<TopUpOrderHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ITopUpOrderStore>());
+        Assert.Equal(
+            TimeSpan.FromMinutes(30),
+            scope.ServiceProvider.GetRequiredService<TopUpOrderPolicy>().TimeToLive);
+    }
+
+    [Fact]
+    public void Production_composition_fails_fast_for_non_positive_topup_ttl()
+    {
+        using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            topUpOrderTtlMinutes: 0);
+
+        Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
+    }
+
+    [Fact]
+    public async Task Production_composition_binds_configured_topup_ttl()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            topUpOrderTtlMinutes: 45);
+        await using var scope = factory.Services.CreateAsyncScope();
+
+        Assert.Equal(
+            TimeSpan.FromMinutes(45),
+            scope.ServiceProvider.GetRequiredService<TopUpOrderPolicy>().TimeToLive);
+    }
+
+    [Fact]
+    public async Task Topup_creation_requires_authentication_csrf_and_persistent_idempotency()
+    {
+        using var anonymousClient = CreateClient();
+        using var anonymousRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/billing/topups")
+        {
+            Content = JsonContent.Create(new { amountVnd = 29_000 }),
+        };
+        anonymousRequest.Headers.Add("Idempotency-Key", "anonymous-key");
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymousClient.SendAsync(anonymousRequest)).StatusCode);
+
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/wallet"));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var missingCsrf = TopUpRequest("topup-key", 29_000);
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            (await client.SendAsync(missingCsrf)).StatusCode);
+
+        using var firstRequest = TopUpRequest("topup-key", 29_000, csrfToken);
+        var firstResponse = await client.SendAsync(firstRequest);
+        Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+        Assert.Equal("no-store", firstResponse.Headers.CacheControl!.ToString());
+        var first = await firstResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2_900, first.GetProperty("paidCoinsExpected").GetInt64());
+        Assert.Equal("Pending", first.GetProperty("status").GetString());
+        Assert.Equal(
+            "ProviderSpecific",
+            first.GetProperty("paymentInstructions").GetProperty("type").GetString());
+
+        using var replayRequest = TopUpRequest("topup-key", 29_000, csrfToken);
+        var replayResponse = await client.SendAsync(replayRequest);
+        Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+        var replay = await replayResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(first.GetProperty("orderId").GetGuid(), replay.GetProperty("orderId").GetGuid());
+
+        using var conflictRequest = TopUpRequest("topup-key", 30_000, csrfToken);
+        var conflictResponse = await client.SendAsync(conflictRequest);
+        Assert.Equal(HttpStatusCode.Conflict, conflictResponse.StatusCode);
+        var conflict = await conflictResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("IDEMPOTENCY_CONFLICT", conflict.GetProperty("errorCode").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(conflict.GetProperty("traceId").GetString()));
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var orderId = first.GetProperty("orderId").GetGuid();
+        var order = await context.PaymentOrders.SingleAsync(value => value.Id == orderId);
+        Assert.Equal(order.CreatedAt.AddMinutes(30), order.ExpiresAt);
+        Assert.Equal(
+            1,
+            await context.PaymentOrders.CountAsync(value =>
+                value.IdempotencyKey == "topup-key"));
+    }
+
+    [Theory]
+    [InlineData(9_000)]
+    [InlineData(10_500)]
+    [InlineData(2_001_000)]
+    public async Task Topup_creation_rejects_invalid_amounts(long amountVnd)
+    {
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/wallet"));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var request = TopUpRequest($"invalid-{amountVnd}", amountVnd, csrfToken);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]
@@ -1471,6 +1586,73 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenApi_document_contains_topup_contract_and_idempotency_header()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var operation = document.GetProperty("paths")
+            .GetProperty("/api/v1/billing/topups")
+            .GetProperty("post");
+        foreach (var status in new[] { "201", "400", "401", "403", "409" })
+        {
+            Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var idempotency = FindOpenApiParameter(operation, "Idempotency-Key");
+        Assert.Equal("header", idempotency.GetProperty("in").GetString());
+        Assert.True(idempotency.GetProperty("required").GetBoolean());
+        Assert.Equal(
+            PaymentOrder.MaximumIdempotencyKeyLength,
+            idempotency.GetProperty("schema").GetProperty("maxLength").GetInt32());
+
+        var requestSchema = ResolveOpenApiSchema(
+            document,
+            operation.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        var amount = requestSchema.GetProperty("properties").GetProperty("amountVnd");
+        Assert.Equal(TopUpAmountPolicy.MinimumAmountVnd, amount.GetProperty("minimum").GetInt64());
+        Assert.Equal(TopUpAmountPolicy.MaximumAmountVnd, amount.GetProperty("maximum").GetInt64());
+
+        var responseSchema = ResolveResponseSchema(document, operation, "201");
+        foreach (var property in new[]
+                 {
+                     "orderId", "orderCode", "amountVnd", "paidCoinsExpected", "status",
+                     "expiresAt", "paymentInstructions",
+                 })
+        {
+            Assert.True(responseSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var statusSchema = ResolveOpenApiSchema(
+            document,
+            responseSchema.GetProperty("properties").GetProperty("status"));
+        Assert.Equal(
+            ["Pending", "Expired"],
+            statusSchema.GetProperty("enum").EnumerateArray().Select(value => value.GetString()));
+        var instructionsSchema = ResolveOpenApiSchema(
+            document,
+            responseSchema.GetProperty("properties").GetProperty("paymentInstructions"));
+        var instructionTypeSchema = ResolveOpenApiSchema(
+            document,
+            instructionsSchema.GetProperty("properties").GetProperty("type"));
+        Assert.Equal(
+            ["ProviderSpecific"],
+            instructionTypeSchema.GetProperty("enum")
+                .EnumerateArray()
+                .Select(value => value.GetString()));
+        var errorSchema = ResolveResponseSchema(document, operation, "409");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+    }
+
+    [Fact]
     public async Task OpenApi_document_contains_catalog_publication_contracts()
     {
         using var client = CreateClient();
@@ -2355,6 +2537,24 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             HandleCookies = true,
         });
 
+    private static HttpRequestMessage TopUpRequest(
+        string idempotencyKey,
+        long amountVnd,
+        string? csrfToken = null)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/billing/topups")
+        {
+            Content = JsonContent.Create(new { amountVnd }),
+        };
+        request.Headers.Add("Idempotency-Key", idempotencyKey);
+        if (csrfToken is not null)
+        {
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        }
+
+        return request;
+    }
+
     private Task<LoginFlow> BeginLoginAsync(HttpClient client, string returnUrl) =>
         BeginLoginAsync(client, returnUrl, _factory.TokenEndpoint);
 
@@ -2488,7 +2688,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         int loginPermitLimit = 1000,
         bool forceIdentityConflicts = false,
         bool forceProfileConflicts = false,
-        int readingProgressPermitLimit = 60) : WebApplicationFactory<Program>
+        int readingProgressPermitLimit = 60,
+        int topUpOrderTtlMinutes = 30) : WebApplicationFactory<Program>
     {
         private readonly string _keysPath = Path.Combine(securityDirectory, "keys");
         private readonly string _certificatePath = Path.Combine(
@@ -2530,6 +2731,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 .UseSetting(
                     "Reading:ProgressRateLimit:PermitLimit",
                     readingProgressPermitLimit.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture))
+                .UseSetting(
+                    "Billing:TopUpOrderTtlMinutes",
+                    topUpOrderTtlMinutes.ToString(
                         System.Globalization.CultureInfo.InvariantCulture))
                 .UseSetting("ReverseProxy:KnownNetworks:0", "0.0.0.0/0")
                 .UseSetting("ReverseProxy:KnownNetworks:1", "::/0");

@@ -1,4 +1,5 @@
 using ComicManagement.Identity.Users;
+using ComicManagement.Billing.Payments;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Queries;
@@ -70,31 +71,35 @@ public sealed class WalletPersistenceTests : IAsyncLifetime
     public async Task Wallet_lots_and_ledger_reconcile_and_keep_spent_separate_from_refunded()
     {
         var userId = await CreateUserAsync();
+        var firstTopUpOrder = CreateTopUpOrder(userId, "wallet-topup-1", new string('a', 64));
+        var secondTopUpOrder = CreateTopUpOrder(userId, "wallet-topup-2", new string('b', 64));
         var topUpOperation = WalletOperation.Create(
-            Guid.NewGuid(), userId, "TopUpCredit", "PaymentOrder", Guid.NewGuid(), "topup-1", Now);
+            Guid.NewGuid(), userId, "TopUpCredit", "PaymentOrder", firstTopUpOrder.Id, "topup-1", Now);
         var missionOperation = WalletOperation.Create(
             Guid.NewGuid(), userId, "MissionReward", "RewardGrant", Guid.NewGuid(), "mission-1", Now);
         var secondTopUpOperation = WalletOperation.Create(
-            Guid.NewGuid(), userId, "TopUpCredit", "PaymentOrder", Guid.NewGuid(), "topup-2", Now);
+            Guid.NewGuid(), userId, "TopUpCredit", "PaymentOrder", secondTopUpOrder.Id, "topup-2", Now);
         var spendOperation = WalletOperation.Create(
             Guid.NewGuid(), userId, "ChapterUnlock", "Unlock", Guid.NewGuid(), "unlock-1", Now);
         var refundOperation = WalletOperation.Create(
             Guid.NewGuid(), userId, "TopUpRefund", "Refund", Guid.NewGuid(), "refund-1", Now);
         var paidEntry = WalletEntry.Create(
-            Guid.NewGuid(), topUpOperation, WalletCoinTypes.Paid, WalletBuckets.Available, 100, 1, Now);
+            Guid.NewGuid(), topUpOperation, WalletCoinTypes.Paid, WalletBuckets.Available, 1_000, 1, Now);
         var bonusEntry = WalletEntry.Create(
             Guid.NewGuid(), missionOperation, WalletCoinTypes.Bonus, WalletBuckets.Available, 20, 1, Now);
         var secondPaidEntry = WalletEntry.Create(
-            Guid.NewGuid(), secondTopUpOperation, WalletCoinTypes.Paid, WalletBuckets.Available, 100, 1, Now);
+            Guid.NewGuid(), secondTopUpOperation, WalletCoinTypes.Paid, WalletBuckets.Available, 1_000, 1, Now);
         var spentEntry = WalletEntry.Create(
             Guid.NewGuid(), spendOperation, WalletCoinTypes.Paid, WalletBuckets.Available, -20, 1, Now);
         var refundedEntry = WalletEntry.Create(
             Guid.NewGuid(), refundOperation, WalletCoinTypes.Paid, WalletBuckets.Available, -30, 1, Now);
         var wallet = WalletAccount.Create(userId, Now);
-        wallet.CreditPaid(150, Now);
+        wallet.CreditPaid(1_950, Now);
         wallet.CreditBonus(20, Now);
-        var activeLot = PaidCoinLot.Create(Guid.NewGuid(), userId, Guid.NewGuid(), 100, Now);
-        var historicalLot = PaidCoinLot.Create(Guid.NewGuid(), userId, Guid.NewGuid(), 100, Now.AddSeconds(1));
+        var activeLot = PaidCoinLot.Create(
+            Guid.NewGuid(), userId, firstTopUpOrder.Id, 1_000, Now);
+        var historicalLot = PaidCoinLot.Create(
+            Guid.NewGuid(), userId, secondTopUpOrder.Id, 1_000, Now.AddSeconds(1));
         historicalLot.Spend(20);
         historicalLot.Reserve(30);
         historicalLot.RefundReserved(30);
@@ -102,6 +107,7 @@ public sealed class WalletPersistenceTests : IAsyncLifetime
         await using (var scope = _services.CreateAsyncScope())
         {
             var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.PaymentOrders.AddRange(firstTopUpOrder, secondTopUpOrder);
             context.Wallets.Add(wallet);
             context.PaidCoinLots.AddRange(activeLot, historicalLot);
             context.WalletOperations.AddRange(
@@ -147,7 +153,7 @@ public sealed class WalletPersistenceTests : IAsyncLifetime
         Assert.Equal(20, persistedHistoricalLot.SpentCoins);
         Assert.Equal(30, persistedHistoricalLot.RefundedCoins);
         Assert.Equal(0, persistedHistoricalLot.ReservedCoins);
-        Assert.Equal(50, persistedHistoricalLot.AvailableCoins);
+        Assert.Equal(950, persistedHistoricalLot.AvailableCoins);
         Assert.Equal(5, projectedEntries.Count);
     }
 
@@ -167,12 +173,35 @@ public sealed class WalletPersistenceTests : IAsyncLifetime
         Assert.Equal("ck_wallets_paid_available", negative.ConstraintName);
 
         var lotId = Guid.NewGuid();
+        var topUpOrderId = Guid.NewGuid();
+        var orphanLot = await Assert.ThrowsAsync<PostgresException>(() => ExecuteAsync(
+            connection,
+            $"""
+            INSERT INTO wallet.paid_coin_lots
+                (id, user_id, topup_order_id, granted_coins, spent_coins,
+                 refunded_coins, reserved_coins, created_at, version)
+            VALUES
+                ('{Guid.NewGuid():D}', '{userId:D}', '{Guid.NewGuid():D}', 10, 0, 0, 0, NOW(), 1)
+            """));
+        Assert.Equal(Npgsql.PostgresErrorCodes.ForeignKeyViolation, orphanLot.SqlState);
+        Assert.Equal("fk_paid_coin_lots_topup_payment_orders", orphanLot.ConstraintName);
+
+        await ExecuteAsync(connection, $"""
+            INSERT INTO billing.payment_orders
+                (id, user_id, order_code, order_type, amount_vnd, paid_coins_snapshot,
+                 provider, provider_payment_status, fulfillment_status, idempotency_key,
+                 request_fingerprint, expires_at, created_at, version)
+            VALUES
+                ('{topUpOrderId:D}', '{userId:D}', 'ZENO-{topUpOrderId:N}', 'TopUp',
+                 10000, 1000, 'SePay', 'Pending', 'NotStarted', 'wallet-db-test',
+                 '{new string('c', 64)}', NOW() + interval '30 minutes', NOW(), 1)
+            """);
         await ExecuteAsync(connection, $"""
             INSERT INTO wallet.paid_coin_lots
                 (id, user_id, topup_order_id, granted_coins, spent_coins,
                  refunded_coins, reserved_coins, created_at, version)
             VALUES
-                ('{lotId:D}', '{userId:D}', '{Guid.NewGuid():D}', 10, 0, 0, 0, NOW(), 1)
+                ('{lotId:D}', '{userId:D}', '{topUpOrderId:D}', 10, 0, 0, 0, NOW(), 1)
             """);
         var overdraw = await Assert.ThrowsAsync<PostgresException>(() => ExecuteAsync(
             connection,
@@ -264,6 +293,24 @@ public sealed class WalletPersistenceTests : IAsyncLifetime
         await using var scope = _services.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<IWalletQueryStore>()
             .GetOrCreateBalanceAsync(userId, Now);
+    }
+
+    private static PaymentOrder CreateTopUpOrder(
+        Guid userId,
+        string idempotencyKey,
+        string fingerprint)
+    {
+        var id = Guid.NewGuid();
+        return PaymentOrder.CreateTopUp(
+            id,
+            userId,
+            $"ZENO-{id:N}",
+            10_000,
+            1_000,
+            idempotencyKey,
+            fingerprint,
+            Now,
+            Now.AddMinutes(30));
     }
 
     private static async Task ExecuteAsync(NpgsqlConnection connection, string sql)
