@@ -18,7 +18,7 @@
 | User | GET | `/api/v1/wallet`, `/api/v1/wallet/entries` | Wallet |
 | User | POST | `/api/v1/billing/topups` | Billing |
 | User | GET | `/api/v1/billing/orders/{id}` | Billing |
-| SePay | POST | `/api/v1/webhooks/sepay/ipn` | Billing adapter |
+| SePay | POST | `/api/v1/webhooks/sepay/ipn` | Billing adapter (B02 ingestion implemented; fulfillment excluded) |
 | User | GET | `/api/v1/membership/plan`, `/api/v1/membership/me` | Membership |
 | User | POST | `/api/v1/membership/checkout` | Membership/Billing |
 | User | GET | `/api/v1/missions`, `/api/v1/missions/daily-limit`, `/api/v1/missions/rewards` | Missions |
@@ -34,4 +34,4 @@
 | Admin | review/approve/reject/transfer-attempts/complete/release | `/api/v1/admin/refunds/{id}/...` | Billing/Wallet workflow |
 | Admin | GET | `/api/v1/admin/payments`, `/api/v1/admin/ledger`, `/api/v1/admin/audit-logs`, `/api/v1/admin/dashboard` | Billing/Wallet/Admin |
 
-Provider routes and all Admin CRUD variants remain wire-contract work, not assumed tested APIs.
+The SePay webhook wire contract is implemented and covered by automated official-contract fixtures, while actual project-account Test-mode/provider verification remains pending. Other provider routes and all Admin CRUD variants remain wire-contract work, not assumed tested APIs.

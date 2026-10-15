@@ -1,3 +1,4 @@
+using ComicManagement.Billing.Payments;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Persistence;
@@ -34,6 +35,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261014195842_AddReadingProgressAcceptedMaximum",
         "20261015141141_AddPaymentOrders",
         "20261015145756_HardenB01PaymentOrderInvariants",
+        "20261015185709_AddSePayWebhookIngestion",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -89,6 +91,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "wallet.wallet_allocations"));
         Assert.True(await TableExists(context, "reading.comic_follows"));
         Assert.True(await TableExists(context, "billing.payment_orders"));
+        Assert.True(await TableExists(context, "billing.provider_transactions"));
+        Assert.True(await TableExists(context, "billing.webhook_deliveries"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(
@@ -297,6 +301,46 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
                     ({newLotId}, {userId}, {newOrderId}, {1_000L}, {0L},
                      {0L}, {0L}, {now}, {1L});
                 """));
+    }
+
+    [Fact]
+    public async Task B02_upgrade_preserves_existing_B01_payment_orders()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync("20261015145756_HardenB01PaymentOrderInvariants");
+
+        var now = new DateTimeOffset(2026, 10, 15, 18, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "B01 Upgrade User",
+            null,
+            null,
+            now));
+        context.PaymentOrders.Add(PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            "TOPUP-B01-UPGRADE",
+            100_000,
+            10_000,
+            "b01-upgrade-key",
+            new string('a', 64),
+            now,
+            now.AddMinutes(30)));
+        await context.SaveChangesAsync();
+
+        await context.Database.MigrateAsync();
+        context.ChangeTracker.Clear();
+
+        Assert.True(await context.PaymentOrders.AnyAsync(order => order.Id == orderId));
+        Assert.True(await TableExists(context, "billing.provider_transactions"));
+        Assert.True(await TableExists(context, "billing.webhook_deliveries"));
     }
 
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)
