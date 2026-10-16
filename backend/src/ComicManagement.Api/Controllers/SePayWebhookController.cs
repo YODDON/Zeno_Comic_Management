@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using ComicManagement.Api.Billing;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Workflows.Billing;
 using ComicManagement.Shared.Time;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -14,7 +15,7 @@ namespace ComicManagement.Api.Controllers;
 [EnableRateLimiting(BillingRateLimitConstants.SePayWebhookPolicy)]
 [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
 public sealed class SePayWebhookController(
-    SePayWebhookHandler handler,
+    TopUpFulfillmentWorkflow workflow,
     SePayWebhookPolicy policy,
     IClock clock) : ControllerBase
 {
@@ -48,7 +49,7 @@ public sealed class SePayWebhookController(
                 SePayWebhookAcknowledgement.Failed);
         }
 
-        var result = await handler.HandleAsync(
+        var result = await workflow.HandleAsync(
             new SePayWebhookRequest(rawBody, signature, timestamp),
             clock.UtcNow,
             cancellationToken);

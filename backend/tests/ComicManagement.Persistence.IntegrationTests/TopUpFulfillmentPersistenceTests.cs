@@ -2,18 +2,25 @@ using ComicManagement.Billing.Events;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Identity.Users;
 using ComicManagement.Persistence;
+using ComicManagement.Shared.Messaging;
 using ComicManagement.Wallet.Ledger;
+using ComicManagement.Wallet.Lots;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using Testcontainers.PostgreSql;
 using Xunit;
+using System.Text.Json;
+using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 
 namespace ComicManagement.Persistence.IntegrationTests;
 
 public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
 {
+    private static readonly DateTimeOffset VerifiedAt =
+        new(2026, 10, 16, 4, 0, 0, TimeSpan.Zero);
+
     private readonly PostgreSqlContainer _postgres =
         new PostgreSqlBuilder("postgres:18.0-alpine3.22")
             .WithDatabase("comic_management_fulfillment_tests")
@@ -83,6 +90,19 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
             1,
             await context.OutboxMessages.CountAsync(message =>
                 message.EventType == BillingEventTypes.WalletTopUpCompleted));
+        var outbox = await context.OutboxMessages.AsNoTracking()
+            .SingleAsync(message =>
+                message.EventType == BillingEventTypes.WalletTopUpCompleted);
+        var payload = JsonSerializer.Deserialize<WalletTopUpCompletedEvent>(
+            outbox.Payload,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.NotNull(payload);
+        Assert.Equal(seeded.OrderId, payload.PaymentOrderId);
+        Assert.Equal(first.ProviderTransactionId, payload.ProviderTransactionId);
+        Assert.Equal(seeded.UserId, payload.UserId);
+        Assert.Equal(100_000, payload.AmountVnd);
+        Assert.Equal(10_000, payload.PaidCoins);
+        Assert.Equal(order.FulfilledAt, payload.FulfilledAt);
         Assert.Equal(2, await context.WebhookDeliveries.CountAsync(delivery =>
             delivery.ProviderTransactionId == first.ProviderTransactionId));
         Assert.Equal(1, await context.WebhookDeliveries.CountAsync(delivery =>
@@ -278,6 +298,157 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Wallet_balance_drift_blocks_fulfillment_and_preserves_evidence()
+    {
+        await using var provider = await CreateProviderAsync();
+        var seeded = await SeedOrderAsync(
+            provider,
+            100_000,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        await SeedCorruptWalletBalanceAsync(provider, seeded.UserId);
+
+        var result = await IngestAsync(
+            provider,
+            Transaction("b03-wallet-drift", seeded.OrderCode, 100_000, '5'));
+
+        await AssertIntegrityConflictAsync(provider, seeded, result, 1, 0, 0);
+    }
+
+    [Fact]
+    public async Task Paid_lot_drift_blocks_fulfillment_and_preserves_evidence()
+    {
+        await using var provider = await CreateProviderAsync();
+        var seeded = await SeedOrderAsync(
+            provider,
+            100_000,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        await SeedCorruptPaidLotAsync(provider, seeded.UserId);
+
+        var result = await IngestAsync(
+            provider,
+            Transaction("b03-lot-drift", seeded.OrderCode, 100_000, '6'));
+
+        await AssertIntegrityConflictAsync(provider, seeded, result, 0, 1, 0);
+    }
+
+    [Fact]
+    public async Task Ledger_drift_blocks_fulfillment_and_preserves_evidence()
+    {
+        await using var provider = await CreateProviderAsync();
+        var seeded = await SeedOrderAsync(
+            provider,
+            100_000,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        await SeedCorruptLedgerAsync(provider, seeded.UserId);
+
+        var result = await IngestAsync(
+            provider,
+            Transaction("b03-ledger-drift", seeded.OrderCode, 100_000, '7'));
+
+        await AssertIntegrityConflictAsync(provider, seeded, result, 0, 0, 1);
+    }
+
+    [Fact]
+    public async Task Orphan_success_outbox_blocks_fulfillment_and_prevents_a_second_event()
+    {
+        await using var provider = await CreateProviderAsync();
+        var seeded = await SeedOrderAsync(
+            provider,
+            100_000,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        await SeedSuccessOutboxAsync(provider, seeded);
+
+        var result = await IngestAsync(
+            provider,
+            Transaction("b03-outbox-drift", seeded.OrderCode, 100_000, '0'));
+
+        await AssertIntegrityConflictAsync(provider, seeded, result, 0, 0, 0, 1);
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(1, await context.OutboxMessages.CountAsync(message =>
+            message.EventType == BillingEventTypes.WalletTopUpCompleted));
+    }
+
+    [Fact]
+    public async Task Orphan_fulfilled_provider_state_blocks_fulfillment()
+    {
+        await using var provider = await CreateProviderAsync();
+        var seeded = await SeedOrderAsync(
+            provider,
+            100_000,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        await SeedFulfilledProviderTransactionAsync(provider, seeded);
+
+        var result = await IngestAsync(
+            provider,
+            Transaction("b03-provider-drift", seeded.OrderCode, 100_000, 'f'));
+
+        await AssertIntegrityConflictAsync(provider, seeded, result, 0, 0, 0);
+    }
+
+    [Fact]
+    public async Task Existing_received_event_with_current_reconciliation_reason_is_persistently_reconciled()
+    {
+        await using var provider = await CreateProviderAsync();
+        var normalized = Transaction(
+            "b03-reconcile-upgrade",
+            "ZENO-not-found",
+            100_000,
+            '8') with
+        {
+            ReconciliationReason = SePayReconciliationReasons.UnexpectedAccount,
+        };
+        await using (var seedScope = provider.CreateAsyncScope())
+        {
+            var seedContext = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            seedContext.ProviderTransactions.Add(ProviderTransaction.CreateSePay(
+                Guid.NewGuid(),
+                normalized with { ReconciliationReason = null },
+                VerifiedAt.AddMinutes(-1)));
+            await seedContext.SaveChangesAsync();
+        }
+
+        var result = await IngestAsync(provider, normalized);
+
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, result.Outcome);
+        Assert.True(result.IsReplay);
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persisted = await context.ProviderTransactions.AsNoTracking().SingleAsync();
+        Assert.Equal(
+            ProviderTransactionProcessingStatuses.ReconciliationRequired,
+            persisted.ProcessingStatus);
+        Assert.Equal(
+            SePayReconciliationReasons.UnexpectedAccount,
+            persisted.ReconciliationReason);
+    }
+
+    [Fact]
+    public async Task TopUp_replay_waiting_on_fulfillment_observes_committed_success_without_concurrency_failure()
+    {
+        var observer = new BlockingFulfillmentObserver();
+        await using var provider = await CreateProviderAsync(observer);
+        var seeded = await SeedOrderAsync(
+            provider,
+            100_000,
+            DateTimeOffset.UtcNow.AddMinutes(5));
+        var fulfillment = IngestAsync(
+            provider,
+            Transaction("b03-order-replay-race", seeded.OrderCode, 100_000, '9'));
+        await observer.FirstLockAcquired.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var replay = ReplayTopUpOrderAsync(provider, seeded);
+        await WaitForDatabaseLockWaiterAsync();
+        Assert.False(replay.IsCompleted);
+        observer.ReleaseFirst.TrySetResult();
+
+        Assert.Equal(SePayWebhookStoreOutcome.Fulfilled, (await fulfillment).Outcome);
+        var replayResult = await replay;
+        Assert.Equal(TopUpOrderOutcome.Succeeded, replayResult.Outcome);
+        Assert.Equal(TopUpOrderStatuses.Succeeded, replayResult.Order?.OrderStatus);
+    }
+
+    [Fact]
     public async Task Pre_B03_received_transaction_is_fulfilled_on_exact_provider_replay()
     {
         await using var provider = await CreateProviderAsync();
@@ -336,6 +507,13 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
                 candidate.ProviderTransactionId == payment.ProviderTransactionId));
             Assert.False(await context.PaidCoinLots.AnyAsync(candidate =>
                 candidate.TopUpOrderId == seeded.OrderId));
+            Assert.False(await context.WalletOperations.AnyAsync(candidate =>
+                candidate.SourceId == seeded.OrderId));
+            Assert.False(await context.WalletEntries.AnyAsync(candidate =>
+                candidate.UserId == seeded.UserId));
+            Assert.False(await context.OutboxMessages.AnyAsync(message =>
+                message.EventType == BillingEventTypes.WalletTopUpCompleted));
+            Assert.False(await context.WebhookDeliveries.AnyAsync());
             Assert.Equal(TopUpOrderStatuses.Pending, (await context.PaymentOrders
                 .AsNoTracking()
                 .SingleAsync(order => order.Id == seeded.OrderId)).OrderStatus);
@@ -401,7 +579,12 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
             createdAt,
             expiresAt));
         await context.SaveChangesAsync();
-        return new SeededOrder(userId, orderId, orderCode);
+        return new SeededOrder(
+            userId,
+            orderId,
+            orderCode,
+            $"b03-{orderId:N}",
+            new string('a', PaymentOrder.RequestFingerprintLength));
     }
 
     private static async Task<SePayWebhookStoreResult> IngestAsync(
@@ -410,7 +593,23 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
     {
         await using var scope = provider.CreateAsyncScope();
         return await scope.ServiceProvider.GetRequiredService<ISePayWebhookStore>()
-            .IngestAsync(transaction);
+            .IngestAsync(transaction, VerifiedAt);
+    }
+
+    private static async Task<TopUpOrderStoreResult> ReplayTopUpOrderAsync(
+        ServiceProvider provider,
+        SeededOrder seeded)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<ITopUpOrderStore>()
+            .CreateOrReplayAsync(new CreateTopUpOrderStoreRequest(
+                Guid.NewGuid(),
+                seeded.UserId,
+                100_000,
+                10_000,
+                seeded.IdempotencyKey,
+                seeded.RequestFingerprint,
+                TimeSpan.FromMinutes(30)));
     }
 
     private static SePayNormalizedTransaction Transaction(
@@ -459,6 +658,153 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
         Assert.True(wallet is null || wallet.PaidAvailable == 0);
     }
 
+    private static async Task AssertIntegrityConflictAsync(
+        ServiceProvider provider,
+        SeededOrder seeded,
+        SePayWebhookStoreResult result,
+        long expectedPaidAvailable,
+        int expectedLotCount,
+        int expectedEntryCount,
+        int expectedSuccessOutboxCount = 0)
+    {
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, result.Outcome);
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var order = await context.PaymentOrders.AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == seeded.OrderId);
+        var transaction = await context.ProviderTransactions.AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == result.ProviderTransactionId);
+        var wallet = await context.Wallets.AsNoTracking()
+            .SingleAsync(candidate => candidate.UserId == seeded.UserId);
+        Assert.Equal(TopUpOrderStatuses.Pending, order.OrderStatus);
+        Assert.Equal(
+            ProviderTransactionProcessingStatuses.ReconciliationRequired,
+            transaction.ProcessingStatus);
+        Assert.Equal(
+            SePayReconciliationReasons.FulfillmentStateConflict,
+            transaction.ReconciliationReason);
+        Assert.Equal(expectedPaidAvailable, wallet.PaidAvailable);
+        Assert.Equal(expectedLotCount, await context.PaidCoinLots.CountAsync(lot =>
+            lot.UserId == seeded.UserId));
+        Assert.Equal(expectedEntryCount, await context.WalletEntries.CountAsync(entry =>
+            entry.UserId == seeded.UserId));
+        Assert.False(await context.PaidCoinLots.AnyAsync(lot =>
+            lot.TopUpOrderId == seeded.OrderId));
+        Assert.False(await context.WalletOperations.AnyAsync(operation =>
+            operation.SourceId == seeded.OrderId));
+        Assert.Equal(expectedSuccessOutboxCount, await context.OutboxMessages.CountAsync(message =>
+            message.EventType == BillingEventTypes.WalletTopUpCompleted));
+    }
+
+    private static async Task SeedCorruptWalletBalanceAsync(
+        ServiceProvider provider,
+        Guid userId)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        context.Wallets.Add(WalletAccount.Create(userId, VerifiedAt.AddMinutes(-2)));
+        await context.SaveChangesAsync();
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE wallet.wallets
+            SET paid_available = 1
+            WHERE user_id = {userId}
+            """);
+    }
+
+    private static async Task SeedCorruptPaidLotAsync(
+        ServiceProvider provider,
+        Guid userId)
+    {
+        var orderId = Guid.NewGuid();
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        context.Wallets.Add(WalletAccount.Create(userId, VerifiedAt.AddMinutes(-2)));
+        context.PaymentOrders.Add(PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            $"ZENO-{orderId:N}",
+            10_000,
+            1_000,
+            $"corrupt-lot-{orderId:N}",
+            new string('b', PaymentOrder.RequestFingerprintLength),
+            VerifiedAt.AddMinutes(-2),
+            VerifiedAt.AddMinutes(28)));
+        context.PaidCoinLots.Add(PaidCoinLot.Create(
+            Guid.NewGuid(),
+            userId,
+            orderId,
+            1,
+            VerifiedAt.AddMinutes(-1)));
+        await context.SaveChangesAsync();
+    }
+
+    private static async Task SeedCorruptLedgerAsync(
+        ServiceProvider provider,
+        Guid userId)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        context.Wallets.Add(WalletAccount.Create(userId, VerifiedAt.AddMinutes(-2)));
+        var operation = WalletOperation.Create(
+            Guid.NewGuid(),
+            userId,
+            "TestCredit",
+            "IntegrityTest",
+            Guid.NewGuid(),
+            null,
+            VerifiedAt.AddMinutes(-1));
+        context.WalletOperations.Add(operation);
+        context.WalletEntries.Add(WalletEntry.Create(
+            Guid.NewGuid(),
+            operation,
+            WalletCoinTypes.Paid,
+            WalletBuckets.Available,
+            1,
+            1,
+            VerifiedAt.AddMinutes(-1)));
+        await context.SaveChangesAsync();
+    }
+
+    private static async Task SeedSuccessOutboxAsync(
+        ServiceProvider provider,
+        SeededOrder seeded)
+    {
+        await using var scope = provider.CreateAsyncScope();
+        var writer = scope.ServiceProvider.GetRequiredService<IOutboxWriter>();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        writer.Enqueue(
+            BillingEventTypes.WalletTopUpCompleted,
+            new WalletTopUpCompletedEvent(
+                seeded.OrderId,
+                Guid.NewGuid(),
+                seeded.UserId,
+                100_000,
+                10_000,
+                VerifiedAt.AddMinutes(-1)),
+            VerifiedAt.AddMinutes(-1));
+        await context.SaveChangesAsync();
+    }
+
+    private static async Task SeedFulfilledProviderTransactionAsync(
+        ServiceProvider provider,
+        SeededOrder seeded)
+    {
+        var normalized = Transaction(
+            "b03-existing-fulfilled",
+            seeded.OrderCode,
+            100_000,
+            'e');
+        var providerTransaction = ProviderTransaction.CreateSePay(
+            Guid.NewGuid(),
+            normalized,
+            VerifiedAt.AddMinutes(-1));
+        providerTransaction.MarkFulfilled(seeded.OrderId);
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        context.ProviderTransactions.Add(providerTransaction);
+        await context.SaveChangesAsync();
+    }
+
     private async Task WaitForDatabaseLockWaiterAsync()
     {
         await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
@@ -487,7 +833,12 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
             "The competing TopUp fulfillment did not wait for a PostgreSQL lock.");
     }
 
-    private sealed record SeededOrder(Guid UserId, Guid OrderId, string OrderCode);
+    private sealed record SeededOrder(
+        Guid UserId,
+        Guid OrderId,
+        string OrderCode,
+        string IdempotencyKey,
+        string RequestFingerprint);
 
     private sealed class BlockingFulfillmentObserver :
         ISePayFulfillmentCriticalSectionObserver

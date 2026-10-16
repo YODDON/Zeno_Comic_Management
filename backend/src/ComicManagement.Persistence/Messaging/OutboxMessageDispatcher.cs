@@ -60,7 +60,7 @@ internal sealed class OutboxMessageDispatcher(
         }
     }
 
-    private sealed class UnhandledOutboxMessageException : InvalidOperationException;
-
     private sealed class InvalidOutboxHandlerRegistrationException : InvalidOperationException;
 }
+
+internal sealed class UnhandledOutboxMessageException : InvalidOperationException;

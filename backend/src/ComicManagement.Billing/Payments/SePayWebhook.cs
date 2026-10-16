@@ -399,43 +399,6 @@ public interface ISePayWebhookStore
 {
     Task<SePayWebhookStoreResult> IngestAsync(
         SePayNormalizedTransaction transaction,
+        DateTimeOffset verifiedAt,
         CancellationToken cancellationToken = default);
-}
-
-public enum SePayWebhookOutcome
-{
-    Accepted,
-    Disabled,
-    Unauthorized,
-    InvalidPayload,
-}
-
-public sealed record SePayWebhookResult(
-    SePayWebhookOutcome Outcome,
-    SePayWebhookStoreOutcome? StoreOutcome = null);
-
-public sealed class SePayWebhookHandler(
-    SePayWebhookAdapter adapter,
-    ISePayWebhookStore store)
-{
-    public async Task<SePayWebhookResult> HandleAsync(
-        SePayWebhookRequest request,
-        DateTimeOffset serverNow,
-        CancellationToken cancellationToken = default)
-    {
-        var verification = adapter.VerifyAndNormalize(request, serverNow);
-        if (verification.Outcome != SePayWebhookVerificationOutcome.Accepted ||
-            verification.Transaction is null)
-        {
-            return new SePayWebhookResult(verification.Outcome switch
-            {
-                SePayWebhookVerificationOutcome.Disabled => SePayWebhookOutcome.Disabled,
-                SePayWebhookVerificationOutcome.Unauthorized => SePayWebhookOutcome.Unauthorized,
-                _ => SePayWebhookOutcome.InvalidPayload,
-            });
-        }
-
-        var stored = await store.IngestAsync(verification.Transaction, cancellationToken);
-        return new SePayWebhookResult(SePayWebhookOutcome.Accepted, stored.Outcome);
-    }
 }

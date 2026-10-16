@@ -169,6 +169,37 @@ public sealed class OutboxProcessingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Event_without_registered_consumer_is_deferred_without_exhausting_retries()
+    {
+        Guid messageId;
+        await using (var scope = Services.CreateAsyncScope())
+        {
+            var writer = scope.ServiceProvider.GetRequiredService<IOutboxWriter>();
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            messageId = writer.Enqueue(
+                "Billing.WalletTopUpCompleted.v1",
+                new { paymentOrderId = Guid.NewGuid() },
+                _clock.UtcNow);
+            await context.SaveChangesAsync();
+        }
+
+        var firstAttempt = await ProcessBatch();
+
+        Assert.Equal(new OutboxBatchResult(1, 0, 1), firstAttempt);
+        var deferred = await GetMessageState(messageId);
+        Assert.Equal("Pending", deferred.Status);
+        Assert.Equal(0, deferred.AttemptCount);
+        Assert.Equal(_clock.UtcNow.AddMinutes(1), deferred.AvailableAt);
+        Assert.Null(deferred.LockedUntil);
+        Assert.Equal("NoHandlerRegistered", deferred.LastErrorRedacted);
+
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        var secondAttempt = await ProcessBatch();
+        Assert.Equal(new OutboxBatchResult(1, 0, 1), secondAttempt);
+        Assert.Equal(0, (await GetMessageState(messageId)).AttemptCount);
+    }
+
+    [Fact]
     public async Task Expired_processing_lease_is_reclaimed_after_worker_crash()
     {
         var messageId = await EnqueueMessage();

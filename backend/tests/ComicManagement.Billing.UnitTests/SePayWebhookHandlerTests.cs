@@ -2,11 +2,12 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Workflows.Billing;
 using Xunit;
 
 namespace ComicManagement.Billing.UnitTests;
 
-public sealed class SePayWebhookHandlerTests
+public sealed class TopUpFulfillmentWorkflowTests
 {
     private const string Secret = "0123456789abcdef0123456789abcdef";
     private const string ExpectedAccount = "0123456789";
@@ -17,7 +18,7 @@ public sealed class SePayWebhookHandlerTests
     public async Task Valid_hmac_normalizes_the_official_payload_and_ingests_it()
     {
         var store = new StubStore(SePayWebhookStoreOutcome.Accepted);
-        var handler = CreateHandler(store);
+        var handler = CreateWorkflow(store);
 
         var result = await handler.HandleAsync(
             SignedRequest(OfficialPayload()),
@@ -43,7 +44,7 @@ public sealed class SePayWebhookHandlerTests
     public async Task Invalid_signature_is_rejected_before_persistence()
     {
         var store = new StubStore(SePayWebhookStoreOutcome.Accepted);
-        var handler = CreateHandler(store);
+        var handler = CreateWorkflow(store);
         var request = SignedRequest(OfficialPayload()) with
         {
             Signature = "sha256=" + new string('0', 64),
@@ -59,7 +60,7 @@ public sealed class SePayWebhookHandlerTests
     public async Task Timestamp_outside_the_official_five_minute_window_is_rejected()
     {
         var store = new StubStore(SePayWebhookStoreOutcome.Accepted);
-        var handler = CreateHandler(store);
+        var handler = CreateWorkflow(store);
         var staleTimestamp = ServerNow.AddMinutes(-6).ToUnixTimeSeconds();
 
         var result = await handler.HandleAsync(
@@ -74,7 +75,7 @@ public sealed class SePayWebhookHandlerTests
     public async Task Authenticated_wrong_account_is_durable_reconciliation_evidence()
     {
         var store = new StubStore(SePayWebhookStoreOutcome.ReconciliationRequired);
-        var handler = CreateHandler(store);
+        var handler = CreateWorkflow(store);
         var payload = OfficialPayload().Replace(
             "\"accountNumber\":\"0123456789\"",
             "\"accountNumber\":\"9999999999\"",
@@ -92,7 +93,7 @@ public sealed class SePayWebhookHandlerTests
     public async Task Authenticated_outgoing_transaction_is_durable_reconciliation_evidence()
     {
         var store = new StubStore(SePayWebhookStoreOutcome.ReconciliationRequired);
-        var handler = CreateHandler(store);
+        var handler = CreateWorkflow(store);
         var payload = OfficialPayload().Replace(
             "\"transferType\":\"in\"",
             "\"transferType\":\"out\"",
@@ -110,7 +111,7 @@ public sealed class SePayWebhookHandlerTests
     public async Task Authenticated_malformed_json_is_rejected_before_persistence()
     {
         var store = new StubStore(SePayWebhookStoreOutcome.Accepted);
-        var handler = CreateHandler(store);
+        var handler = CreateWorkflow(store);
 
         var result = await handler.HandleAsync(
             SignedRequest("{not-json}"),
@@ -130,7 +131,7 @@ public sealed class SePayWebhookHandlerTests
             string.Empty,
             TimeSpan.FromMinutes(5),
             64 * 1024);
-        var handler = new SePayWebhookHandler(new SePayWebhookAdapter(policy), store);
+        var handler = new TopUpFulfillmentWorkflow(new SePayWebhookAdapter(policy), store);
 
         var result = await handler.HandleAsync(
             SignedRequest(OfficialPayload()),
@@ -140,7 +141,7 @@ public sealed class SePayWebhookHandlerTests
         Assert.Null(store.LastTransaction);
     }
 
-    private static SePayWebhookHandler CreateHandler(StubStore store)
+    private static TopUpFulfillmentWorkflow CreateWorkflow(StubStore store)
     {
         var policy = new SePayWebhookPolicy(
             true,
@@ -148,7 +149,7 @@ public sealed class SePayWebhookHandlerTests
             ExpectedAccount,
             TimeSpan.FromMinutes(5),
             64 * 1024);
-        return new SePayWebhookHandler(new SePayWebhookAdapter(policy), store);
+        return new TopUpFulfillmentWorkflow(new SePayWebhookAdapter(policy), store);
     }
 
     private static SePayWebhookRequest SignedRequest(
@@ -178,9 +179,11 @@ public sealed class SePayWebhookHandlerTests
 
         public Task<SePayWebhookStoreResult> IngestAsync(
             SePayNormalizedTransaction transaction,
+            DateTimeOffset verifiedAt,
             CancellationToken cancellationToken = default)
         {
             LastTransaction = transaction;
+            Assert.Equal(ServerNow, verifiedAt);
             return Task.FromResult(new SePayWebhookStoreResult(outcome, Guid.NewGuid()));
         }
     }
