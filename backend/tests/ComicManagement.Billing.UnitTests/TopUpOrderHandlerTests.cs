@@ -99,6 +99,76 @@ public sealed class TopUpOrderHandlerTests
             new TopUpOrderPolicy(TimeSpan.Zero));
     }
 
+    [Fact]
+    public void Fulfillment_atomically_closes_the_pending_order_lifecycle()
+    {
+        var order = CreatePendingOrder(Now.AddMinutes(30));
+
+        order.FulfillTopUp(Now);
+
+        Assert.Equal(TopUpOrderStatuses.Succeeded, order.OrderStatus);
+        Assert.Equal(ProviderPaymentStatuses.Verified, order.ProviderPaymentStatus);
+        Assert.Equal(PaymentFulfillmentStatuses.Fulfilled, order.FulfillmentStatus);
+        Assert.Equal(Now, order.VerifiedPaidAt);
+        Assert.Equal(Now, order.FulfilledAt);
+        Assert.False(order.ExpireIfDue(Now.AddHours(1)));
+        Assert.Throws<InvalidOperationException>(() => order.FulfillTopUp(Now));
+    }
+
+    [Fact]
+    public void Fulfillment_rejects_authoritative_time_at_or_after_expiry()
+    {
+        var order = CreatePendingOrder(Now);
+
+        Assert.Throws<InvalidOperationException>(() => order.FulfillTopUp(Now));
+        Assert.Equal(TopUpOrderStatuses.Pending, order.OrderStatus);
+        Assert.True(order.ExpireIfDue(Now));
+        Assert.Throws<InvalidOperationException>(() => order.FulfillTopUp(Now));
+    }
+
+    [Fact]
+    public void Fulfilled_provider_transaction_cannot_be_rematched_or_reconciled()
+    {
+        var orderId = Guid.NewGuid();
+        var providerTransaction = ProviderTransaction.CreateSePay(
+            Guid.NewGuid(),
+            new SePayNormalizedTransaction(
+                "provider-1",
+                new string('c', 64),
+                10_000,
+                ProviderTransactionDirections.Incoming,
+                "ZENO-ORDER",
+                "6789",
+                "REF-1",
+                Now.AddMinutes(-1),
+                null),
+            Now);
+
+        providerTransaction.MarkFulfilled(orderId);
+
+        Assert.Equal(
+            ProviderTransactionProcessingStatuses.Fulfilled,
+            providerTransaction.ProcessingStatus);
+        Assert.Equal(orderId, providerTransaction.MatchedOrderId);
+        Assert.Throws<InvalidOperationException>(() =>
+            providerTransaction.MarkFulfilled(orderId));
+        Assert.Throws<InvalidOperationException>(() =>
+            providerTransaction.RequireReconciliation(
+                SePayReconciliationReasons.ProviderTransactionConflict));
+    }
+
+    private static PaymentOrder CreatePendingOrder(DateTimeOffset expiresAt) =>
+        PaymentOrder.CreateTopUp(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            $"ZENO-{Guid.NewGuid():N}",
+            10_000,
+            1_000,
+            "fulfillment-key",
+            new string('d', 64),
+            expiresAt.AddMinutes(-30),
+            expiresAt);
+
     private static TopUpOrderHandler CreateHandler(
         StubStore store,
         TimeSpan? ttl = null) => new(

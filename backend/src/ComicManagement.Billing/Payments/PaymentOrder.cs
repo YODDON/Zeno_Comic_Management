@@ -39,6 +39,8 @@ public static class TopUpOrderStatuses
     public const string Pending = "Pending";
 
     public const string Expired = "Expired";
+
+    public const string Succeeded = "Succeeded";
 }
 
 public sealed class PaymentOrder
@@ -163,6 +165,31 @@ public sealed class PaymentOrder
         ExpiredAt = serverNow;
         Version++;
         return true;
+    }
+
+    public void FulfillTopUp(DateTimeOffset serverNow)
+    {
+        EnsureUtc(serverNow, nameof(serverNow));
+        if (OrderType != PaymentOrderTypes.TopUp ||
+            OrderStatus != TopUpOrderStatuses.Pending ||
+            ProviderPaymentStatus != ProviderPaymentStatuses.Pending ||
+            FulfillmentStatus != PaymentFulfillmentStatuses.NotStarted)
+        {
+            throw new InvalidOperationException(
+                "Only a pending, unfulfilled TopUp order can be fulfilled.");
+        }
+
+        if (serverNow >= ExpiresAt)
+        {
+            throw new InvalidOperationException("An expired TopUp order cannot be fulfilled.");
+        }
+
+        ProviderPaymentStatus = ProviderPaymentStatuses.Verified;
+        FulfillmentStatus = PaymentFulfillmentStatuses.Fulfilled;
+        OrderStatus = TopUpOrderStatuses.Succeeded;
+        VerifiedPaidAt = serverNow;
+        FulfilledAt = serverNow;
+        Version = checked(Version + 1);
     }
 
     private static void EnsureFingerprint(string value)

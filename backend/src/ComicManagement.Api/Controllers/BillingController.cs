@@ -94,6 +94,7 @@ public enum TopUpOrderStatus
 {
     Pending,
     Expired,
+    Succeeded,
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter<PaymentInstructionType>))]

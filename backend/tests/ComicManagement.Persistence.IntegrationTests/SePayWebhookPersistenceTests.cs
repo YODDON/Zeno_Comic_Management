@@ -31,17 +31,23 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
 
         var result = await store.IngestAsync(Transaction("1001", 'a'));
 
-        Assert.Equal(SePayWebhookStoreOutcome.Accepted, result.Outcome);
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, result.Outcome);
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var transaction = await context.ProviderTransactions.AsNoTracking().SingleAsync();
         var delivery = await context.WebhookDeliveries.AsNoTracking().SingleAsync();
         Assert.Equal(result.ProviderTransactionId, transaction.Id);
         Assert.Equal("1001", transaction.ProviderTransactionId);
-        Assert.Equal(ProviderTransactionProcessingStatuses.Received, transaction.ProcessingStatus);
-        Assert.Null(transaction.ReconciliationReason);
+        Assert.Equal(
+            ProviderTransactionProcessingStatuses.ReconciliationRequired,
+            transaction.ProcessingStatus);
+        Assert.Equal(
+            SePayReconciliationReasons.OrderNotFound,
+            transaction.ReconciliationReason);
         Assert.Equal(transaction.Id, delivery.ProviderTransactionId);
         Assert.True(delivery.AuthVerified);
-        Assert.Equal(WebhookDeliveryProcessingResults.Accepted, delivery.ProcessingResult);
+        Assert.Equal(
+            WebhookDeliveryProcessingResults.ReconciliationRequired,
+            delivery.ProcessingResult);
     }
 
     [Fact]
@@ -51,8 +57,10 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
         var first = await IngestAsync(provider, Transaction("1002", 'b'));
         var replay = await IngestAsync(provider, Transaction("1002", 'b'));
 
-        Assert.Equal(SePayWebhookStoreOutcome.Accepted, first.Outcome);
-        Assert.Equal(SePayWebhookStoreOutcome.Duplicate, replay.Outcome);
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, first.Outcome);
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, replay.Outcome);
+        Assert.False(first.IsReplay);
+        Assert.True(replay.IsReplay);
         Assert.Equal(first.ProviderTransactionId, replay.ProviderTransactionId);
 
         await using var scope = provider.CreateAsyncScope();
@@ -72,7 +80,7 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
         var first = await IngestAsync(provider, Transaction("1003", 'c'));
         var conflict = await IngestAsync(provider, Transaction("1003", 'd'));
 
-        Assert.Equal(SePayWebhookStoreOutcome.Accepted, first.Outcome);
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, first.Outcome);
         Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, conflict.Outcome);
 
         await using var scope = provider.CreateAsyncScope();
@@ -115,8 +123,11 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
         var results = await Task.WhenAll(firstTask, secondTask);
 
         Assert.Equal(2, observer.EntryCount);
-        Assert.Contains(results, result => result.Outcome == SePayWebhookStoreOutcome.Accepted);
-        Assert.Contains(results, result => result.Outcome == SePayWebhookStoreOutcome.Duplicate);
+        Assert.All(results, result => Assert.Equal(
+            SePayWebhookStoreOutcome.ReconciliationRequired,
+            result.Outcome));
+        Assert.Single(results, result => !result.IsReplay);
+        Assert.Single(results, result => result.IsReplay);
         Assert.Single(results.Select(result => result.ProviderTransactionId).Distinct());
 
         await using var scope = provider.CreateAsyncScope();
@@ -138,6 +149,15 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
             context.Database.ExecuteSqlRawAsync(
                 "UPDATE billing.provider_transactions SET amount_vnd = 0;"));
         Assert.Equal(PostgresErrorCodes.CheckViolation, invalidAmount.SqlState);
+
+        context.ChangeTracker.Clear();
+        var invalidFulfillment = await Assert.ThrowsAsync<PostgresException>(() =>
+            context.Database.ExecuteSqlRawAsync(
+                """
+                UPDATE billing.provider_transactions
+                SET processing_status = 'Fulfilled', reconciliation_reason = NULL;
+                """));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, invalidFulfillment.SqlState);
 
         var unauthenticatedDelivery = await Assert.ThrowsAsync<PostgresException>(() =>
             context.Database.ExecuteSqlRawAsync(

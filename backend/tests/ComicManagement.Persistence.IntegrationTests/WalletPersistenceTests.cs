@@ -178,10 +178,10 @@ public sealed class WalletPersistenceTests : IAsyncLifetime
             connection,
             $"""
             INSERT INTO wallet.paid_coin_lots
-                (id, user_id, topup_order_id, granted_coins, spent_coins,
+                (id, user_id, topup_order_id, topup_order_type, granted_coins, spent_coins,
                  refunded_coins, reserved_coins, created_at, version)
             VALUES
-                ('{Guid.NewGuid():D}', '{userId:D}', '{Guid.NewGuid():D}', 10, 0, 0, 0, NOW(), 1)
+                ('{Guid.NewGuid():D}', '{userId:D}', '{Guid.NewGuid():D}', 'TopUp', 10, 0, 0, 0, NOW(), 1)
             """));
         Assert.Equal(Npgsql.PostgresErrorCodes.ForeignKeyViolation, orphanLot.SqlState);
         Assert.Equal("fk_paid_coin_lots_topup_payment_orders", orphanLot.ConstraintName);
@@ -190,18 +190,18 @@ public sealed class WalletPersistenceTests : IAsyncLifetime
             INSERT INTO billing.payment_orders
                 (id, user_id, order_code, order_type, amount_vnd, paid_coins_snapshot,
                  provider, provider_payment_status, fulfillment_status, idempotency_key,
-                 request_fingerprint, expires_at, created_at, version)
+                 request_fingerprint, order_status, expires_at, created_at, version)
             VALUES
                 ('{topUpOrderId:D}', '{userId:D}', 'ZENO-{topUpOrderId:N}', 'TopUp',
                  10000, 1000, 'SePay', 'Pending', 'NotStarted', 'wallet-db-test',
-                 '{new string('c', 64)}', NOW() + interval '30 minutes', NOW(), 1)
+                 '{new string('c', 64)}', 'Pending', NOW() + interval '30 minutes', NOW(), 1)
             """);
         await ExecuteAsync(connection, $"""
             INSERT INTO wallet.paid_coin_lots
-                (id, user_id, topup_order_id, granted_coins, spent_coins,
+                (id, user_id, topup_order_id, topup_order_type, granted_coins, spent_coins,
                  refunded_coins, reserved_coins, created_at, version)
             VALUES
-                ('{lotId:D}', '{userId:D}', '{topUpOrderId:D}', 10, 0, 0, 0, NOW(), 1)
+                ('{lotId:D}', '{userId:D}', '{topUpOrderId:D}', 'TopUp', 10, 0, 0, 0, NOW(), 1)
             """);
         var overdraw = await Assert.ThrowsAsync<PostgresException>(() => ExecuteAsync(
             connection,

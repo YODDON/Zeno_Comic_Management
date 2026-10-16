@@ -1,4 +1,5 @@
 using ComicManagement.Identity.Users;
+using ComicManagement.Billing.Payments;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Spending;
@@ -325,6 +326,7 @@ public sealed class WalletSpendingPersistenceTests : IAsyncLifetime
         var operations = new List<WalletOperation>();
         var entries = new List<WalletEntry>();
         var lots = new List<PaidCoinLot>();
+        var orders = new List<PaymentOrder>();
 
         if (bonusCoins > 0)
         {
@@ -351,6 +353,18 @@ public sealed class WalletSpendingPersistenceTests : IAsyncLifetime
         foreach (var (coins, createdAt) in paidLots)
         {
             var orderId = Guid.NewGuid();
+            var order = PaymentOrder.CreateTopUp(
+                orderId,
+                userId,
+                $"ZENO-{orderId:N}",
+                10_000,
+                1_000,
+                $"wallet-spend-{orderId:N}",
+                new string('a', PaymentOrder.RequestFingerprintLength),
+                createdAt,
+                createdAt.AddMinutes(30));
+            order.FulfillTopUp(createdAt);
+            orders.Add(order);
             var operation = WalletOperation.Create(
                 Guid.NewGuid(),
                 userId,
@@ -383,6 +397,7 @@ public sealed class WalletSpendingPersistenceTests : IAsyncLifetime
             null,
             Now));
         context.Wallets.Add(wallet);
+        context.PaymentOrders.AddRange(orders);
         context.WalletOperations.AddRange(operations);
         context.WalletEntries.AddRange(entries);
         context.PaidCoinLots.AddRange(lots);

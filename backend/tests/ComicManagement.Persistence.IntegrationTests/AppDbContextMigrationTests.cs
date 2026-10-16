@@ -36,6 +36,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261015141141_AddPaymentOrders",
         "20261015145756_HardenB01PaymentOrderInvariants",
         "20261015185709_AddSePayWebhookIngestion",
+        "20261016073318_AddTopUpFulfillment",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -244,7 +245,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task B01_upgrade_preserves_valid_W01_paid_lots_and_enforces_new_ownership_links()
+    public async Task B01_retains_unmatched_legacy_lot_but_B03_blocks_until_reconciled()
     {
         await using var serviceProvider = new ServiceCollection()
             .AddPersistence(_postgres.GetConnectionString())
@@ -275,7 +276,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
                  {0L}, {0L}, {now}, {1L});
             """);
 
-        await context.Database.MigrateAsync();
+        await migrator.MigrateAsync("20261015185709_AddSePayWebhookIngestion");
 
         Assert.Equal(
             1,
@@ -301,6 +302,72 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
                     ({newLotId}, {userId}, {newOrderId}, {1_000L}, {0L},
                      {0L}, {0L}, {now}, {1L});
                 """));
+
+        var exception = await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            context.Database.MigrateAsync());
+        Assert.Equal("P0001", exception.SqlState);
+        Assert.Contains(
+            "reconcile legacy lots",
+            exception.MessageText,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task B03_upgrade_backfills_and_validates_owned_topup_lots()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync("20261015185709_AddSePayWebhookIngestion");
+
+        var now = new DateTimeOffset(2026, 10, 16, 2, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var lotId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "B03 Upgrade User",
+            null,
+            null,
+            now));
+        context.PaymentOrders.Add(PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            $"ZENO-{orderId:N}",
+            10_000,
+            1_000,
+            "b03-upgrade",
+            new string('a', PaymentOrder.RequestFingerprintLength),
+            now,
+            now.AddMinutes(30)));
+        await context.SaveChangesAsync();
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO wallet.paid_coin_lots
+                (id, user_id, topup_order_id, granted_coins, spent_coins,
+                 refunded_coins, reserved_coins, created_at, version)
+            VALUES
+                ({lotId}, {userId}, {orderId}, {1_000L}, {0L},
+                 {0L}, {0L}, {now}, {1L});
+            """);
+
+        await context.Database.MigrateAsync();
+
+        Assert.Equal(
+            PaymentOrderTypes.TopUp,
+            await context.Database.SqlQueryRaw<string>(
+                    "SELECT topup_order_type AS \"Value\" " +
+                    "FROM wallet.paid_coin_lots WHERE id = {0}",
+                    lotId)
+                .SingleAsync());
+        Assert.True(await ConstraintIsValidated(
+            context,
+            "wallet",
+            "paid_coin_lots",
+            "fk_paid_coin_lots_topup_payment_orders"));
     }
 
     [Fact]

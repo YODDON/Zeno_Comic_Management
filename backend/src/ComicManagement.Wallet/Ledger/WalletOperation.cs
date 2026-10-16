@@ -1,5 +1,15 @@
 namespace ComicManagement.Wallet.Ledger;
 
+public static class WalletOperationTypes
+{
+    public const string TopUpCredit = "TopUpCredit";
+}
+
+public static class WalletOperationSourceTypes
+{
+    public const string PaymentOrder = "PaymentOrder";
+}
+
 public sealed class WalletOperation
 {
     public const int MaximumOperationTypeLength = 64;
