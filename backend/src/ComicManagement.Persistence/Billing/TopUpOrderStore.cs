@@ -41,13 +41,17 @@ internal sealed class TopUpOrderStore(
             PaymentOrderTypes.TopUp,
             request.IdempotencyKey,
             cancellationToken);
+        var existing = await dbContext.PaymentOrders
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM billing.payment_orders
+                WHERE user_id = {request.UserId}
+                  AND order_type = {PaymentOrderTypes.TopUp}
+                  AND idempotency_key = {request.IdempotencyKey}
+                FOR UPDATE
+                """)
+            .SingleOrDefaultAsync(cancellationToken);
         var serverNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
-
-        var existing = await dbContext.PaymentOrders.SingleOrDefaultAsync(
-            order => order.UserId == request.UserId &&
-                     order.OrderType == PaymentOrderTypes.TopUp &&
-                     order.IdempotencyKey == request.IdempotencyKey,
-            cancellationToken);
         if (existing is not null)
         {
             var expired = existing.ExpireIfDue(serverNow);

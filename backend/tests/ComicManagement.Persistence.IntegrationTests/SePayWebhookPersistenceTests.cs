@@ -11,6 +11,9 @@ namespace ComicManagement.Persistence.IntegrationTests;
 
 public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
 {
+    private static readonly DateTimeOffset VerifiedAt =
+        new(2026, 10, 16, 4, 0, 0, TimeSpan.Zero);
+
     private readonly PostgreSqlContainer _postgres =
         new PostgreSqlBuilder("postgres:18.0-alpine3.22")
             .WithDatabase("comic_management_tests")
@@ -29,7 +32,7 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
         await using var scope = provider.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredService<ISePayWebhookStore>();
 
-        var result = await store.IngestAsync(Transaction("1001", 'a'));
+        var result = await store.IngestAsync(Transaction("1001", 'a'), VerifiedAt);
 
         Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, result.Outcome);
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -44,6 +47,8 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
             SePayReconciliationReasons.OrderNotFound,
             transaction.ReconciliationReason);
         Assert.Equal(transaction.Id, delivery.ProviderTransactionId);
+        Assert.Equal(VerifiedAt, transaction.VerifiedAt);
+        Assert.Equal(VerifiedAt, delivery.ReceivedAt);
         Assert.True(delivery.AuthVerified);
         Assert.Equal(
             WebhookDeliveryProcessingResults.ReconciliationRequired,
@@ -94,9 +99,9 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
             transaction.ReconciliationReason);
         var delivery = await context.WebhookDeliveries
             .AsNoTracking()
-            .OrderByDescending(candidate => candidate.ReceivedAt)
-            .ThenByDescending(candidate => candidate.Id)
-            .FirstAsync();
+            .SingleAsync(candidate =>
+                candidate.ErrorCode ==
+                    SePayReconciliationReasons.ProviderTransactionConflict);
         Assert.Equal(
             WebhookDeliveryProcessingResults.ReconciliationRequired,
             delivery.ProcessingResult);
@@ -193,7 +198,7 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
         await using var scope = provider.CreateAsyncScope();
         return await scope.ServiceProvider
             .GetRequiredService<ISePayWebhookStore>()
-            .IngestAsync(transaction);
+            .IngestAsync(transaction, VerifiedAt);
     }
 
     private static SePayNormalizedTransaction Transaction(

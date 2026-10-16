@@ -2,6 +2,7 @@ using System.Data;
 using ComicManagement.Billing.Events;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Shared.Messaging;
+using ComicManagement.Wallet.Accounts;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
 using Microsoft.EntityFrameworkCore;
@@ -60,9 +61,14 @@ internal sealed class SePayWebhookStore(
 {
     public async Task<SePayWebhookStoreResult> IngestAsync(
         SePayNormalizedTransaction transaction,
+        DateTimeOffset verifiedAt,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(transaction);
+        if (verifiedAt.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException("Timestamp must use the UTC offset.", nameof(verifiedAt));
+        }
 
         await using var databaseTransaction =
             await dbContext.Database.BeginTransactionAsync(
@@ -89,12 +95,11 @@ internal sealed class SePayWebhookStore(
                     SePayReconciliationReasons.ProviderTransactionConflict);
             }
 
-            var conflictTime = await GetAuthoritativeServerTimeAsync(cancellationToken);
             await AddDeliveryAndCommitAsync(
                 databaseTransaction,
                 existing,
                 transaction.PayloadFingerprint,
-                conflictTime,
+                verifiedAt,
                 WebhookDeliveryProcessingResults.ReconciliationRequired,
                 SePayReconciliationReasons.ProviderTransactionConflict,
                 cancellationToken);
@@ -108,12 +113,11 @@ internal sealed class SePayWebhookStore(
         if (existing is not null &&
             existing.ProcessingStatus != ProviderTransactionProcessingStatuses.Received)
         {
-            var replayTime = await GetAuthoritativeServerTimeAsync(cancellationToken);
             await AddDeliveryAndCommitAsync(
                 databaseTransaction,
                 existing,
                 transaction.PayloadFingerprint,
-                replayTime,
+                verifiedAt,
                 WebhookDeliveryProcessingResults.Duplicate,
                 errorCode: null,
                 cancellationToken);
@@ -125,21 +129,22 @@ internal sealed class SePayWebhookStore(
 
         if (transaction.ReconciliationReason is not null)
         {
-            var reconciliationTime = await GetAuthoritativeServerTimeAsync(cancellationToken);
             var providerTransaction = existing ?? ProviderTransaction.CreateSePay(
                 Guid.NewGuid(),
                 transaction,
-                reconciliationTime);
+                verifiedAt);
             if (existing is null)
             {
                 dbContext.ProviderTransactions.Add(providerTransaction);
             }
 
+            providerTransaction.RequireReconciliation(transaction.ReconciliationReason);
+
             await AddDeliveryAndCommitAsync(
                 databaseTransaction,
                 providerTransaction,
                 transaction.PayloadFingerprint,
-                reconciliationTime,
+                verifiedAt,
                 WebhookDeliveryProcessingResults.ReconciliationRequired,
                 transaction.ReconciliationReason,
                 cancellationToken);
@@ -167,11 +172,10 @@ internal sealed class SePayWebhookStore(
             orderProjection.OrderType != PaymentOrderTypes.TopUp ||
             orderProjection.OrderStatus != TopUpOrderStatuses.Pending)
         {
-            var serverNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
             var providerTransaction = existing ?? ProviderTransaction.CreateSePay(
                 Guid.NewGuid(),
                 transaction,
-                serverNow);
+                verifiedAt);
             if (existing is null)
             {
                 dbContext.ProviderTransactions.Add(providerTransaction);
@@ -189,7 +193,7 @@ internal sealed class SePayWebhookStore(
                 databaseTransaction,
                 providerTransaction,
                 transaction.PayloadFingerprint,
-                serverNow,
+                verifiedAt,
                 WebhookDeliveryProcessingResults.ReconciliationRequired,
                 reason,
                 cancellationToken);
@@ -207,7 +211,7 @@ internal sealed class SePayWebhookStore(
             var providerTransaction = existing ?? ProviderTransaction.CreateSePay(
                 Guid.NewGuid(),
                 transaction,
-                mismatchCheckedAt);
+                verifiedAt);
             if (existing is null)
             {
                 dbContext.ProviderTransactions.Add(providerTransaction);
@@ -234,7 +238,7 @@ internal sealed class SePayWebhookStore(
                 databaseTransaction,
                 providerTransaction,
                 transaction.PayloadFingerprint,
-                mismatchCheckedAt,
+                verifiedAt,
                 WebhookDeliveryProcessingResults.ReconciliationRequired,
                 reason,
                 cancellationToken);
@@ -262,7 +266,7 @@ internal sealed class SePayWebhookStore(
         var authoritativeProviderTransaction = existing ?? ProviderTransaction.CreateSePay(
             Guid.NewGuid(),
             transaction,
-            authoritativeNow);
+            verifiedAt);
         if (existing is null)
         {
             dbContext.ProviderTransactions.Add(authoritativeProviderTransaction);
@@ -296,7 +300,30 @@ internal sealed class SePayWebhookStore(
                     candidate.SourceType == WalletOperationSourceTypes.PaymentOrder &&
                     candidate.SourceId == order.Id,
                     cancellationToken);
-            if (existingOperation || paidLots.Any(lot => lot.TopUpOrderId == order.Id))
+            var existingSuccessOutbox = await dbContext.OutboxMessages
+                .AsNoTracking()
+                .AnyAsync(message =>
+                    message.EventType == BillingEventTypes.WalletTopUpCompleted &&
+                    EF.Functions.JsonContains(
+                        message.Payload,
+                        $"{{\"paymentOrderId\":\"{order.Id:D}\"}}"),
+                    cancellationToken);
+            var existingFulfilledProviderTransaction = await dbContext.ProviderTransactions
+                .AsNoTracking()
+                .AnyAsync(candidate =>
+                    candidate.MatchedOrderId == order.Id &&
+                    candidate.ProcessingStatus ==
+                        ProviderTransactionProcessingStatuses.Fulfilled,
+                    cancellationToken);
+            var walletReconciled = await IsWalletReconciledAsync(
+                wallet,
+                paidLots,
+                cancellationToken);
+            if (existingOperation ||
+                paidLots.Any(lot => lot.TopUpOrderId == order.Id) ||
+                existingSuccessOutbox ||
+                existingFulfilledProviderTransaction ||
+                !walletReconciled)
             {
                 reconciliationReason = SePayReconciliationReasons.FulfillmentStateConflict;
             }
@@ -311,7 +338,7 @@ internal sealed class SePayWebhookStore(
                 databaseTransaction,
                 authoritativeProviderTransaction,
                 transaction.PayloadFingerprint,
-                authoritativeNow,
+                verifiedAt,
                 WebhookDeliveryProcessingResults.ReconciliationRequired,
                 reconciliationReason,
                 cancellationToken);
@@ -370,7 +397,7 @@ internal sealed class SePayWebhookStore(
             databaseTransaction,
             authoritativeProviderTransaction,
             transaction.PayloadFingerprint,
-            authoritativeNow,
+            verifiedAt,
             WebhookDeliveryProcessingResults.Accepted,
             errorCode: null,
             cancellationToken);
@@ -471,6 +498,63 @@ internal sealed class SePayWebhookStore(
                 """)
             .ToListAsync(cancellationToken);
 
+    private async Task<bool> IsWalletReconciledAsync(
+        WalletAccount wallet,
+        IReadOnlyCollection<PaidCoinLot> paidLots,
+        CancellationToken cancellationToken)
+    {
+        var paidLotAvailable = paidLots.Sum(lot =>
+            (decimal)lot.GrantedCoins - lot.SpentCoins - lot.RefundedCoins - lot.ReservedCoins);
+        var paidLotReserved = paidLots.Sum(lot => (decimal)lot.ReservedCoins);
+        var ledger = await ReadLedgerTotalsAsync(wallet.UserId, cancellationToken);
+        return WalletIntegrityPolicy.IsReconciled(new WalletIntegritySnapshot(
+            wallet.PaidAvailable,
+            wallet.PaidReserved,
+            wallet.BonusAvailable,
+            paidLotAvailable,
+            paidLotReserved,
+            ledger.PaidAvailable,
+            ledger.PaidReserved,
+            ledger.BonusAvailable));
+    }
+
+    private async Task<LedgerTotals> ReadLedgerTotalsAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var connection = dbContext.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction()
+            ?? throw new InvalidOperationException(
+                "Ledger reconciliation requires a database transaction.");
+        command.CommandText =
+            """
+            SELECT
+                COALESCE(SUM(delta_coins) FILTER (
+                    WHERE coin_type = 'Paid' AND bucket = 'Available'), 0),
+                COALESCE(SUM(delta_coins) FILTER (
+                    WHERE coin_type = 'Paid' AND bucket = 'Reserved'), 0),
+                COALESCE(SUM(delta_coins) FILTER (
+                    WHERE coin_type = 'Bonus' AND bucket = 'Available'), 0)
+            FROM wallet.wallet_entries
+            WHERE user_id = @user_id;
+            """;
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "user_id";
+        parameter.Value = userId;
+        command.Parameters.Add(parameter);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            throw new InvalidOperationException("PostgreSQL did not return ledger totals.");
+        }
+
+        return new LedgerTotals(
+            reader.GetFieldValue<decimal>(0),
+            reader.GetFieldValue<decimal>(1),
+            reader.GetFieldValue<decimal>(2));
+    }
+
     private Task<PaymentOrder?> LockPaymentOrderAsync(
         Guid orderId,
         CancellationToken cancellationToken) =>
@@ -501,4 +585,9 @@ internal sealed class SePayWebhookStore(
                 "PostgreSQL did not return server time."),
         };
     }
+
+    private readonly record struct LedgerTotals(
+        decimal PaidAvailable,
+        decimal PaidReserved,
+        decimal BonusAvailable);
 }

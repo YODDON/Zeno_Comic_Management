@@ -13,5 +13,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/ComicManagement.Billing/ComicManagement.Billing.csproj" />
+    <ProjectReference Include="../../src/ComicManagement.Workflows/ComicManagement.Workflows.csproj" />
   </ItemGroup>
 </Project>

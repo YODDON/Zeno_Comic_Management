@@ -52,7 +52,6 @@ public static class PersistenceServiceCollectionExtensions
             NoOpSePayWebhookCriticalSectionObserver>();
         services.TryAddSingleton<ISePayFulfillmentCriticalSectionObserver,
             NoOpSePayFulfillmentCriticalSectionObserver>();
-        services.TryAddScoped<SePayWebhookHandler>();
         services.TryAddScoped<WalletSpendEngine>();
         services.TryAddScoped<ILibraryStore, LibraryStore>();
         services.TryAddScoped<LibraryHandler>();

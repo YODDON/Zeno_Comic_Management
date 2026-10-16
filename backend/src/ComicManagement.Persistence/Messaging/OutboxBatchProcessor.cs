@@ -107,12 +107,38 @@ internal sealed class OutboxBatchProcessor(
             dbContext.ChangeTracker.Clear();
             throw;
         }
+        catch (UnhandledOutboxMessageException)
+        {
+            dbContext.ChangeTracker.Clear();
+            await DeferUntilConsumerIsRegisteredAsync(claimedMessage, cancellationToken);
+            return false;
+        }
         catch (Exception exception)
         {
             dbContext.ChangeTracker.Clear();
             await RecordFailureAsync(claimedMessage, exception, cancellationToken);
             return false;
         }
+    }
+
+    private async Task DeferUntilConsumerIsRegisteredAsync(
+        ClaimedOutboxMessage claimedMessage,
+        CancellationToken cancellationToken)
+    {
+        var availableAt = clock.UtcNow.Add(options.Value.MaxRetryDelay);
+        await dbContext.OutboxMessages
+            .Where(message => message.Id == claimedMessage.Id &&
+                message.Status == OutboxMessageStatuses.Processing &&
+                message.LockedUntil == claimedMessage.LockedUntil &&
+                message.AttemptCount == claimedMessage.AttemptCount)
+            .ExecuteUpdateAsync(
+                setters => setters
+                    .SetProperty(message => message.Status, OutboxMessageStatuses.Pending)
+                    .SetProperty(message => message.AvailableAt, availableAt)
+                    .SetProperty(message => message.AttemptCount, 0)
+                    .SetProperty(message => message.LockedUntil, (DateTimeOffset?)null)
+                    .SetProperty(message => message.LastErrorRedacted, "NoHandlerRegistered"),
+                cancellationToken);
     }
 
     private async Task RecordFailureAsync(
