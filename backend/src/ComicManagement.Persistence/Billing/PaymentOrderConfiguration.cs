@@ -19,8 +19,16 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
                 "expires_at > created_at");
             table.HasCheckConstraint(
                 "ck_payment_orders_order_status",
-                "(order_status = 'Pending' AND expired_at IS NULL) OR " +
-                "(order_status = 'Expired' AND expired_at IS NOT NULL AND expired_at >= expires_at)");
+                "(order_status = 'Pending' AND expired_at IS NULL " +
+                "AND provider_payment_status = 'Pending' AND fulfillment_status = 'NotStarted' " +
+                "AND verified_paid_at IS NULL AND fulfilled_at IS NULL) OR " +
+                "(order_status = 'Expired' AND expired_at IS NOT NULL AND expired_at >= expires_at " +
+                "AND provider_payment_status = 'Pending' AND fulfillment_status = 'NotStarted' " +
+                "AND verified_paid_at IS NULL AND fulfilled_at IS NULL) OR " +
+                "(order_status = 'Succeeded' AND expired_at IS NULL " +
+                "AND provider_payment_status = 'Verified' AND fulfillment_status = 'Fulfilled' " +
+                "AND verified_paid_at IS NOT NULL AND fulfilled_at = verified_paid_at " +
+                "AND fulfilled_at < expires_at)");
             table.HasCheckConstraint(
                 "ck_payment_orders_type_snapshots",
                 "(order_type = 'TopUp' AND amount_vnd BETWEEN 10000 AND 2000000 " +
@@ -51,6 +59,8 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
         builder.HasKey(order => order.Id).HasName("pk_payment_orders");
         builder.HasAlternateKey(order => new { order.Id, order.UserId })
             .HasName("ak_payment_orders_id_user_id");
+        builder.HasAlternateKey(order => new { order.Id, order.UserId, order.OrderType })
+            .HasName("ak_payment_orders_id_user_id_order_type");
         builder.HasIndex(order => order.OrderCode)
             .IsUnique()
             .HasDatabaseName("ux_payment_orders_order_code");

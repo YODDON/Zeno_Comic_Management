@@ -20,6 +20,9 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
                 "ck_paid_coin_lots_capacity",
                 "granted_coins::numeric >= spent_coins::numeric + refunded_coins::numeric + reserved_coins::numeric");
             table.HasCheckConstraint("ck_paid_coin_lots_version", "version >= 1");
+            table.HasCheckConstraint(
+                "ck_paid_coin_lots_topup_order_type",
+                "topup_order_type = 'TopUp'");
         });
 
         builder.HasKey(lot => lot.Id).HasName("pk_paid_coin_lots");
@@ -29,12 +32,24 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
         builder.HasIndex(lot => new { lot.TopUpOrderId, lot.UserId })
             .IsUnique()
             .HasDatabaseName("ux_paid_coin_lots_topup_order_user");
+        builder.HasIndex(lot => new
+            {
+                lot.TopUpOrderId,
+                lot.UserId,
+                lot.TopUpOrderType,
+            })
+            .IsUnique()
+            .HasDatabaseName("ux_paid_coin_lots_topup_order_owner_type");
         builder.HasIndex(lot => new { lot.UserId, lot.CreatedAt, lot.Id })
             .HasDatabaseName("ix_paid_coin_lots_user_created_id");
 
         builder.Property(lot => lot.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(lot => lot.UserId).HasColumnName("user_id");
         builder.Property(lot => lot.TopUpOrderId).HasColumnName("topup_order_id");
+        builder.Property(lot => lot.TopUpOrderType)
+            .HasColumnName("topup_order_type")
+            .HasMaxLength(PaymentOrder.MaximumTypeLength)
+            .IsRequired();
         builder.Property(lot => lot.GrantedCoins).HasColumnName("granted_coins");
         builder.Property(lot => lot.SpentCoins)
             .HasColumnName("spent_coins")
@@ -60,8 +75,18 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
             .HasConstraintName("fk_paid_coin_lots_users");
         builder.HasOne<PaymentOrder>()
             .WithOne()
-            .HasForeignKey<PaidCoinLot>(lot => new { lot.TopUpOrderId, lot.UserId })
-            .HasPrincipalKey<PaymentOrder>(order => new { order.Id, order.UserId })
+            .HasForeignKey<PaidCoinLot>(lot => new
+            {
+                lot.TopUpOrderId,
+                lot.UserId,
+                lot.TopUpOrderType,
+            })
+            .HasPrincipalKey<PaymentOrder>(order => new
+            {
+                order.Id,
+                order.UserId,
+                order.OrderType,
+            })
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");
     }

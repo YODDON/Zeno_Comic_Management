@@ -12,6 +12,8 @@ public static class ProviderTransactionProcessingStatuses
     public const string Received = "Received";
 
     public const string ReconciliationRequired = "ReconciliationRequired";
+
+    public const string Fulfilled = "Fulfilled";
 }
 
 public sealed class ProviderTransaction
@@ -92,7 +94,7 @@ public sealed class ProviderTransaction
         };
     }
 
-    public void RequireReconciliation(string reason)
+    public void RequireReconciliation(string reason, Guid? matchedOrderId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
         if (reason.Length > MaximumReconciliationReasonLength)
@@ -100,8 +102,47 @@ public sealed class ProviderTransaction
             throw new ArgumentOutOfRangeException(nameof(reason));
         }
 
+        if (matchedOrderId == Guid.Empty)
+        {
+            throw new ArgumentException("A matched order identifier cannot be empty.", nameof(matchedOrderId));
+        }
+
+        if (ProcessingStatus == ProviderTransactionProcessingStatuses.Fulfilled)
+        {
+            throw new InvalidOperationException(
+                "A fulfilled provider transaction cannot be moved to reconciliation.");
+        }
+
+        if (matchedOrderId is not null &&
+            MatchedOrderId is not null &&
+            MatchedOrderId != matchedOrderId)
+        {
+            throw new InvalidOperationException(
+                "A provider transaction cannot be matched to a different order.");
+        }
+
+        MatchedOrderId ??= matchedOrderId;
         ProcessingStatus = ProviderTransactionProcessingStatuses.ReconciliationRequired;
         ReconciliationReason = reason;
+    }
+
+    public void MarkFulfilled(Guid matchedOrderId)
+    {
+        if (matchedOrderId == Guid.Empty)
+        {
+            throw new ArgumentException("A matched order identifier is required.", nameof(matchedOrderId));
+        }
+
+        if (ProcessingStatus != ProviderTransactionProcessingStatuses.Received ||
+            MatchedOrderId is not null)
+        {
+            throw new InvalidOperationException(
+                "Only a received, unmatched provider transaction can be fulfilled.");
+        }
+
+        MatchedOrderId = matchedOrderId;
+        ProcessingStatus = ProviderTransactionProcessingStatuses.Fulfilled;
+        ReconciliationReason = null;
     }
 
     private static void EnsureUtc(DateTimeOffset value, string parameterName)

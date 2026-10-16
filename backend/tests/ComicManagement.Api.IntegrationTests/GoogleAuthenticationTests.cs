@@ -21,6 +21,7 @@ using ComicManagement.Workflows.Reading;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Billing.Events;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
@@ -435,14 +436,110 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var transaction = await context.ProviderTransactions
             .AsNoTracking()
             .SingleAsync(candidate => candidate.ProviderTransactionId == providerId);
-        Assert.Equal(ProviderTransactionProcessingStatuses.Received, transaction.ProcessingStatus);
+        Assert.Equal(
+            ProviderTransactionProcessingStatuses.ReconciliationRequired,
+            transaction.ProcessingStatus);
+        Assert.Equal(
+            SePayReconciliationReasons.OrderNotFound,
+            transaction.ReconciliationReason);
         Assert.Equal(100_000, transaction.AmountVnd);
         Assert.Equal(SePayAccountNumber[^4..], transaction.AccountNumberLast4);
         var delivery = await context.WebhookDeliveries
             .AsNoTracking()
             .SingleAsync(candidate => candidate.ProviderTransactionId == transaction.Id);
         Assert.True(delivery.AuthVerified);
-        Assert.Equal(WebhookDeliveryProcessingResults.Accepted, delivery.ProcessingResult);
+        Assert.Equal(
+            WebhookDeliveryProcessingResults.ReconciliationRequired,
+            delivery.ProcessingResult);
+    }
+
+    [Fact]
+    public async Task Sepay_webhook_exact_topup_fulfills_real_wallet_transaction()
+    {
+        await using var factory = CreateSePayFactory();
+        using var client = CreateClient(factory);
+        var providerId = $"91{Random.Shared.Next(100_000, 999_999)}";
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var orderCode = $"ZENO-{orderId:N}";
+        var now = DateTimeOffset.UtcNow;
+        await using (var seedScope = factory.Services.CreateAsyncScope())
+        {
+            var context = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.Users.Add(User.CreateFromGoogle(
+                userId,
+                "B03 API User",
+                null,
+                null,
+                now.AddMinutes(-1)));
+            context.PaymentOrders.Add(PaymentOrder.CreateTopUp(
+                orderId,
+                userId,
+                orderCode,
+                100_000,
+                10_000,
+                $"api-{orderId:N}",
+                new string('a', PaymentOrder.RequestFingerprintLength),
+                now,
+                now.AddMinutes(30)));
+            await context.SaveChangesAsync();
+        }
+
+        using var request = SePayRequest(providerId, 100_000, paymentCode: orderCode);
+        var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var verification = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(TopUpOrderStatuses.Succeeded, (await verification.PaymentOrders
+            .AsNoTracking()
+            .SingleAsync(order => order.Id == orderId)).OrderStatus);
+        Assert.Equal(10_000, (await verification.Wallets.AsNoTracking()
+            .SingleAsync(wallet => wallet.UserId == userId)).PaidAvailable);
+        Assert.Equal(1, await verification.PaidCoinLots.CountAsync(lot =>
+            lot.TopUpOrderId == orderId));
+        Assert.Equal(1, await verification.OutboxMessages.CountAsync(message =>
+            message.EventType == BillingEventTypes.WalletTopUpCompleted));
+    }
+
+    [Fact]
+    public async Task Fulfilled_topup_idempotency_replay_returns_succeeded_authoritative_state()
+    {
+        await using var factory = CreateSePayFactory();
+        factory.TokenEndpoint.SetProfile(
+            $"b03-replay-{Guid.NewGuid():N}",
+            "B03 Replay User",
+            null,
+            null);
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/wallet", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var createRequest = TopUpRequest("b03-succeeded-replay", 100_000, csrfToken);
+        var createResponse = await client.SendAsync(createRequest);
+        Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+        var created = await createResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var orderId = created.GetProperty("orderId").GetGuid();
+        var orderCode = created.GetProperty("orderCode").GetString()!;
+        using var webhook = SePayRequest(
+            $"90{Random.Shared.Next(100_000, 999_999)}",
+            100_000,
+            paymentCode: orderCode);
+        using var providerClient = CreateClient(factory);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await providerClient.SendAsync(webhook)).StatusCode);
+
+        using var replayRequest = TopUpRequest("b03-succeeded-replay", 100_000, csrfToken);
+        var replayResponse = await client.SendAsync(replayRequest);
+
+        Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+        var replay = await replayResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(orderId, replay.GetProperty("orderId").GetGuid());
+        Assert.Equal("Succeeded", replay.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -1941,7 +2038,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             document,
             responseSchema.GetProperty("properties").GetProperty("status"));
         Assert.Equal(
-            ["Pending", "Expired"],
+            ["Pending", "Expired", "Succeeded"],
             statusSchema.GetProperty("enum").EnumerateArray().Select(value => value.GetString()));
         var instructionsSchema = ResolveOpenApiSchema(
             document,
@@ -3080,7 +3177,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     private static HttpRequestMessage SePayRequest(
         string providerTransactionId,
         long amountVnd,
-        DateTimeOffset? signedAt = null)
+        DateTimeOffset? signedAt = null,
+        string paymentCode = "ZENO-0123456789abcdef")
     {
         var timestamp = (signedAt ?? DateTimeOffset.UtcNow)
             .ToUnixTimeSeconds()
@@ -3092,8 +3190,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             transactionDate = "2026-10-16 10:30:00",
             accountNumber = SePayAccountNumber,
             subAccount = string.Empty,
-            code = "ZENO-0123456789abcdef",
-            content = "ZENO-0123456789abcdef chuyen tien",
+            code = paymentCode,
+            content = $"{paymentCode} chuyen tien",
             transferType = "in",
             description = "NGUYEN VAN A chuyen tien",
             transferAmount = amountVnd,

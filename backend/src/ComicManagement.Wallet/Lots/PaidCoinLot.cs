@@ -2,6 +2,8 @@ namespace ComicManagement.Wallet.Lots;
 
 public sealed class PaidCoinLot
 {
+    public const string RequiredOrderType = "TopUp";
+
     private PaidCoinLot()
     {
     }
@@ -11,6 +13,8 @@ public sealed class PaidCoinLot
     public Guid UserId { get; private set; }
 
     public Guid TopUpOrderId { get; private set; }
+
+    public string TopUpOrderType { get; private set; } = RequiredOrderType;
 
     public long GrantedCoins { get; private set; }
 
@@ -45,6 +49,7 @@ public sealed class PaidCoinLot
             Id = id,
             UserId = userId,
             TopUpOrderId = topUpOrderId,
+            TopUpOrderType = RequiredOrderType,
             GrantedCoins = grantedCoins,
             CreatedAt = createdAt,
             Version = 1,

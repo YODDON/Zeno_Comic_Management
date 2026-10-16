@@ -194,6 +194,16 @@ public sealed class TopUpOrderPersistenceTests : IAsyncLifetime
             $"UPDATE billing.payment_orders SET order_status = 'Expired' WHERE id = '{orderId:D}'");
         await AssertCheckViolationAsync(
             $"UPDATE billing.payment_orders SET request_fingerprint = 'invalid' WHERE id = '{orderId:D}'");
+        await AssertCheckViolationAsync(
+            $"""
+            UPDATE billing.payment_orders
+            SET order_status = 'Succeeded',
+                provider_payment_status = 'Verified',
+                fulfillment_status = 'Fulfilled',
+                verified_paid_at = expires_at,
+                fulfilled_at = expires_at
+            WHERE id = '{orderId:D}'
+            """);
     }
 
     [Fact]
@@ -216,10 +226,10 @@ public sealed class TopUpOrderPersistenceTests : IAsyncLifetime
             context.Database.ExecuteSqlInterpolatedAsync(
                 $"""
                 INSERT INTO wallet.paid_coin_lots
-                    (id, user_id, topup_order_id, granted_coins, spent_coins,
+                    (id, user_id, topup_order_id, topup_order_type, granted_coins, spent_coins,
                      refunded_coins, reserved_coins, created_at, version)
                 VALUES
-                    ({Guid.NewGuid()}, {otherUserId}, {orderId}, {1_000L}, {0L},
+                    ({Guid.NewGuid()}, {otherUserId}, {orderId}, {PaymentOrderTypes.TopUp}, {1_000L}, {0L},
                      {0L}, {0L}, {InitialNow}, {1L});
                 """));
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, exception.SqlState);
@@ -257,6 +267,19 @@ public sealed class TopUpOrderPersistenceTests : IAsyncLifetime
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             context.SaveChangesAsync());
         Assert.Contains("TopUp PaymentOrder", exception.Message, StringComparison.Ordinal);
+
+        context.ChangeTracker.Clear();
+        var databaseException = await Assert.ThrowsAsync<PostgresException>(() =>
+            context.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO wallet.paid_coin_lots
+                    (id, user_id, topup_order_id, topup_order_type, granted_coins,
+                     spent_coins, refunded_coins, reserved_coins, created_at, version)
+                VALUES
+                    ({Guid.NewGuid()}, {_userId}, {vipOrderId}, {PaymentOrderTypes.TopUp},
+                     {1_000L}, {0L}, {0L}, {0L}, {InitialNow}, {1L});
+                """));
+        Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, databaseException.SqlState);
     }
 
     private async Task<TopUpOrderResult> CreateAsync(

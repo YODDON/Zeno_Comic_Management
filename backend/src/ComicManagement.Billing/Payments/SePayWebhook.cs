@@ -97,6 +97,18 @@ public static class SePayReconciliationReasons
     public const string PaymentCodeMissing = "PAYMENT_CODE_MISSING";
 
     public const string ProviderTransactionConflict = "PROVIDER_TRANSACTION_CONFLICT";
+
+    public const string OrderNotFound = "ORDER_NOT_FOUND";
+
+    public const string UnsupportedOrderType = "UNSUPPORTED_ORDER_TYPE";
+
+    public const string AmountMismatch = "AMOUNT_MISMATCH";
+
+    public const string LatePayment = "LatePayment";
+
+    public const string OrderAlreadyFulfilled = "ORDER_ALREADY_FULFILLED";
+
+    public const string FulfillmentStateConflict = "FULFILLMENT_STATE_CONFLICT";
 }
 
 public enum SePayWebhookVerificationOutcome
@@ -375,11 +387,13 @@ public enum SePayWebhookStoreOutcome
     Accepted,
     Duplicate,
     ReconciliationRequired,
+    Fulfilled,
 }
 
 public sealed record SePayWebhookStoreResult(
     SePayWebhookStoreOutcome Outcome,
-    Guid ProviderTransactionId);
+    Guid ProviderTransactionId,
+    bool IsReplay = false);
 
 public interface ISePayWebhookStore
 {

@@ -191,6 +191,9 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasAlternateKey("Id", "UserId")
                         .HasName("ak_payment_orders_id_user_id");
 
+                    b.HasAlternateKey("Id", "UserId", "OrderType")
+                        .HasName("ak_payment_orders_id_user_id_order_type");
+
                     b.HasIndex("OrderCode")
                         .IsUnique()
                         .HasDatabaseName("ux_payment_orders_order_code");
@@ -216,7 +219,7 @@ namespace ComicManagement.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_payment_orders_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
 
-                            t.HasCheckConstraint("ck_payment_orders_order_status", "(order_status = 'Pending' AND expired_at IS NULL) OR (order_status = 'Expired' AND expired_at IS NOT NULL AND expired_at >= expires_at)");
+                            t.HasCheckConstraint("ck_payment_orders_order_status", "(order_status = 'Pending' AND expired_at IS NULL AND provider_payment_status = 'Pending' AND fulfillment_status = 'NotStarted' AND verified_paid_at IS NULL AND fulfilled_at IS NULL) OR (order_status = 'Expired' AND expired_at IS NOT NULL AND expired_at >= expires_at AND provider_payment_status = 'Pending' AND fulfillment_status = 'NotStarted' AND verified_paid_at IS NULL AND fulfilled_at IS NULL) OR (order_status = 'Succeeded' AND expired_at IS NULL AND provider_payment_status = 'Verified' AND fulfillment_status = 'Fulfilled' AND verified_paid_at IS NOT NULL AND fulfilled_at = verified_paid_at AND fulfilled_at < expires_at)");
 
                             t.HasCheckConstraint("ck_payment_orders_provider", "provider IN ('SePay')");
 
@@ -322,7 +325,7 @@ namespace ComicManagement.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_provider_transactions_payload_fingerprint", "payload_fingerprint ~ '^[0-9a-f]{64}$'");
 
-                            t.HasCheckConstraint("ck_provider_transactions_processing", "(processing_status = 'Received' AND reconciliation_reason IS NULL) OR (processing_status = 'ReconciliationRequired' AND reconciliation_reason IS NOT NULL)");
+                            t.HasCheckConstraint("ck_provider_transactions_processing", "(processing_status = 'Received' AND reconciliation_reason IS NULL AND matched_order_id IS NULL) OR (processing_status = 'ReconciliationRequired' AND reconciliation_reason IS NOT NULL) OR (processing_status = 'Fulfilled' AND reconciliation_reason IS NULL AND matched_order_id IS NOT NULL)");
 
                             t.HasCheckConstraint("ck_provider_transactions_provider", "provider IN ('SePay')");
                         });
@@ -1380,6 +1383,12 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("topup_order_id");
 
+                    b.Property<string>("TopUpOrderType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("topup_order_type");
+
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
@@ -1400,6 +1409,10 @@ namespace ComicManagement.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_paid_coin_lots_topup_order_user");
 
+                    b.HasIndex("TopUpOrderId", "UserId", "TopUpOrderType")
+                        .IsUnique()
+                        .HasDatabaseName("ux_paid_coin_lots_topup_order_owner_type");
+
                     b.HasIndex("UserId", "CreatedAt", "Id")
                         .HasDatabaseName("ix_paid_coin_lots_user_created_id");
 
@@ -1414,6 +1427,8 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_paid_coin_lots_reserved", "reserved_coins >= 0");
 
                             t.HasCheckConstraint("ck_paid_coin_lots_spent", "spent_coins >= 0");
+
+                            t.HasCheckConstraint("ck_paid_coin_lots_topup_order_type", "topup_order_type = 'TopUp'");
 
                             t.HasCheckConstraint("ck_paid_coin_lots_version", "version >= 1");
                         });
@@ -1689,8 +1704,8 @@ namespace ComicManagement.Persistence.Migrations
 
                     b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
                         .WithOne()
-                        .HasForeignKey("ComicManagement.Wallet.Lots.PaidCoinLot", "TopUpOrderId", "UserId")
-                        .HasPrincipalKey("ComicManagement.Billing.Payments.PaymentOrder", "Id", "UserId")
+                        .HasForeignKey("ComicManagement.Wallet.Lots.PaidCoinLot", "TopUpOrderId", "UserId", "TopUpOrderType")
+                        .HasPrincipalKey("ComicManagement.Billing.Payments.PaymentOrder", "Id", "UserId", "OrderType")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");

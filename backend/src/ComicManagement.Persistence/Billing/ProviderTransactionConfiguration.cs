@@ -25,8 +25,9 @@ internal sealed class ProviderTransactionConfiguration :
                 "payload_fingerprint ~ '^[0-9a-f]{64}$'");
             table.HasCheckConstraint(
                 "ck_provider_transactions_processing",
-                "(processing_status = 'Received' AND reconciliation_reason IS NULL) OR " +
-                "(processing_status = 'ReconciliationRequired' AND reconciliation_reason IS NOT NULL)");
+                "(processing_status = 'Received' AND reconciliation_reason IS NULL AND matched_order_id IS NULL) OR " +
+                "(processing_status = 'ReconciliationRequired' AND reconciliation_reason IS NOT NULL) OR " +
+                "(processing_status = 'Fulfilled' AND reconciliation_reason IS NULL AND matched_order_id IS NOT NULL)");
         });
 
         builder.HasKey(transaction => transaction.Id)
