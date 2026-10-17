@@ -22,6 +22,7 @@ using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Events;
+using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Membership.Plans;
 using Microsoft.AspNetCore.Authentication;
@@ -343,6 +344,75 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Vip_checkout_webhook_replay_and_membership_query_run_through_real_http_pipeline()
+    {
+        await using var factory = CreateSePayFactory();
+        factory.TokenEndpoint.SetProfile(
+            $"vip-http-{Guid.NewGuid():N}",
+            "VIP HTTP User",
+            null,
+            null);
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/vip", factory.TokenEndpoint));
+        var profile = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(profile.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var checkoutRequest = VipCheckoutRequest("vip-http-flow", csrfToken);
+        var checkoutResponse = await client.SendAsync(checkoutRequest);
+        Assert.Equal(HttpStatusCode.Created, checkoutResponse.StatusCode);
+        var checkout = await checkoutResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var orderId = checkout.GetProperty("orderId").GetGuid();
+        var amountVnd = checkout.GetProperty("amountVnd").GetInt64();
+
+        string orderCode;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            orderCode = await scope.ServiceProvider.GetRequiredService<AppDbContext>()
+                .PaymentOrders
+                .Where(order => order.Id == orderId)
+                .Select(order => order.OrderCode)
+                .SingleAsync();
+        }
+
+        var providerId = $"89{Random.Shared.Next(100_000, 999_999)}";
+        using var providerClient = CreateClient(factory);
+        using (var webhook = SePayRequest(providerId, amountVnd, paymentCode: orderCode))
+        {
+            Assert.Equal(HttpStatusCode.OK, (await providerClient.SendAsync(webhook)).StatusCode);
+        }
+
+        using (var replay = SePayRequest(providerId, amountVnd, paymentCode: orderCode))
+        {
+            Assert.Equal(HttpStatusCode.OK, (await providerClient.SendAsync(replay)).StatusCode);
+        }
+
+        var membershipResponse = await client.GetAsync("/api/v1/membership/me");
+        Assert.Equal(HttpStatusCode.OK, membershipResponse.StatusCode);
+        var membership = await membershipResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(membership.GetProperty("isActive").GetBoolean());
+        var responseExpiry = membership.GetProperty("expiresAt").GetDateTimeOffset();
+
+        await using var verificationScope = factory.Services.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var subscription = await verification.VipSubscriptions.SingleAsync();
+        Assert.Equal(responseExpiry, subscription.ExpiresAt);
+        Assert.Equal(1, subscription.Version);
+        Assert.Equal(1, await verification.VipTransactions.CountAsync(transaction =>
+            transaction.PaymentOrderId == orderId && transaction.SubscriptionVersion == 1));
+        var providerTransaction = await verification.ProviderTransactions.SingleAsync(transaction =>
+            transaction.ProviderTransactionId == providerId);
+        Assert.Equal(
+            ProviderTransactionProcessingStatuses.Fulfilled,
+            providerTransaction.ProcessingStatus);
+        Assert.Equal(2, await verification.WebhookDeliveries.CountAsync(delivery =>
+            delivery.ProviderTransactionId == providerTransaction.Id));
+        Assert.Equal(1, await verification.OutboxMessages.CountAsync(message =>
+            message.EventType == MembershipEventTypes.VipMembershipActivated));
+    }
+
+    [Fact]
     public async Task Vip_checkout_is_limited_to_ten_requests_per_minute_per_user()
     {
         await using var factory = new AuthenticationApplicationFactory(
@@ -439,6 +509,18 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var patched = await patchedResponse.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(35_000, patched.GetProperty("priceVnd").GetInt64());
         Assert.Equal(2, patched.GetProperty("version").GetInt64());
+
+        using var stalePatch = new HttpRequestMessage(
+            HttpMethod.Patch,
+            "/api/v1/admin/vip-plan")
+        {
+            Content = JsonContent.Create(new { priceVnd = 36_000, expectedVersion = 1 }),
+        };
+        stalePatch.Headers.Add("X-CSRF-TOKEN", adminCsrf);
+        await AssertStandardizedErrorAsync(
+            await adminClient.SendAsync(stalePatch),
+            HttpStatusCode.Conflict,
+            "CONCURRENCY_CONFLICT");
 
         using var newCheckout = VipCheckoutRequest("vip-new-price", adminCsrf);
         var newResponse = await adminClient.SendAsync(newCheckout);
@@ -2364,8 +2446,32 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.Equal(
             PaymentOrder.MaximumIdempotencyKeyLength,
             idempotency.GetProperty("schema").GetProperty("maxLength").GetInt32());
+        var checkoutRequest = ResolveOpenApiSchema(
+            document,
+            checkout.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        Assert.Contains(
+            "planId",
+            checkoutRequest.GetProperty("required")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Equal(
+            "uuid",
+            checkoutRequest.GetProperty("properties")
+                .GetProperty("planId")
+                .GetProperty("format")
+                .GetString());
         var checkoutResponse = ResolveResponseSchema(document, checkout, "201");
         var checkoutProperties = checkoutResponse.GetProperty("properties");
+        Assert.Equal(
+            ["amountVnd", "durationHours", "expiresAt", "orderId", "paymentInstructions", "status"],
+            checkoutResponse.GetProperty("required")
+                .EnumerateArray()
+                .Select(item => item.GetString()!)
+                .Order()
+                .ToArray());
         Assert.True(checkoutProperties.TryGetProperty("expiresAt", out _));
         Assert.True(checkoutProperties.TryGetProperty("paymentInstructions", out _));
         var status = ResolveOpenApiSchema(document, checkoutProperties.GetProperty("status"));
@@ -2376,6 +2482,11 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         foreach (var statusCode in new[] { "400", "401", "403", "404", "409", "429" })
         {
             Assert.True(checkout.GetProperty("responses").TryGetProperty(statusCode, out _));
+            var errorSchema = ResolveResponseSchema(document, checkout, statusCode);
+            foreach (var property in new[] { "errorCode", "message", "traceId" })
+            {
+                Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
+            }
         }
 
         var adminPath = paths.GetProperty("/api/v1/admin/vip-plan");
@@ -2390,6 +2501,11 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var patchProperties = patchRequest.GetProperty("properties");
         Assert.Equal(1, patchProperties.GetProperty("priceVnd").GetProperty("minimum").GetInt64());
         Assert.Equal(1, patchProperties.GetProperty("expectedVersion").GetProperty("minimum").GetInt64());
+        var concurrencyError = ResolveResponseSchema(document, patch, "409");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(concurrencyError.GetProperty("properties").TryGetProperty(property, out _));
+        }
     }
 
     [Fact]

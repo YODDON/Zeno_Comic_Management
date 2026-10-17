@@ -42,6 +42,30 @@ public sealed class VipPaymentOrderTests
         Assert.Equal(TopUpOrderStatuses.Expired, expiring.OrderStatus);
     }
 
+    [Theory]
+    [InlineData(719, 20)]
+    [InlineData(721, 20)]
+    [InlineData(720, 19)]
+    [InlineData(720, 21)]
+    public void Vip_order_rejects_policy_outside_fixed_MVP_values(
+        int durationHours,
+        int discountPercent)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            PaymentOrder.CreateVipPurchase(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                $"ZENO-VIP-{Guid.NewGuid():N}",
+                29_000,
+                Guid.NewGuid(),
+                durationHours,
+                discountPercent,
+                "vip-invalid-policy",
+                new string('b', PaymentOrder.RequestFingerprintLength),
+                Now,
+                Now.AddMinutes(30)));
+    }
+
     private static PaymentOrder CreateOrder(Guid planId, DateTimeOffset expiresAt) =>
         PaymentOrder.CreateVipPurchase(
             Guid.NewGuid(),

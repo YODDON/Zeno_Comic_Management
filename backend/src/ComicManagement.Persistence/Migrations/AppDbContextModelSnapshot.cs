@@ -1002,6 +1002,10 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("previous_expiry");
 
+                    b.Property<long>("SubscriptionVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("subscription_version");
+
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid")
                         .HasColumnName("user_id");
@@ -1015,15 +1019,18 @@ namespace ComicManagement.Persistence.Migrations
 
                     b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType");
 
-                    b.HasIndex("UserId", "FulfilledAt", "Id")
-                        .IsDescending(false, true, true)
-                        .HasDatabaseName("ix_vip_transactions_user_fulfilled_id");
+                    b.HasIndex("UserId", "SubscriptionVersion")
+                        .IsUnique()
+                        .IsDescending(false, true)
+                        .HasDatabaseName("ux_vip_transactions_user_subscription_version");
 
                     b.ToTable("vip_transactions", "membership", t =>
                         {
                             t.HasCheckConstraint("ck_vip_transactions_duration", "duration_hours = 720");
 
                             t.HasCheckConstraint("ck_vip_transactions_order_type", "payment_order_type = 'VipPurchase'");
+
+                            t.HasCheckConstraint("ck_vip_transactions_subscription_version", "subscription_version >= 1 AND ((subscription_version = 1 AND previous_expiry IS NULL) OR (subscription_version > 1 AND previous_expiry IS NOT NULL))");
 
                             t.HasCheckConstraint("ck_vip_transactions_timeline", "effective_start >= fulfilled_at AND new_expiry = effective_start + make_interval(hours => duration_hours) AND created_at = fulfilled_at AND (previous_expiry IS NULL OR effective_start >= previous_expiry)");
                         });

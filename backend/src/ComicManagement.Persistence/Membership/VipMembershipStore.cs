@@ -80,10 +80,10 @@ internal sealed class VipMembershipStore(
                 FOR UPDATE
                 """)
             .SingleOrDefaultAsync(cancellationToken);
-        var serverNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
         if (existing is not null)
         {
-            if (existing.ExpireIfDue(serverNow))
+            var replayNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
+            if (existing.ExpireIfDue(replayNow))
             {
                 await dbContext.SaveChangesAsync(cancellationToken);
             }
@@ -109,6 +109,7 @@ internal sealed class VipMembershipStore(
             return NotFound();
         }
 
+        var serverNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
         var order = PaymentOrder.CreateVipPurchase(
             request.OrderId,
             request.UserId,

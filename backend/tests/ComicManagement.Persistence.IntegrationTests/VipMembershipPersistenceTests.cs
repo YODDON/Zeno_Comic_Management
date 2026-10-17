@@ -3,6 +3,7 @@ using ComicManagement.Identity.Users;
 using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Membership.Plans;
+using ComicManagement.Membership.Subscriptions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -195,6 +196,56 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task New_checkout_samples_server_time_only_after_plan_lock_is_released()
+    {
+        var observer = new SignalingCheckoutObserver();
+        await using var provider = Services(checkoutObserver: observer)
+            .BuildServiceProvider(validateScopes: true);
+        var userId = await SeedUserAsync(provider, "VIP Plan Lock");
+        await using var lockConnection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await lockConnection.OpenAsync();
+        await using var lockTransaction = await lockConnection.BeginTransactionAsync();
+        await using (var lockCommand = new NpgsqlCommand(
+                         "SELECT id FROM membership.vip_plans WHERE is_active FOR UPDATE;",
+                         lockConnection,
+                         lockTransaction))
+        {
+            await lockCommand.ExecuteScalarAsync();
+        }
+
+        var checkoutTask = CheckoutAsync(
+            provider,
+            userId,
+            "vip-plan-lock",
+            VipPlan.InitialPlanId);
+        await observer.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(300);
+        Assert.False(checkoutTask.IsCompleted);
+
+        DateTimeOffset beforeRelease;
+        await using (var clockCommand = new NpgsqlCommand(
+                         "SELECT clock_timestamp();",
+                         lockConnection,
+                         lockTransaction))
+        {
+            var value = await clockCommand.ExecuteScalarAsync();
+            beforeRelease = value switch
+            {
+                DateTimeOffset timestamp => timestamp.ToUniversalTime(),
+                DateTime timestamp => new DateTimeOffset(timestamp.ToUniversalTime()),
+                _ => throw new InvalidOperationException(
+                    "PostgreSQL did not return server time."),
+            };
+        }
+
+        await lockTransaction.CommitAsync();
+        var result = await checkoutTask;
+        var createdAt = await ReadCreatedAtAsync(provider, result.Checkout!.OrderId);
+        Assert.True(createdAt >= beforeRelease);
+        Assert.Equal(TimeSpan.FromMinutes(30), result.Checkout.ExpiresAt - createdAt);
+    }
+
+    [Fact]
     public async Task Plan_price_change_affects_future_orders_only_and_is_audited()
     {
         await using var provider = Services().BuildServiceProvider(validateScopes: true);
@@ -293,6 +344,75 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Latest_transaction_uses_subscription_version_when_clock_ties_or_rolls_back(
+        bool rollsBack)
+    {
+        await using var provider = Services().BuildServiceProvider(validateScopes: true);
+        var userId = await SeedUserAsync(
+            provider,
+            rollsBack ? "VIP Clock Rollback" : "VIP Clock Tie");
+        var firstOrder = await CreateOrderAsync(provider, userId, $"vip-clock-first-{rollsBack}");
+        var secondOrder = await CreateOrderAsync(provider, userId, $"vip-clock-second-{rollsBack}");
+        var thirdOrder = await CreateOrderAsync(provider, userId, $"vip-clock-third-{rollsBack}");
+
+        Assert.Equal(
+            SePayWebhookStoreOutcome.Fulfilled,
+            (await IngestAsync(provider, Transaction(
+                $"vip-provider-clock-first-{rollsBack}",
+                firstOrder.OrderCode,
+                firstOrder.AmountVnd))).Outcome);
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var subscription = await context.VipSubscriptions.SingleAsync(candidate =>
+                candidate.UserId == userId);
+            var firstTransaction = await context.VipTransactions.SingleAsync(candidate =>
+                candidate.UserId == userId);
+            var secondFulfilledAt = rollsBack
+                ? firstTransaction.FulfilledAt.AddMilliseconds(-1)
+                : firstTransaction.FulfilledAt;
+            var authoritativeSecondOrder = await context.PaymentOrders.SingleAsync(candidate =>
+                candidate.Id == secondOrder.Id);
+            var extension = subscription.Extend(
+                secondFulfilledAt,
+                VipPlan.FixedDurationHours);
+            authoritativeSecondOrder.FulfillVipPurchase(secondFulfilledAt);
+            context.VipTransactions.Add(VipTransaction.Create(
+                Guid.NewGuid(),
+                authoritativeSecondOrder.Id,
+                userId,
+                VipTransaction.VipPurchaseOrderType,
+                subscription.Version,
+                extension,
+                VipPlan.FixedDurationHours,
+                secondFulfilledAt));
+            await context.SaveChangesAsync();
+        }
+
+        var third = await IngestAsync(provider, Transaction(
+            $"vip-provider-clock-third-{rollsBack}",
+            thirdOrder.OrderCode,
+            thirdOrder.AmountVnd));
+        Assert.Equal(SePayWebhookStoreOutcome.Fulfilled, third.Outcome);
+
+        await using var verificationScope = provider.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var transactions = await verification.VipTransactions
+            .Where(candidate => candidate.UserId == userId)
+            .OrderBy(candidate => candidate.SubscriptionVersion)
+            .ToArrayAsync();
+        Assert.Equal([1L, 2L, 3L], transactions.Select(candidate =>
+            candidate.SubscriptionVersion).ToArray());
+        Assert.Equal(
+            transactions[2].NewExpiry,
+            (await verification.VipSubscriptions.SingleAsync(candidate =>
+                candidate.UserId == userId)).ExpiresAt);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task Expired_or_amount_mismatched_payment_is_reconciled_without_entitlement(
@@ -383,6 +503,52 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
             SePayReconciliationReasons.FulfillmentStateConflict,
             evidence.ReconciliationReason);
         Assert.Empty(await verification.VipTransactions.ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Missing_subscription_history_version_blocks_fulfillment_fail_closed()
+    {
+        await using var provider = Services().BuildServiceProvider(validateScopes: true);
+        var userId = await SeedUserAsync(provider, "VIP Missing History");
+        var firstOrder = await CreateOrderAsync(provider, userId, "vip-history-first");
+        var secondOrder = await CreateOrderAsync(provider, userId, "vip-history-second");
+        Assert.Equal(
+            SePayWebhookStoreOutcome.Fulfilled,
+            (await IngestAsync(provider, Transaction(
+                "vip-provider-history-first",
+                firstOrder.OrderCode,
+                firstOrder.AmountVnd))).Outcome);
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await context.VipSubscriptions
+                .Where(candidate => candidate.UserId == userId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(candidate => candidate.Version, 2));
+        }
+
+        var result = await IngestAsync(provider, Transaction(
+            "vip-provider-history-second",
+            secondOrder.OrderCode,
+            secondOrder.AmountVnd));
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, result.Outcome);
+
+        await using var verificationScope = provider.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(1, await verification.VipTransactions.CountAsync(candidate =>
+            candidate.UserId == userId));
+        Assert.Equal(
+            TopUpOrderStatuses.Pending,
+            (await verification.PaymentOrders.SingleAsync(candidate =>
+                candidate.Id == secondOrder.Id)).OrderStatus);
+        var evidence = await verification.ProviderTransactions.SingleAsync(candidate =>
+            candidate.Id == result.ProviderTransactionId);
+        Assert.Equal(
+            SePayReconciliationReasons.FulfillmentStateConflict,
+            evidence.ReconciliationReason);
+        Assert.Equal(1, await verification.OutboxMessages.CountAsync(message =>
+            message.EventType == MembershipEventTypes.VipMembershipActivated));
     }
 
     [Theory]
@@ -635,6 +801,23 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
 
         private static TaskCompletionSource NewSignal() =>
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    private sealed class SignalingCheckoutObserver : IVipCheckoutCriticalSectionObserver
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        public Task AfterLockAcquiredAsync(
+            Guid userId,
+            string idempotencyKey,
+            CancellationToken cancellationToken)
+        {
+            _entered.TrySetResult();
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class ThrowBeforeCommitObserver :

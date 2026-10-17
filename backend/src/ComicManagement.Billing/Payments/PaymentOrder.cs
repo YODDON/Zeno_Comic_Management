@@ -51,6 +51,8 @@ public sealed class PaymentOrder
     public const int MaximumStatusLength = 32;
     public const int MaximumIdempotencyKeyLength = 200;
     public const int RequestFingerprintLength = 64;
+    public const int VipPurchaseDurationHours = 720;
+    public const int VipPurchaseDiscountPercent = 20;
 
     private PaymentOrder()
     {
@@ -173,14 +175,18 @@ public sealed class PaymentOrder
             throw new ArgumentOutOfRangeException(nameof(amountVnd));
         }
 
-        if (durationHours <= 0)
+        if (durationHours != VipPurchaseDurationHours)
         {
-            throw new ArgumentOutOfRangeException(nameof(durationHours));
+            throw new ArgumentOutOfRangeException(
+                nameof(durationHours),
+                $"VIP purchase duration must be {VipPurchaseDurationHours} hours.");
         }
 
-        if (discountPercent is < 0 or > 100)
+        if (discountPercent != VipPurchaseDiscountPercent)
         {
-            throw new ArgumentOutOfRangeException(nameof(discountPercent));
+            throw new ArgumentOutOfRangeException(
+                nameof(discountPercent),
+                $"VIP purchase discount must be {VipPurchaseDiscountPercent} percent.");
         }
 
         EnsureText(idempotencyKey, MaximumIdempotencyKeyLength, nameof(idempotencyKey));

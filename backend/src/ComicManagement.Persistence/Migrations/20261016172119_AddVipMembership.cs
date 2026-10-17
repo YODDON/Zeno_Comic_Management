@@ -74,6 +74,7 @@ namespace ComicManagement.Persistence.Migrations
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     payment_order_id = table.Column<Guid>(type: "uuid", nullable: false),
                     user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    subscription_version = table.Column<long>(type: "bigint", nullable: false),
                     payment_order_type = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
                     previous_expiry = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     effective_start = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
@@ -87,6 +88,7 @@ namespace ComicManagement.Persistence.Migrations
                     table.PrimaryKey("pk_vip_transactions", x => x.id);
                     table.CheckConstraint("ck_vip_transactions_duration", "duration_hours = 720");
                     table.CheckConstraint("ck_vip_transactions_order_type", "payment_order_type = 'VipPurchase'");
+                    table.CheckConstraint("ck_vip_transactions_subscription_version", "subscription_version >= 1 AND ((subscription_version = 1 AND previous_expiry IS NULL) OR (subscription_version > 1 AND previous_expiry IS NOT NULL))");
                     table.CheckConstraint("ck_vip_transactions_timeline", "effective_start >= fulfilled_at AND new_expiry = effective_start + make_interval(hours => duration_hours) AND created_at = fulfilled_at AND (previous_expiry IS NULL OR effective_start >= previous_expiry)");
                     table.ForeignKey(
                         name: "fk_vip_transactions_payment_order_owner_type",
@@ -172,11 +174,12 @@ namespace ComicManagement.Persistence.Migrations
                 columns: new[] { "payment_order_id", "user_id", "payment_order_type" });
 
             migrationBuilder.CreateIndex(
-                name: "ix_vip_transactions_user_fulfilled_id",
+                name: "ux_vip_transactions_user_subscription_version",
                 schema: "membership",
                 table: "vip_transactions",
-                columns: new[] { "user_id", "fulfilled_at", "id" },
-                descending: new[] { false, true, true });
+                columns: new[] { "user_id", "subscription_version" },
+                unique: true,
+                descending: new[] { false, true });
 
             migrationBuilder.CreateIndex(
                 name: "ux_vip_transactions_payment_order_id",

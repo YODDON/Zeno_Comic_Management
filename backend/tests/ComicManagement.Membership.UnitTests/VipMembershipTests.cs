@@ -83,6 +83,51 @@ public sealed class VipMembershipTests
     }
 
     [Fact]
+    public void Renewal_version_is_monotonic_even_when_clock_moves_back()
+    {
+        var userId = Guid.NewGuid();
+        var (subscription, first) = VipSubscription.Create(
+            userId,
+            FulfilledAt,
+            VipPlan.FixedDurationHours);
+
+        var second = subscription.Extend(
+            FulfilledAt.AddMinutes(-1),
+            VipPlan.FixedDurationHours);
+
+        Assert.Equal(2, subscription.Version);
+        Assert.Equal(first.NewExpiry, second.PreviousExpiry);
+        Assert.Equal(first.NewExpiry, second.EffectiveStart);
+        Assert.Equal(first.NewExpiry.AddHours(720), second.NewExpiry);
+    }
+
+    [Theory]
+    [InlineData("TopUp", 1, 720)]
+    [InlineData("VipPurchase", 0, 720)]
+    [InlineData("VipPurchase", 1, 719)]
+    [InlineData("VipPurchase", 2, 720)]
+    public void Vip_transaction_rejects_invalid_order_policy_or_sequence(
+        string orderType,
+        long subscriptionVersion,
+        int durationHours)
+    {
+        var extension = new VipExtension(
+            PreviousExpiry: null,
+            FulfilledAt,
+            FulfilledAt.AddHours(durationHours));
+
+        Assert.Throws<ArgumentException>(() => VipTransaction.Create(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            orderType,
+            subscriptionVersion,
+            extension,
+            durationHours,
+            FulfilledAt));
+    }
+
+    [Fact]
     public async Task Checkout_rejects_invalid_identifiers_and_keys()
     {
         var store = new StubStore();

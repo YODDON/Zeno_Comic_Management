@@ -20,6 +20,11 @@ internal sealed class VipTransactionConfiguration :
                 "ck_vip_transactions_duration",
                 "duration_hours = 720");
             table.HasCheckConstraint(
+                "ck_vip_transactions_subscription_version",
+                "subscription_version >= 1 AND " +
+                "((subscription_version = 1 AND previous_expiry IS NULL) OR " +
+                "(subscription_version > 1 AND previous_expiry IS NOT NULL))");
+            table.HasCheckConstraint(
                 "ck_vip_transactions_timeline",
                 "effective_start >= fulfilled_at AND " +
                 "new_expiry = effective_start + make_interval(hours => duration_hours) AND " +
@@ -34,11 +39,11 @@ internal sealed class VipTransactionConfiguration :
         builder.HasIndex(transaction => new
         {
             transaction.UserId,
-            transaction.FulfilledAt,
-            transaction.Id,
+            transaction.SubscriptionVersion,
         })
-            .IsDescending(false, true, true)
-            .HasDatabaseName("ix_vip_transactions_user_fulfilled_id");
+            .IsUnique()
+            .IsDescending(false, true)
+            .HasDatabaseName("ux_vip_transactions_user_subscription_version");
 
         builder.Property(transaction => transaction.Id)
             .HasColumnName("id")
@@ -46,6 +51,8 @@ internal sealed class VipTransactionConfiguration :
         builder.Property(transaction => transaction.PaymentOrderId)
             .HasColumnName("payment_order_id");
         builder.Property(transaction => transaction.UserId).HasColumnName("user_id");
+        builder.Property(transaction => transaction.SubscriptionVersion)
+            .HasColumnName("subscription_version");
         builder.Property(transaction => transaction.PaymentOrderType)
             .HasColumnName("payment_order_type")
             .HasMaxLength(VipTransaction.MaximumPaymentOrderTypeLength)

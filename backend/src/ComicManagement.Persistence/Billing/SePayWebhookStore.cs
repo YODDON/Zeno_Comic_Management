@@ -540,6 +540,7 @@ internal sealed class SePayWebhookStore(
             order.Id,
             order.UserId,
             PaymentOrderTypes.VipPurchase,
+            subscription.Version,
             extension,
             durationHours,
             authoritativeNow);
@@ -607,17 +608,47 @@ internal sealed class SePayWebhookStore(
             return false;
         }
 
-        var latest = await dbContext.VipTransactions
+        var history = await dbContext.VipTransactions
             .AsNoTracking()
             .Where(candidate => candidate.UserId == order.UserId)
-            .OrderByDescending(candidate => candidate.FulfilledAt)
-            .ThenByDescending(candidate => candidate.Id)
-            .FirstOrDefaultAsync(cancellationToken);
-        return subscription is null
-            ? latest is null
-            : latest is not null &&
-              latest.NewExpiry == subscription.ExpiresAt &&
-              latest.FulfilledAt == subscription.LastFulfilledAt;
+            .OrderBy(candidate => candidate.SubscriptionVersion)
+            .ToArrayAsync(cancellationToken);
+        if (subscription is null)
+        {
+            return history.Length == 0;
+        }
+
+        if (subscription.Version != history.LongLength || history.Length == 0)
+        {
+            return false;
+        }
+
+        VipTransaction? previous = null;
+        foreach (var transaction in history)
+        {
+            var expectedVersion = previous is null
+                ? 1L
+                : checked(previous.SubscriptionVersion + 1);
+            var expectedStart = previous is null
+                ? transaction.FulfilledAt
+                : previous.NewExpiry > transaction.FulfilledAt
+                    ? previous.NewExpiry
+                    : transaction.FulfilledAt;
+            if (transaction.SubscriptionVersion != expectedVersion ||
+                transaction.PreviousExpiry != previous?.NewExpiry ||
+                transaction.EffectiveStart != expectedStart ||
+                transaction.NewExpiry != expectedStart.AddHours(transaction.DurationHours))
+            {
+                return false;
+            }
+
+            previous = transaction;
+        }
+
+        return previous is not null &&
+               previous.SubscriptionVersion == subscription.Version &&
+               previous.NewExpiry == subscription.ExpiresAt &&
+               previous.FulfilledAt == subscription.LastFulfilledAt;
     }
 
     private async Task AcquireVipSubscriptionLockAsync(
