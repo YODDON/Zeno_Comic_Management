@@ -9,6 +9,8 @@ C04 exposes only the anonymous catalog baseline (`Free` for zero effective price
 
 R01 provides one batched access projection boundary for the C04 Chapter page and rechecks Comic/Chapter publication plus Ready positive-dimension pages in the standalone access/manifest paths. It implements the precedence for Free, active-VIP and durable-unlock signals, while the production VIP and unlock signal sources remain owned by V01 and U02. Missing signals fail closed to Locked rather than granting access.
 
+U01 applies the fixed active-VIP 20% round-up discount to other Locked chapters and persists five-minute `chapter_unlock_quotes`. Quote creation is limited to 10 requests/minute/authenticated User. A quote is created only for a currently public/valid Locked Chapter, derives its canonical SHA-256 revision from the Chapter, policy revision, base/final price and VIP discount, snapshots the Bonus-before-Paid balance estimate, and never grants access or mutates Wallet. A quote cannot be updated; once expired it remains for audit/replay and may be deleted only after a 30-day retention period when unreferenced. U01 adds no scheduled cleanup worker. Free, VipIncluded and CoinUnlocked chapters bypass quote creation. Durable CoinUnlocked state and restrictive protection for a consumed quote remain U02-owned and therefore still fail closed until U02 lands.
+
 ## Qualification
 An authenticated User may create a session only after the R01 access predicate confirms that the Comic and Chapter are Published, at least one positive-dimension `Ready` page exists, and the User is entitled to read. The server creates `started_at`; `expires_at` is the non-sliding value `started_at + 30 minutes`.
 

@@ -7,6 +7,8 @@ namespace ComicManagement.Api.Reading;
 internal static class ReadingRateLimitConstants
 {
     internal const string ProgressPolicy = "reading-progress";
+
+    internal const string UnlockQuoteCreatePolicy = "reading-unlock-quote-create";
 }
 
 internal static class ReadingRateLimitServiceCollectionExtensions
@@ -28,17 +30,31 @@ internal static class ReadingRateLimitServiceCollectionExtensions
                 "Reading:ProgressRateLimit:PermitLimit must be between 1 and 1000.");
         }
 
-        services.AddRateLimiter(options => options.AddPolicy(
-            ReadingRateLimitConstants.ProgressPolicy,
-            httpContext => RateLimitPartition.GetFixedWindowLimiter(
-                GetPartitionKey(httpContext),
-                _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = permitLimit,
-                    Window = TimeSpan.FromMinutes(1),
-                    QueueLimit = 0,
-                    AutoReplenishment = true,
-                })));
+        services.AddRateLimiter(options =>
+        {
+            options.AddPolicy(
+                ReadingRateLimitConstants.ProgressPolicy,
+                httpContext => RateLimitPartition.GetFixedWindowLimiter(
+                    GetPartitionKey(httpContext),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = permitLimit,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true,
+                    }));
+            options.AddPolicy(
+                ReadingRateLimitConstants.UnlockQuoteCreatePolicy,
+                httpContext => RateLimitPartition.GetFixedWindowLimiter(
+                    GetPartitionKey(httpContext),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true,
+                    }));
+        });
 
         return services;
     }

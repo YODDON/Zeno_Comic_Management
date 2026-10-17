@@ -14,7 +14,7 @@
 | User | GET | `/api/v1/library/following` | Reading (R03 implemented) |
 | User | PUT/DELETE | `/api/v1/comics/{id}/follow` | Reading (R03 implemented) |
 | User | GET | `/api/v1/comics/{id}/follow-status` | Reading (R03 implemented) |
-| User | POST | `/api/v1/chapters/{id}/unlock-quotes`, `/api/v1/chapters/{id}/unlock` | Wallet/Workflows |
+| User | POST | `/api/v1/chapters/{id}/unlock-quotes`, `/api/v1/chapters/{id}/unlock` | Reading (U01 quote); Wallet/Workflows (U02 unlock) |
 | User | GET | `/api/v1/wallet`, `/api/v1/wallet/entries` | Wallet |
 | User | POST | `/api/v1/billing/topups` | Billing |
 | User | GET | `/api/v1/billing/orders/{id}` | Billing |

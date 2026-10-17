@@ -4,6 +4,7 @@ using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Taxonomy;
 using ComicManagement.Identity.Users;
 using ComicManagement.Reading.Sessions;
+using ComicManagement.Reading.Unlocks;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Spending;
@@ -49,6 +50,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<ReadingSession> ReadingSessions => Set<ReadingSession>();
 
     internal DbSet<ReadingProgress> ReadingProgress => Set<ReadingProgress>();
+
+    internal DbSet<ChapterUnlockQuote> ChapterUnlockQuotes => Set<ChapterUnlockQuote>();
 
     internal DbSet<WalletAccount> Wallets => Set<WalletAccount>();
 
@@ -118,6 +121,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
             throw new InvalidOperationException("VIP transactions are append-only.");
+        }
+
+        if (ChangeTracker.Entries<ChapterUnlockQuote>().Any(entry =>
+                entry.State == EntityState.Modified))
+        {
+            throw new InvalidOperationException("Chapter unlock quotes are immutable.");
         }
     }
 

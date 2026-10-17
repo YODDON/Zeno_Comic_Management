@@ -18,6 +18,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
     private const string InitialMigration = "20261011120000_InitialSchemas";
     private const string PreV01Migration = "20261016073318_AddTopUpFulfillment";
     private const string V01Migration = "20261016172119_AddVipMembership";
+    private const string U01Migration = "20261017082258_AddChapterUnlockQuotes";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -41,6 +42,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261015185709_AddSePayWebhookIngestion",
         "20261016073318_AddTopUpFulfillment",
         "20261016172119_AddVipMembership",
+        U01Migration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -88,6 +90,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "catalog.chapter_pages"));
         Assert.True(await TableExists(context, "administration.audit_logs"));
         Assert.True(await TableExists(context, "reading.reading_sessions"));
+        Assert.True(await TableExists(context, "reading.chapter_unlock_quotes"));
         Assert.True(await TableExists(context, "reading.reading_progress"));
         Assert.True(await TableExists(context, "wallet.wallets"));
         Assert.True(await TableExists(context, "wallet.paid_coin_lots"));
@@ -671,6 +674,151 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             .SingleAsync());
     }
 
+    [Fact]
+    public async Task U01_upgrade_preserves_existing_catalog_and_identity_data()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(V01Migration);
+
+        var now = new DateTimeOffset(2026, 10, 17, 7, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "U01 Upgrade User",
+            null,
+            null,
+            now));
+        var comic = Comic.Create(
+            comicId,
+            $"u01-upgrade-{comicId:N}",
+            "U01 Upgrade",
+            string.Empty,
+            ComicSeriesStatuses.Ongoing,
+            null,
+            100,
+            false,
+            now);
+        var chapter = Chapter.Create(
+            chapterId,
+            comicId,
+            "Chapter 1",
+            1,
+            null,
+            null,
+            now);
+        var page = ChapterPage.CreatePending(
+            Guid.NewGuid(),
+            chapterId,
+            1,
+            $"u01-upgrade/{chapterId:N}/1",
+            $"sha256:{new string('a', 64)}",
+            now);
+        page.MarkReady(1200, 1800);
+        chapter.Publish(true, 1, now.AddMinutes(1));
+        comic.Publish(true, 1, now.AddMinutes(2));
+        context.Comics.Add(comic);
+        context.Chapters.Add(chapter);
+        context.ChapterPages.Add(page);
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(U01Migration);
+        context.ChangeTracker.Clear();
+
+        Assert.True(await context.Users.AnyAsync(candidate => candidate.Id == userId));
+        Assert.True(await context.Comics.AnyAsync(candidate => candidate.Id == comicId));
+        Assert.True(await context.Chapters.AnyAsync(candidate => candidate.Id == chapterId));
+        Assert.Empty(await context.ChapterUnlockQuotes.ToArrayAsync());
+        foreach (var constraint in new[]
+                 {
+                     "ck_chapter_unlock_quotes_price",
+                     "ck_chapter_unlock_quotes_estimate",
+                     "ck_chapter_unlock_quotes_expiry",
+                     "ck_chapter_unlock_quotes_revision",
+                     "fk_chapter_unlock_quotes_users",
+                     "fk_chapter_unlock_quotes_chapters",
+                 })
+        {
+            Assert.True(await ConstraintIsValidated(
+                context,
+                "reading",
+                "chapter_unlock_quotes",
+                constraint));
+        }
+
+        Assert.Equal(
+            ["user_id", "expires_at"],
+            await IndexColumns(
+                context,
+                "reading",
+                "ix_chapter_unlock_quotes_user_expiry"));
+        Assert.Equal(
+            ["chapter_id", "expires_at"],
+            await IndexColumns(
+                context,
+                "reading",
+                "ix_chapter_unlock_quotes_chapter_expiry"));
+        Assert.True(await TriggerExists(
+            context,
+            "reading",
+            "chapter_unlock_quotes",
+            "chapter_unlock_quotes_lifecycle"));
+    }
+
+    [Fact]
+    public async Task U01_migration_failure_rolls_back_without_partial_schema_or_data_loss()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(V01Migration);
+
+        var userId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "U01 Rollback User",
+            null,
+            null,
+            new DateTimeOffset(2026, 10, 17, 7, 30, 0, TimeSpan.Zero)));
+        await context.SaveChangesAsync();
+        await context.Database.ExecuteSqlRawAsync(
+            """
+            CREATE FUNCTION reading.enforce_chapter_unlock_quote_lifecycle()
+            RETURNS trigger
+            LANGUAGE plpgsql
+            AS $function$
+            BEGIN
+                RETURN OLD;
+            END;
+            $function$;
+            """);
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+            migrator.MigrateAsync(U01Migration));
+        Assert.Equal("42723", exception.SqlState);
+
+        Assert.False(await TableExists(context, "reading.chapter_unlock_quotes"));
+        Assert.True(await context.Users.AsNoTracking().AnyAsync(user => user.Id == userId));
+        Assert.False(await context.Database.SqlQueryRaw<bool>(
+                "SELECT EXISTS (SELECT 1 FROM infrastructure.__ef_migrations_history " +
+                $"WHERE \"MigrationId\" = '{U01Migration}') AS \"Value\"")
+            .SingleAsync());
+
+        await context.Database.ExecuteSqlRawAsync(
+            "DROP FUNCTION reading.enforce_chapter_unlock_quote_lifecycle();");
+        await migrator.MigrateAsync(U01Migration);
+        Assert.True(await TableExists(context, "reading.chapter_unlock_quotes"));
+    }
+
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)
     {
         var connection = context.Database.GetDbConnection();
@@ -814,6 +962,55 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 
         return (bool)(await command.ExecuteScalarAsync()
             ?? throw new InvalidOperationException("Index existence query returned null."));
+    }
+
+    private static async Task<string[]> IndexColumns(
+        AppDbContext context,
+        string schemaName,
+        string indexName)
+    {
+        var connection = context.Database.GetDbConnection();
+        await context.Database.OpenConnectionAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT attribute.attname
+            FROM pg_class index_class
+            JOIN pg_namespace index_namespace
+              ON index_namespace.oid = index_class.relnamespace
+            JOIN pg_index index_metadata
+              ON index_metadata.indexrelid = index_class.oid
+            JOIN unnest(index_metadata.indkey) WITH ORDINALITY
+              AS key_columns(attribute_number, position)
+              ON TRUE
+            JOIN pg_attribute attribute
+              ON attribute.attrelid = index_metadata.indrelid
+             AND attribute.attnum = key_columns.attribute_number
+            WHERE index_namespace.nspname = @schema_name
+              AND index_class.relname = @index_name
+            ORDER BY key_columns.position;
+            """;
+        foreach (var (name, value) in new[]
+                 {
+                     ("schema_name", schemaName),
+                     ("index_name", indexName),
+                 })
+        {
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = name;
+            parameter.Value = value;
+            command.Parameters.Add(parameter);
+        }
+
+        var columns = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        return columns.ToArray();
     }
 
     private static async Task<bool> TriggerExists(

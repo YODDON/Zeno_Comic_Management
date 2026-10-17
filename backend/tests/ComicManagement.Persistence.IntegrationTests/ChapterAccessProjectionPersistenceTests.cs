@@ -1,17 +1,22 @@
 using System.Data.Common;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
+using ComicManagement.Billing.Payments;
 using ComicManagement.Persistence;
 using ComicManagement.Reading.Access;
+using ComicManagement.Reading.Unlocks;
 using ComicManagement.Shared.Time;
 using ComicManagement.Identity.Users;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Membership.Subscriptions;
+using ComicManagement.Wallet.Lots;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using Testcontainers.PostgreSql;
 using Xunit;
+using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 
 namespace ComicManagement.Persistence.IntegrationTests;
 
@@ -297,6 +302,267 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
         var expired = await expiredHandler.GetAccessAsync(chapterId, userId);
         Assert.Equal(ChapterAccessTypes.Locked, expired.Access!.AccessType);
         Assert.False(expired.Access.CanRead);
+    }
+
+    [Fact]
+    public async Task Unlock_quote_persists_five_minute_vip_price_and_wallet_estimate()
+    {
+        var userId = Guid.NewGuid();
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        await using (var seedScope = _services.CreateAsyncScope())
+        {
+            var context = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.Users.Add(User.CreateFromGoogle(
+                userId,
+                "U01 Quote Reader",
+                null,
+                null,
+                now));
+            var comic = Comic.Create(
+                comicId,
+                $"u01-quote-{comicId:N}",
+                "U01 Quote",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                101,
+                false,
+                now);
+            AddPublishedChapter(context, comicId, chapterId, 1, null, null);
+            comic.Publish(true, 1, now.AddSeconds(2));
+            context.Comics.Add(comic);
+            var wallet = WalletAccount.Create(userId, now);
+            wallet.CreditBonus(30, now.AddSeconds(1));
+            wallet.CreditPaid(1_000, now.AddSeconds(2));
+            context.Wallets.Add(wallet);
+            var topUpOrderId = Guid.NewGuid();
+            var topUpOrder = PaymentOrder.CreateTopUp(
+                topUpOrderId,
+                userId,
+                $"TOPUP-{topUpOrderId:N}",
+                10_000,
+                1_000,
+                $"u01-quote-{topUpOrderId:N}",
+                new string('a', PaymentOrder.RequestFingerprintLength),
+                now,
+                now.AddMinutes(30));
+            topUpOrder.FulfillTopUp(now.AddSeconds(2));
+            context.PaymentOrders.Add(topUpOrder);
+            context.PaidCoinLots.Add(PaidCoinLot.Create(
+                Guid.NewGuid(),
+                userId,
+                topUpOrderId,
+                1_000,
+                now.AddSeconds(2)));
+            var (subscription, _) = VipSubscription.Create(
+                userId,
+                now,
+                VipPlan.FixedDurationHours);
+            context.VipSubscriptions.Add(subscription);
+            await context.SaveChangesAsync();
+        }
+
+        ChapterUnlockQuoteState quote;
+        await using (var quoteScope = _services.CreateAsyncScope())
+        {
+            var result = await quoteScope.ServiceProvider
+                .GetRequiredService<ChapterUnlockQuoteHandler>()
+                .CreateAsync(userId, chapterId);
+            Assert.Equal(ChapterUnlockQuoteOutcome.Succeeded, result.Outcome);
+            quote = Assert.IsType<ChapterUnlockQuoteState>(result.Quote);
+        }
+
+        Assert.Equal(101, quote.BasePriceCoins);
+        Assert.True(quote.VipDiscountApplied);
+        Assert.Equal(81, quote.FinalPriceCoins);
+        Assert.Equal(30, quote.BonusToSpend);
+        Assert.Equal(51, quote.PaidToSpend);
+
+        await using var verificationScope = _services.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persisted = await verification.ChapterUnlockQuotes
+            .AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == quote.QuoteId);
+        Assert.Equal(persisted.CreatedAt.AddMinutes(5), persisted.ExpiresAt);
+        Assert.Equal(quote.PriceRevision, persisted.PriceRevision);
+        var walletAfter = await verification.Wallets.AsNoTracking().SingleAsync(candidate =>
+            candidate.UserId == userId);
+        Assert.Equal(30, walletAfter.BonusAvailable);
+        Assert.Equal(1_000, walletAfter.PaidAvailable);
+
+        async Task AssertRejectedAsync(
+            string expectedConstraint,
+            FormattableString command)
+        {
+            var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+                verification.Database.ExecuteSqlInterpolatedAsync(command));
+            Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+            Assert.Equal(expectedConstraint, exception.ConstraintName);
+        }
+
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_price",
+            $"""
+                INSERT INTO reading.chapter_unlock_quotes
+                    (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                     vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                     price_revision, expires_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {userId}, {chapterId}, {101L}, {true}, {20}, {80L},
+                     {30L}, {50L}, {new string('a', 64)},
+                     {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
+                """);
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_estimate",
+            $"""
+                INSERT INTO reading.chapter_unlock_quotes
+                    (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                     vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                     price_revision, expires_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                     {80L}, {30L}, {new string('a', 64)},
+                     {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
+                """);
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_expiry",
+            $"""
+                INSERT INTO reading.chapter_unlock_quotes
+                    (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                     vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                     price_revision, expires_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                     {30L}, {50L}, {new string('a', 64)},
+                     {persisted.CreatedAt.AddMinutes(4)}, {persisted.CreatedAt});
+                """);
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_revision",
+            $"""
+                INSERT INTO reading.chapter_unlock_quotes
+                    (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                     vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                     price_revision, expires_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                     {30L}, {50L}, {new string('z', 64)},
+                     {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
+                """);
+
+        async Task AssertForeignKeyRejectedAsync(
+            string expectedConstraint,
+            Guid candidateUserId,
+            Guid candidateChapterId)
+        {
+            var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+                verification.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO reading.chapter_unlock_quotes
+                        (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                         vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                         price_revision, expires_at, created_at)
+                    VALUES
+                        ({Guid.NewGuid()}, {candidateUserId}, {candidateChapterId},
+                         {100L}, {false}, {0}, {100L}, {30L}, {50L},
+                         {new string('a', 64)},
+                         {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
+                    """));
+            Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, exception.SqlState);
+            Assert.Equal(expectedConstraint, exception.ConstraintName);
+        }
+
+        await AssertForeignKeyRejectedAsync(
+            "fk_chapter_unlock_quotes_users",
+            Guid.NewGuid(),
+            chapterId);
+        await AssertForeignKeyRejectedAsync(
+            "fk_chapter_unlock_quotes_chapters",
+            userId,
+            Guid.NewGuid());
+
+        var mutation = await Assert.ThrowsAsync<PostgresException>(() =>
+            verification.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE reading.chapter_unlock_quotes
+                SET price_revision = {new string('b', 64)}
+                WHERE id = {quote.QuoteId};
+                """));
+        Assert.Equal("23000", mutation.SqlState);
+        Assert.Contains("immutable", mutation.MessageText, StringComparison.OrdinalIgnoreCase);
+
+        var earlyDelete = await Assert.ThrowsAsync<PostgresException>(() =>
+            verification.Database.ExecuteSqlInterpolatedAsync($"""
+                DELETE FROM reading.chapter_unlock_quotes WHERE id = {quote.QuoteId};
+                """));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, earlyDelete.SqlState);
+        Assert.Contains(
+            "retention window",
+            earlyDelete.MessageText,
+            StringComparison.OrdinalIgnoreCase);
+
+        var oldQuoteId = Guid.NewGuid();
+        var oldCreatedAt = DateTimeOffset.UtcNow.AddDays(-31);
+        await verification.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO reading.chapter_unlock_quotes
+                (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                 vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                 price_revision, expires_at, created_at)
+            VALUES
+                ({oldQuoteId}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                 {30L}, {50L}, {new string('a', 64)},
+                 {oldCreatedAt.AddMinutes(5)}, {oldCreatedAt});
+            """);
+        Assert.Equal(
+            1,
+            await verification.Database.ExecuteSqlInterpolatedAsync($"""
+                DELETE FROM reading.chapter_unlock_quotes WHERE id = {oldQuoteId};
+                """));
+    }
+
+    [Fact]
+    public async Task Hidden_or_free_chapter_does_not_persist_unlock_quote()
+    {
+        var userId = Guid.NewGuid();
+        var comicId = Guid.NewGuid();
+        var freeChapterId = Guid.NewGuid();
+        var hiddenChapterId = Guid.NewGuid();
+        await using (var seedScope = _services.CreateAsyncScope())
+        {
+            var context = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.Users.Add(User.CreateFromGoogle(
+                userId,
+                "U01 Quote Guard",
+                null,
+                null,
+                Now));
+            var comic = Comic.Create(
+                comicId,
+                $"u01-guard-{comicId:N}",
+                "U01 Guard",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                100,
+                false,
+                Now);
+            AddPublishedChapter(context, comicId, freeChapterId, 1, 0, false);
+            var hidden = AddPublishedChapter(context, comicId, hiddenChapterId, 2, 100, false);
+            hidden.Hide(canHide: true, expectedVersion: 2, Now.AddMinutes(3));
+            comic.Publish(true, 1, Now.AddMinutes(4));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        await using var quoteScope = _services.CreateAsyncScope();
+        var handler = quoteScope.ServiceProvider.GetRequiredService<ChapterUnlockQuoteHandler>();
+        Assert.Equal(
+            ChapterUnlockQuoteOutcome.UnlockNotRequired,
+            (await handler.CreateAsync(userId, freeChapterId)).Outcome);
+        Assert.Equal(
+            ChapterUnlockQuoteOutcome.NotFound,
+            (await handler.CreateAsync(userId, hiddenChapterId)).Outcome);
+        Assert.Empty(await quoteScope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .ChapterUnlockQuotes.ToArrayAsync());
     }
 
     [Theory]

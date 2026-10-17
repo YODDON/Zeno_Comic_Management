@@ -1017,12 +1017,12 @@ namespace ComicManagement.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_vip_transactions_payment_order_id");
 
-                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType");
-
                     b.HasIndex("UserId", "SubscriptionVersion")
                         .IsUnique()
                         .IsDescending(false, true)
                         .HasDatabaseName("ux_vip_transactions_user_subscription_version");
+
+                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType");
 
                     b.ToTable("vip_transactions", "membership", t =>
                         {
@@ -1351,6 +1351,80 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_reading_sessions_status", "status IN ('Active', 'Qualified')");
 
                             t.HasCheckConstraint("ck_reading_sessions_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Reading.Unlocks.ChapterUnlockQuote", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("BasePriceCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("base_price_coins");
+
+                    b.Property<long>("BonusToSpend")
+                        .HasColumnType("bigint")
+                        .HasColumnName("bonus_to_spend");
+
+                    b.Property<Guid>("ChapterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("chapter_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<long>("FinalPriceCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("final_price_coins");
+
+                    b.Property<long>("PaidToSpend")
+                        .HasColumnType("bigint")
+                        .HasColumnName("paid_to_spend");
+
+                    b.Property<string>("PriceRevision")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("price_revision")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<bool>("VipDiscountApplied")
+                        .HasColumnType("boolean")
+                        .HasColumnName("vip_discount_applied");
+
+                    b.Property<int>("VipDiscountPercent")
+                        .HasColumnType("integer")
+                        .HasColumnName("vip_discount_percent");
+
+                    b.HasKey("Id")
+                        .HasName("pk_chapter_unlock_quotes");
+
+                    b.HasIndex("ChapterId", "ExpiresAt")
+                        .HasDatabaseName("ix_chapter_unlock_quotes_chapter_expiry");
+
+                    b.HasIndex("UserId", "ExpiresAt")
+                        .HasDatabaseName("ix_chapter_unlock_quotes_user_expiry");
+
+                    b.ToTable("chapter_unlock_quotes", "reading", t =>
+                        {
+                            t.HasCheckConstraint("ck_chapter_unlock_quotes_estimate", "bonus_to_spend >= 0 AND paid_to_spend >= 0 AND bonus_to_spend::numeric + paid_to_spend::numeric <= final_price_coins::numeric");
+
+                            t.HasCheckConstraint("ck_chapter_unlock_quotes_expiry", "expires_at = created_at + interval '5 minutes'");
+
+                            t.HasCheckConstraint("ck_chapter_unlock_quotes_price", "base_price_coins > 0 AND final_price_coins > 0 AND ((vip_discount_applied AND vip_discount_percent = 20 AND final_price_coins = CEIL(base_price_coins::numeric * 80 / 100)::bigint) OR (NOT vip_discount_applied AND vip_discount_percent = 0 AND final_price_coins = base_price_coins))");
+
+                            t.HasCheckConstraint("ck_chapter_unlock_quotes_revision", "price_revision ~ '^[0-9a-f]{64}$'");
                         });
                 });
 
@@ -1875,6 +1949,23 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_reading_sessions_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Reading.Unlocks.ChapterUnlockQuote", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Chapters.Chapter", null)
+                        .WithMany()
+                        .HasForeignKey("ChapterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_chapter_unlock_quotes_chapters");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_chapter_unlock_quotes_users");
                 });
 
             modelBuilder.Entity("ComicManagement.Wallet.Accounts.Wallet", b =>
