@@ -2,6 +2,7 @@ using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Billing;
 using ComicManagement.Api.OpenApi;
 using ComicManagement.Api.Reading;
+using ComicManagement.Api.Membership;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
@@ -9,6 +10,7 @@ using ComicManagement.Shared.Identity;
 using ComicManagement.Workflows.Reading;
 using ComicManagement.Workflows.Billing;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Membership.Memberships;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.HttpOverrides;
 using System.Net;
@@ -41,6 +43,17 @@ builder.Services.AddSingleton(serviceProvider =>
 {
     var options = serviceProvider.GetRequiredService<IOptions<TopUpOrderOptions>>().Value;
     return new TopUpOrderPolicy(TimeSpan.FromMinutes(options.TopUpOrderTtlMinutes));
+});
+builder.Services.AddOptions<VipOrderOptions>()
+    .Bind(builder.Configuration.GetSection(VipOrderOptions.SectionName))
+    .Validate(
+        options => options.VipOrderTtlMinutes > 0,
+        "Membership:VipOrderTtlMinutes must be greater than zero.")
+    .ValidateOnStart();
+builder.Services.AddSingleton(serviceProvider =>
+{
+    var options = serviceProvider.GetRequiredService<IOptions<VipOrderOptions>>().Value;
+    return new VipOrderPolicy(TimeSpan.FromMinutes(options.VipOrderTtlMinutes));
 });
 builder.Services.AddOptions<SePayWebhookOptions>()
     .Bind(builder.Configuration.GetSection(SePayWebhookOptions.SectionName))
@@ -101,6 +114,7 @@ builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddIdentityAuthentication(authenticationSettings);
 builder.Services.AddReadingRateLimiting(builder.Configuration);
 builder.Services.AddBillingRateLimiting();
+builder.Services.AddMembershipRateLimiting();
 builder.Services.Configure<OutboxOptions>(
     builder.Configuration.GetSection(OutboxOptions.SectionName));
 builder.Services.AddOutboxWorker();

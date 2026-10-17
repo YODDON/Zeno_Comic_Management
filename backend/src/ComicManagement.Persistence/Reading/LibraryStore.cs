@@ -150,7 +150,9 @@ internal sealed class LibraryStore(
             .ToListAsync(cancellationToken);
 
         var chapterIds = rows.Select(row => row.Chapter.Id).ToArray();
-        var accessByChapterId = await ChapterAccessQuery.PublicReadableChapters(dbContext)
+        var accessByChapterId = await ChapterAccessQuery.PublicReadableChapters(
+                dbContext,
+                userId)
             .Where(row => chapterIds.Contains(row.ChapterId))
             .ToDictionaryAsync(
                 row => row.ChapterId,

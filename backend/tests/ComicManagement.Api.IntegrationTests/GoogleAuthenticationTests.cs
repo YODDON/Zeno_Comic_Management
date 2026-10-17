@@ -22,6 +22,8 @@ using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Events;
+using ComicManagement.Membership.Memberships;
+using ComicManagement.Membership.Plans;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
@@ -174,6 +176,281 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.Equal(
             TimeSpan.FromMinutes(45),
             scope.ServiceProvider.GetRequiredService<TopUpOrderPolicy>().TimeToLive);
+    }
+
+    [Fact]
+    public async Task Production_composition_registers_membership_and_defaults_vip_ttl()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<VipMembershipHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IVipMembershipStore>());
+        Assert.Equal(
+            TimeSpan.FromMinutes(30),
+            scope.ServiceProvider.GetRequiredService<VipOrderPolicy>().TimeToLive);
+    }
+
+    [Fact]
+    public void Production_composition_fails_fast_for_non_positive_vip_ttl()
+    {
+        using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            vipOrderTtlMinutes: 0);
+
+        Assert.Throws<OptionsValidationException>(() => factory.CreateClient());
+    }
+
+    [Fact]
+    public async Task Vip_checkout_requires_authentication_csrf_and_permanent_idempotency()
+    {
+        using var anonymousClient = CreateClient();
+        using var anonymous = VipCheckoutRequest("vip-anonymous");
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymousClient.SendAsync(anonymous)).StatusCode);
+
+        _factory.TokenEndpoint.SetProfile(
+            $"vip-checkout-{Guid.NewGuid():N}",
+            "VIP Checkout User",
+            null,
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/vip"));
+
+        var planResponse = await client.GetAsync("/api/v1/membership/plan");
+        Assert.Equal(HttpStatusCode.OK, planResponse.StatusCode);
+        var plan = await planResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(VipPlan.InitialPlanId, plan.GetProperty("planId").GetGuid());
+        Assert.Equal(29_000, plan.GetProperty("priceVnd").GetInt64());
+        Assert.Equal(720, plan.GetProperty("durationHours").GetInt32());
+        Assert.Equal(20, plan.GetProperty("discountPercent").GetInt32());
+
+        var me = await client.GetAsync("/api/v1/membership/me");
+        var membership = await me.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.False(membership.GetProperty("isActive").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, membership.GetProperty("expiresAt").ValueKind);
+
+        using var missingCsrf = VipCheckoutRequest("vip-missing-csrf");
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(missingCsrf),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        var profile = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(profile.Headers.GetValues("X-CSRF-TOKEN"));
+
+        using var missingHeader = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/membership/checkout")
+        {
+            Content = JsonContent.Create(new { planId = VipPlan.InitialPlanId }),
+        };
+        missingHeader.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(missingHeader),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var emptyHeader = VipCheckoutRequest(string.Empty, csrfToken);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(emptyHeader),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var longHeader = VipCheckoutRequest(
+            new string('x', PaymentOrder.MaximumIdempotencyKeyLength + 1),
+            csrfToken);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(longHeader),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var firstRequest = VipCheckoutRequest("vip-idempotency", csrfToken);
+        var firstResponse = await client.SendAsync(firstRequest);
+        Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+        var first = await firstResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(29_000, first.GetProperty("amountVnd").GetInt64());
+        Assert.Equal(720, first.GetProperty("durationHours").GetInt32());
+        Assert.Equal("Pending", first.GetProperty("status").GetString());
+
+        using var replayRequest = VipCheckoutRequest("vip-idempotency", csrfToken);
+        var replayResponse = await client.SendAsync(replayRequest);
+        var replay = await replayResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(first.GetProperty("orderId").GetGuid(), replay.GetProperty("orderId").GetGuid());
+
+        using var conflictRequest = VipCheckoutRequest(
+            "vip-idempotency",
+            csrfToken,
+            Guid.NewGuid());
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(conflictRequest),
+            HttpStatusCode.Conflict,
+            "IDEMPOTENCY_CONFLICT");
+
+        var clientExpiry = DateTimeOffset.UtcNow.AddYears(1);
+        using var overrideRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/membership/checkout")
+        {
+            Content = JsonContent.Create(new
+            {
+                planId = VipPlan.InitialPlanId,
+                expiresAt = clientExpiry,
+            }),
+        };
+        overrideRequest.Headers.Add("Idempotency-Key", "vip-server-owned-expiry");
+        overrideRequest.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        var overrideResponse = await client.SendAsync(overrideRequest);
+        Assert.Equal(HttpStatusCode.Created, overrideResponse.StatusCode);
+        var overrideBody = await overrideResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.NotEqual(
+            clientExpiry,
+            overrideBody.GetProperty("expiresAt").GetDateTimeOffset());
+
+        await using (var expiryScope = _factory.Services.CreateAsyncScope())
+        {
+            var expiryContext = expiryScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var expiredAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            await expiryContext.PaymentOrders
+                .Where(order => order.Id == first.GetProperty("orderId").GetGuid())
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(order => order.CreatedAt, expiredAt.AddMinutes(-30))
+                    .SetProperty(order => order.ExpiresAt, expiredAt));
+        }
+
+        using var expiredReplayRequest = VipCheckoutRequest(
+            "vip-idempotency",
+            csrfToken);
+        var expiredReplayResponse = await client.SendAsync(expiredReplayRequest);
+        Assert.Equal(HttpStatusCode.Created, expiredReplayResponse.StatusCode);
+        var expiredReplay = await expiredReplayResponse.Content
+            .ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Expired", expiredReplay.GetProperty("status").GetString());
+        Assert.Equal(
+            first.GetProperty("orderId").GetGuid(),
+            expiredReplay.GetProperty("orderId").GetGuid());
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var order = await context.PaymentOrders.SingleAsync(candidate =>
+            candidate.Id == first.GetProperty("orderId").GetGuid());
+        Assert.Equal(order.CreatedAt.AddMinutes(30), order.ExpiresAt);
+        Assert.Equal(VipPlan.InitialPlanId, order.VipPlanId);
+        Assert.Equal(20, order.VipDiscountPercentSnapshot);
+        Assert.Equal(TopUpOrderStatuses.Expired, order.OrderStatus);
+        Assert.NotNull(order.ExpiredAt);
+    }
+
+    [Fact]
+    public async Task Vip_checkout_is_limited_to_ten_requests_per_minute_per_user()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
+        factory.TokenEndpoint.SetProfile(
+            $"vip-rate-{Guid.NewGuid():N}",
+            "VIP Rate User",
+            null,
+            null);
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/vip", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        for (var attempt = 1; attempt <= 10; attempt++)
+        {
+            using var request = VipCheckoutRequest($"vip-rate-{attempt}", csrfToken);
+            Assert.Equal(HttpStatusCode.Created, (await client.SendAsync(request)).StatusCode);
+        }
+
+        using var rejectedRequest = VipCheckoutRequest("vip-rate-11", csrfToken);
+        var rejected = await client.SendAsync(rejectedRequest);
+        await AssertStandardizedErrorAsync(
+            rejected,
+            HttpStatusCode.TooManyRequests,
+            "RATE_LIMITED");
+        Assert.True(rejected.Headers.RetryAfter is not null ||
+                    rejected.Headers.TryGetValues("Retry-After", out _));
+    }
+
+    [Fact]
+    public async Task Vip_plan_price_update_requires_admin_csrf_and_preserves_existing_snapshot()
+    {
+        const string subject = "google-subject-v01-admin";
+        _factory.TokenEndpoint.SetProfile(subject, "VIP Admin", null, null);
+        using var userClient = CreateClient();
+        await CompleteLoginAsync(userClient, await BeginLoginAsync(userClient, "/vip"));
+        var userProfile = await userClient.GetAsync("/api/v1/me");
+        var userCsrf = Assert.Single(userProfile.Headers.GetValues("X-CSRF-TOKEN"));
+        using var oldCheckout = VipCheckoutRequest("vip-old-price", userCsrf);
+        var oldResponse = await userClient.SendAsync(oldCheckout);
+        var oldOrder = await oldResponse.Content.ReadFromJsonAsync<JsonElement>();
+
+        using var forbiddenPatch = new HttpRequestMessage(
+            HttpMethod.Patch,
+            "/api/v1/admin/vip-plan")
+        {
+            Content = JsonContent.Create(new { priceVnd = 35_000, expectedVersion = 1 }),
+        };
+        forbiddenPatch.Headers.Add("X-CSRF-TOKEN", userCsrf);
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            (await userClient.SendAsync(forbiddenPatch)).StatusCode);
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await context.Users
+                .Where(user => context.GoogleIdentities.Any(identity =>
+                    identity.UserId == user.Id && identity.GoogleSubject == subject))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(user => user.Role, IdentityRoles.Admin)
+                    .SetProperty(user => user.UpdatedAt, DateTimeOffset.UtcNow)
+                    .SetProperty(user => user.Version, user => user.Version + 1));
+        }
+
+        using var adminClient = CreateClient();
+        await CompleteLoginAsync(adminClient, await BeginLoginAsync(adminClient, "/admin/vip"));
+        var adminProfile = await adminClient.GetAsync("/api/v1/me");
+        var adminCsrf = Assert.Single(adminProfile.Headers.GetValues("X-CSRF-TOKEN"));
+        using var missingCsrf = new HttpRequestMessage(
+            HttpMethod.Patch,
+            "/api/v1/admin/vip-plan")
+        {
+            Content = JsonContent.Create(new { priceVnd = 35_000, expectedVersion = 1 }),
+        };
+        await AssertStandardizedErrorAsync(
+            await adminClient.SendAsync(missingCsrf),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var patchRequest = new HttpRequestMessage(
+            HttpMethod.Patch,
+            "/api/v1/admin/vip-plan")
+        {
+            Content = JsonContent.Create(new { priceVnd = 35_000, expectedVersion = 1 }),
+        };
+        patchRequest.Headers.Add("X-CSRF-TOKEN", adminCsrf);
+        var patchedResponse = await adminClient.SendAsync(patchRequest);
+        Assert.Equal(HttpStatusCode.OK, patchedResponse.StatusCode);
+        var patched = await patchedResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(35_000, patched.GetProperty("priceVnd").GetInt64());
+        Assert.Equal(2, patched.GetProperty("version").GetInt64());
+
+        using var newCheckout = VipCheckoutRequest("vip-new-price", adminCsrf);
+        var newResponse = await adminClient.SendAsync(newCheckout);
+        var newOrder = await newResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(35_000, newOrder.GetProperty("amountVnd").GetInt64());
+
+        await using var verifyScope = _factory.Services.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(
+            29_000,
+            (await verify.PaymentOrders.FindAsync(oldOrder.GetProperty("orderId").GetGuid()))!
+            .AmountVnd);
     }
 
     [Fact]
@@ -2059,6 +2336,63 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenApi_document_contains_vip_user_and_admin_contracts()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+
+        var plan = paths.GetProperty("/api/v1/membership/plan").GetProperty("get");
+        var planSchema = ResolveResponseSchema(document, plan, "200");
+        Assert.Equal(
+            ["discountPercent", "durationHours", "planId", "priceVnd", "version"],
+            planSchema.GetProperty("required").EnumerateArray()
+                .Select(item => item.GetString()!).Order().ToArray());
+
+        var membership = paths.GetProperty("/api/v1/membership/me").GetProperty("get");
+        var membershipSchema = ResolveResponseSchema(document, membership, "200");
+        AssertOpenApiSchemaIsNullable(ResolveOpenApiSchema(
+            document,
+            membershipSchema.GetProperty("properties").GetProperty("expiresAt")));
+
+        var checkout = paths.GetProperty("/api/v1/membership/checkout")
+            .GetProperty("post");
+        var idempotency = FindOpenApiParameter(checkout, "Idempotency-Key");
+        Assert.True(idempotency.GetProperty("required").GetBoolean());
+        Assert.Equal(1, idempotency.GetProperty("schema").GetProperty("minLength").GetInt32());
+        Assert.Equal(
+            PaymentOrder.MaximumIdempotencyKeyLength,
+            idempotency.GetProperty("schema").GetProperty("maxLength").GetInt32());
+        var checkoutResponse = ResolveResponseSchema(document, checkout, "201");
+        var checkoutProperties = checkoutResponse.GetProperty("properties");
+        Assert.True(checkoutProperties.TryGetProperty("expiresAt", out _));
+        Assert.True(checkoutProperties.TryGetProperty("paymentInstructions", out _));
+        var status = ResolveOpenApiSchema(document, checkoutProperties.GetProperty("status"));
+        Assert.Equal(
+            ["Expired", "Pending", "Succeeded"],
+            status.GetProperty("enum").EnumerateArray()
+                .Select(item => item.GetString()!).Order().ToArray());
+        foreach (var statusCode in new[] { "400", "401", "403", "404", "409", "429" })
+        {
+            Assert.True(checkout.GetProperty("responses").TryGetProperty(statusCode, out _));
+        }
+
+        var adminPath = paths.GetProperty("/api/v1/admin/vip-plan");
+        Assert.True(adminPath.TryGetProperty("get", out _));
+        var patch = adminPath.GetProperty("patch");
+        var patchRequest = ResolveOpenApiSchema(
+            document,
+            patch.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        var patchProperties = patchRequest.GetProperty("properties");
+        Assert.Equal(1, patchProperties.GetProperty("priceVnd").GetProperty("minimum").GetInt64());
+        Assert.Equal(1, patchProperties.GetProperty("expectedVersion").GetProperty("minimum").GetInt64());
+    }
+
+    [Fact]
     public async Task OpenApi_document_contains_sepay_raw_body_headers_and_ack_contract()
     {
         using var client = CreateClient();
@@ -3167,6 +3501,24 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         return request;
     }
 
+    private static HttpRequestMessage VipCheckoutRequest(
+        string idempotencyKey,
+        string? csrfToken = null,
+        Guid? planId = null)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/membership/checkout")
+        {
+            Content = JsonContent.Create(new { planId = planId ?? VipPlan.InitialPlanId }),
+        };
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        if (csrfToken is not null)
+        {
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        }
+
+        return request;
+    }
+
     private AuthenticationApplicationFactory CreateSePayFactory(
         int sePayPermitLimitPerMinute = 120) => new(
             _postgres.GetConnectionString(),
@@ -3350,6 +3702,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         bool forceProfileConflicts = false,
         int readingProgressPermitLimit = 60,
         int topUpOrderTtlMinutes = 30,
+        int vipOrderTtlMinutes = 30,
         bool useInsufficientRoleTestAuthentication = false,
         bool sePayWebhookEnabled = false,
         int sePayPermitLimitPerMinute = 120) : WebApplicationFactory<Program>
@@ -3398,6 +3751,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 .UseSetting(
                     "Billing:TopUpOrderTtlMinutes",
                     topUpOrderTtlMinutes.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture))
+                .UseSetting(
+                    "Membership:VipOrderTtlMinutes",
+                    vipOrderTtlMinutes.ToString(
                         System.Globalization.CultureInfo.InvariantCulture))
                 .UseSetting(
                     "Billing:SePayWebhook:Enabled",

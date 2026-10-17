@@ -37,6 +37,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261015145756_HardenB01PaymentOrderInvariants",
         "20261015185709_AddSePayWebhookIngestion",
         "20261016073318_AddTopUpFulfillment",
+        "20261016172119_AddVipMembership",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -94,6 +95,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "billing.payment_orders"));
         Assert.True(await TableExists(context, "billing.provider_transactions"));
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
+        Assert.True(await TableExists(context, "membership.vip_plans"));
+        Assert.True(await TableExists(context, "membership.vip_subscriptions"));
+        Assert.True(await TableExists(context, "membership.vip_transactions"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(
@@ -105,6 +109,11 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await IndexExists(context, "wallet", "ix_wallet_entries_user_created_id"));
         Assert.True(await IndexExists(context, "wallet", "ux_wallet_operations_business_source"));
         Assert.True(await IndexExists(context, "billing", "ux_payment_orders_order_code"));
+        Assert.Equal(
+            29_000L,
+            await context.Database.SqlQueryRaw<long>(
+                    "SELECT price_vnd AS \"Value\" FROM membership.vip_plans WHERE is_active")
+                .SingleAsync());
         Assert.True(await IndexExists(
             context,
             "billing",
@@ -115,6 +124,11 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             "wallet",
             "wallet_allocations",
             "wallet_allocations_enforce_ownership"));
+        Assert.True(await TriggerExists(
+            context,
+            "membership",
+            "vip_transactions",
+            "vip_transactions_append_only"));
 
         var now = new DateTimeOffset(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
         var comicId = Guid.NewGuid();
@@ -408,6 +422,55 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await context.PaymentOrders.AnyAsync(order => order.Id == orderId));
         Assert.True(await TableExists(context, "billing.provider_transactions"));
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
+    }
+
+    [Fact]
+    public async Task V01_upgrade_preserves_existing_B03_topup_state()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync("20261016073318_AddTopUpFulfillment");
+
+        var now = new DateTimeOffset(2026, 10, 16, 17, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "V01 Upgrade User",
+            null,
+            null,
+            now));
+        context.PaymentOrders.Add(PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            "TOPUP-V01-UPGRADE",
+            100_000,
+            10_000,
+            "v01-upgrade-key",
+            new string('b', PaymentOrder.RequestFingerprintLength),
+            now,
+            now.AddMinutes(30)));
+        await context.SaveChangesAsync();
+
+        await context.Database.MigrateAsync();
+        context.ChangeTracker.Clear();
+
+        var preserved = await context.PaymentOrders
+            .AsNoTracking()
+            .SingleAsync(order => order.Id == orderId);
+        Assert.Equal(PaymentOrderTypes.TopUp, preserved.OrderType);
+        Assert.Equal(100_000, preserved.AmountVnd);
+        Assert.Equal(10_000, preserved.PaidCoinsSnapshot);
+        Assert.Equal(
+            29_000,
+            await context.Database.SqlQueryRaw<long>(
+                    "SELECT price_vnd AS \"Value\" " +
+                    "FROM membership.vip_plans WHERE is_active")
+                .SingleAsync());
     }
 
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)

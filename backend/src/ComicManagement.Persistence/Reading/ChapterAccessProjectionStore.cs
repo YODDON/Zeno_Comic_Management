@@ -18,7 +18,7 @@ internal sealed class ChapterAccessProjectionStore(AppDbContext dbContext)
         }
 
         var ids = chapterIds.Distinct().ToArray();
-        var rows = await ChapterAccessQuery.PublicReadableChapters(dbContext)
+        var rows = await ChapterAccessQuery.PublicReadableChapters(dbContext, userId)
             .Where(row => ids.Contains(row.ChapterId))
             .ToListAsync(cancellationToken);
 
@@ -37,6 +37,7 @@ internal sealed class ChapterAccessProjectionStore(AppDbContext dbContext)
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             chapterId,
+            userId,
             cancellationToken);
         if (manifest is null)
         {
@@ -62,6 +63,7 @@ internal sealed class ChapterAccessProjectionStore(AppDbContext dbContext)
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             chapterId,
+            userId,
             cancellationToken);
         var page = manifest?.Pages.SingleOrDefault(row => row.PageOrder == pageOrder);
         if (manifest is null || page is null)

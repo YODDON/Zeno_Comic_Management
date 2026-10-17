@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using ComicManagement.Shared.Messaging;
 using ComicManagement.Shared.Time;
 using ComicManagement.Wallet.Queries;
+using ComicManagement.Membership.Memberships;
 using ComicManagement.Billing.Payments;
 
 namespace ComicManagement.Persistence;
@@ -55,6 +56,10 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<WalletSpendEngine>();
         services.TryAddScoped<ILibraryStore, LibraryStore>();
         services.TryAddScoped<LibraryHandler>();
+        services.TryAddScoped<IVipMembershipStore, VipMembershipStore>();
+        services.TryAddSingleton<IVipCheckoutCriticalSectionObserver,
+            NoOpVipCheckoutCriticalSectionObserver>();
+        services.TryAddScoped<VipMembershipHandler>();
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();
         services.TryAddScoped<OutboxMessageDispatcher>();
         services.TryAddScoped<OutboxBatchProcessor>();

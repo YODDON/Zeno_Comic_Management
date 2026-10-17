@@ -1,5 +1,6 @@
 using ComicManagement.Billing.Payments;
 using ComicManagement.Identity.Users;
+using ComicManagement.Membership.Plans;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -36,8 +37,8 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
                 "AND vip_plan_id IS NULL AND vip_duration_hours_snapshot IS NULL " +
                 "AND vip_discount_percent_snapshot IS NULL) OR " +
                 "(order_type = 'VipPurchase' AND paid_coins_snapshot IS NULL " +
-                "AND vip_plan_id IS NOT NULL AND vip_duration_hours_snapshot > 0 " +
-                "AND vip_discount_percent_snapshot BETWEEN 0 AND 100)");
+                "AND vip_plan_id IS NOT NULL AND vip_duration_hours_snapshot = 720 " +
+                "AND vip_discount_percent_snapshot = 20)");
             table.HasCheckConstraint(
                 "ck_payment_orders_provider",
                 "provider IN ('SePay')");
@@ -138,5 +139,10 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
             .HasForeignKey(order => order.UserId)
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_payment_orders_users");
+        builder.HasOne<VipPlan>()
+            .WithMany()
+            .HasForeignKey(order => order.VipPlanId)
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_payment_orders_vip_plans");
     }
 }

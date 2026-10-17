@@ -198,6 +198,8 @@ namespace ComicManagement.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_payment_orders_order_code");
 
+                    b.HasIndex("VipPlanId");
+
                     b.HasIndex("ProviderPaymentStatus", "ExpiresAt")
                         .HasDatabaseName("ix_payment_orders_pending_expiry");
 
@@ -225,7 +227,7 @@ namespace ComicManagement.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_payment_orders_provider_status", "provider_payment_status IN ('Pending', 'Verified', 'Rejected', 'ReconciliationRequired')");
 
-                            t.HasCheckConstraint("ck_payment_orders_type_snapshots", "(order_type = 'TopUp' AND amount_vnd BETWEEN 10000 AND 2000000 AND amount_vnd % 1000 = 0 AND paid_coins_snapshot = amount_vnd / 10 AND vip_plan_id IS NULL AND vip_duration_hours_snapshot IS NULL AND vip_discount_percent_snapshot IS NULL) OR (order_type = 'VipPurchase' AND paid_coins_snapshot IS NULL AND vip_plan_id IS NOT NULL AND vip_duration_hours_snapshot > 0 AND vip_discount_percent_snapshot BETWEEN 0 AND 100)");
+                            t.HasCheckConstraint("ck_payment_orders_type_snapshots", "(order_type = 'TopUp' AND amount_vnd BETWEEN 10000 AND 2000000 AND amount_vnd % 1000 = 0 AND paid_coins_snapshot = amount_vnd / 10 AND vip_plan_id IS NULL AND vip_duration_hours_snapshot IS NULL AND vip_discount_percent_snapshot IS NULL) OR (order_type = 'VipPurchase' AND paid_coins_snapshot IS NULL AND vip_plan_id IS NOT NULL AND vip_duration_hours_snapshot = 720 AND vip_discount_percent_snapshot = 20)");
 
                             t.HasCheckConstraint("ck_payment_orders_version", "version >= 1");
                         });
@@ -845,6 +847,185 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_users_status", "status IN ('Active', 'Disabled')");
 
                             t.HasCheckConstraint("ck_users_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Membership.Plans.VipPlan", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("code");
+
+                    b.Property<int>("DiscountPercent")
+                        .HasColumnType("integer")
+                        .HasColumnName("discount_percent");
+
+                    b.Property<int>("DurationHours")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_hours");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)")
+                        .HasColumnName("name");
+
+                    b.Property<long>("PriceVnd")
+                        .HasColumnType("bigint")
+                        .HasColumnName("price_vnd");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_vip_plans");
+
+                    b.HasIndex("Code")
+                        .IsUnique()
+                        .HasDatabaseName("ux_vip_plans_code");
+
+                    b.HasIndex("IsActive")
+                        .IsUnique()
+                        .HasDatabaseName("ux_vip_plans_single_active")
+                        .HasFilter("is_active");
+
+                    b.ToTable("vip_plans", "membership", t =>
+                        {
+                            t.HasCheckConstraint("ck_vip_plans_fixed_policy", "duration_hours = 720 AND discount_percent = 20");
+
+                            t.HasCheckConstraint("ck_vip_plans_price", "price_vnd > 0");
+
+                            t.HasCheckConstraint("ck_vip_plans_version", "version >= 1");
+                        });
+
+                    b.HasData(
+                        new
+                        {
+                            Id = new Guid("8c884d82-fdc7-4e94-893d-6caa95a22f7a"),
+                            Code = "VIP_30_DAY",
+                            DiscountPercent = 20,
+                            DurationHours = 720,
+                            IsActive = true,
+                            Name = "VIP 30 Days",
+                            PriceVnd = 29000L,
+                            UpdatedAt = new DateTimeOffset(new DateTime(2026, 10, 17, 0, 0, 0, 0, DateTimeKind.Unspecified), new TimeSpan(0, 0, 0, 0, 0)),
+                            Version = 1L
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Membership.Subscriptions.VipSubscription", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<DateTimeOffset>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTimeOffset>("LastFulfilledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_fulfilled_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("UserId")
+                        .HasName("pk_vip_subscriptions");
+
+                    b.HasIndex("ExpiresAt")
+                        .HasDatabaseName("ix_vip_subscriptions_expires_at");
+
+                    b.ToTable("vip_subscriptions", "membership", t =>
+                        {
+                            t.HasCheckConstraint("ck_vip_subscriptions_timeline", "expires_at > last_fulfilled_at");
+
+                            t.HasCheckConstraint("ck_vip_subscriptions_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Membership.Subscriptions.VipTransaction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("DurationHours")
+                        .HasColumnType("integer")
+                        .HasColumnName("duration_hours");
+
+                    b.Property<DateTimeOffset>("EffectiveStart")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("effective_start");
+
+                    b.Property<DateTimeOffset>("FulfilledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("fulfilled_at");
+
+                    b.Property<DateTimeOffset>("NewExpiry")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("new_expiry");
+
+                    b.Property<Guid>("PaymentOrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_order_id");
+
+                    b.Property<string>("PaymentOrderType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("payment_order_type");
+
+                    b.Property<DateTimeOffset?>("PreviousExpiry")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("previous_expiry");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_vip_transactions");
+
+                    b.HasIndex("PaymentOrderId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_vip_transactions_payment_order_id");
+
+                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType");
+
+                    b.HasIndex("UserId", "FulfilledAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_vip_transactions_user_fulfilled_id");
+
+                    b.ToTable("vip_transactions", "membership", t =>
+                        {
+                            t.HasCheckConstraint("ck_vip_transactions_duration", "duration_hours = 720");
+
+                            t.HasCheckConstraint("ck_vip_transactions_order_type", "payment_order_type = 'VipPurchase'");
+
+                            t.HasCheckConstraint("ck_vip_transactions_timeline", "effective_start >= fulfilled_at AND new_expiry = effective_start + make_interval(hours => duration_hours) AND created_at = fulfilled_at AND (previous_expiry IS NULL OR effective_start >= previous_expiry)");
                         });
                 });
 
@@ -1480,6 +1661,12 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_payment_orders_users");
+
+                    b.HasOne("ComicManagement.Membership.Plans.VipPlan", null)
+                        .WithMany()
+                        .HasForeignKey("VipPlanId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_payment_orders_vip_plans");
                 });
 
             modelBuilder.Entity("ComicManagement.Billing.Payments.ProviderTransaction", b =>
@@ -1581,6 +1768,34 @@ namespace ComicManagement.Persistence.Migrations
                         .HasConstraintName("fk_google_identities_users_user_id");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ComicManagement.Membership.Subscriptions.VipSubscription", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_vip_subscriptions_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Membership.Subscriptions.VipTransaction", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_vip_transactions_users");
+
+                    b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
+                        .WithMany()
+                        .HasForeignKey("PaymentOrderId", "UserId", "PaymentOrderType")
+                        .HasPrincipalKey("Id", "UserId", "OrderType")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_vip_transactions_payment_order_owner_type");
                 });
 
             modelBuilder.Entity("ComicManagement.Reading.Library.ComicFollow", b =>
