@@ -1354,6 +1354,81 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Reading.Unlocks.ChapterUnlock", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("BonusSpentCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("bonus_spent_coins");
+
+                    b.Property<Guid>("ChapterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("chapter_id");
+
+                    b.Property<long>("PaidSpentCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("paid_spent_coins");
+
+                    b.Property<long>("PricePaidCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("price_paid_coins");
+
+                    b.Property<Guid>("QuoteId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("quote_id");
+
+                    b.Property<DateTimeOffset>("UnlockedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("unlocked_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("WalletBonusAvailableAfter")
+                        .HasColumnType("bigint")
+                        .HasColumnName("wallet_bonus_available_after");
+
+                    b.Property<Guid>("WalletOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("wallet_operation_id");
+
+                    b.Property<long>("WalletPaidAvailableAfter")
+                        .HasColumnType("bigint")
+                        .HasColumnName("wallet_paid_available_after");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChapterId")
+                        .HasDatabaseName("ix_chapter_unlocks_chapter");
+
+                    b.HasIndex("QuoteId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chapter_unlocks_quote");
+
+                    b.HasIndex("WalletOperationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chapter_unlocks_wallet_operation");
+
+                    b.HasIndex("UserId", "ChapterId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_chapter_unlocks_user_chapter");
+
+                    b.HasIndex("WalletOperationId", "UserId");
+
+                    b.HasIndex("QuoteId", "UserId", "ChapterId");
+
+                    b.ToTable("chapter_unlocks", "reading", t =>
+                        {
+                            t.HasCheckConstraint("ck_chapter_unlocks_spend", "price_paid_coins > 0 AND bonus_spent_coins >= 0 AND paid_spent_coins >= 0 AND price_paid_coins::numeric = bonus_spent_coins::numeric + paid_spent_coins::numeric");
+
+                            t.HasCheckConstraint("ck_chapter_unlocks_wallet_after", "wallet_paid_available_after >= 0 AND wallet_bonus_available_after >= 0");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Reading.Unlocks.ChapterUnlockQuote", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1409,6 +1484,9 @@ namespace ComicManagement.Persistence.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_chapter_unlock_quotes");
+
+                    b.HasAlternateKey("Id", "UserId", "ChapterId")
+                        .HasName("ak_chapter_unlock_quotes_id_user_chapter");
 
                     b.HasIndex("ChapterId", "ExpiresAt")
                         .HasDatabaseName("ix_chapter_unlock_quotes_chapter_expiry");
@@ -1949,6 +2027,35 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_reading_sessions_users");
+                });
+
+            modelBuilder.Entity("ComicManagement.Reading.Unlocks.ChapterUnlock", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Chapters.Chapter", null)
+                        .WithMany()
+                        .HasForeignKey("ChapterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ComicManagement.Wallet.Ledger.WalletOperation", null)
+                        .WithMany()
+                        .HasForeignKey("WalletOperationId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ComicManagement.Reading.Unlocks.ChapterUnlockQuote", null)
+                        .WithMany()
+                        .HasForeignKey("QuoteId", "UserId", "ChapterId")
+                        .HasPrincipalKey("Id", "UserId", "ChapterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("ComicManagement.Reading.Unlocks.ChapterUnlockQuote", b =>

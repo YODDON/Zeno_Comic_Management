@@ -4,6 +4,8 @@ using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Reading.Access;
+using ComicManagement.Reading.Unlocks;
+using ComicManagement.Wallet.Ledger;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -19,6 +21,8 @@ internal sealed class ChapterAccessQueryRow
     internal bool VipEligible { get; init; }
 
     internal bool HasActiveVip { get; init; }
+
+    internal bool HasCoinUnlock { get; init; }
 }
 
 internal sealed record ReadyChapterPageRow(
@@ -39,6 +43,7 @@ internal sealed record ChapterAccessManifestPageRow(
     long EffectivePriceCoins,
     bool VipEligible,
     bool HasActiveVip,
+    bool HasCoinUnlock,
     Guid PageId,
     int PageOrder,
     int Width,
@@ -70,6 +75,9 @@ internal static class ChapterAccessQuery
             HasActiveVip = userId.HasValue && dbContext.VipSubscriptions.Any(subscription =>
                 subscription.UserId == userId.Value &&
                 subscription.ExpiresAt > DateTimeOffset.UtcNow),
+            HasCoinUnlock = userId.HasValue && ValidCoinUnlocks(dbContext).Any(unlock =>
+                unlock.UserId == userId.Value &&
+                unlock.ChapterId == chapter.Id),
         };
 
     internal static async Task<ChapterAccessManifestRow?> LoadManifestAsync(
@@ -103,6 +111,9 @@ internal static class ChapterAccessQuery
                 userId.HasValue && dbContext.VipSubscriptions.Any(subscription =>
                     subscription.UserId == userId.Value &&
                     subscription.ExpiresAt > DateTimeOffset.UtcNow),
+                userId.HasValue && ValidCoinUnlocks(dbContext).Any(unlock =>
+                    unlock.UserId == userId.Value &&
+                    unlock.ChapterId == chapter.Id),
                 page.Id,
                 page.PageOrder,
                 page.Width,
@@ -123,6 +134,7 @@ internal static class ChapterAccessQuery
             EffectivePriceCoins = first.EffectivePriceCoins,
             VipEligible = first.VipEligible,
             HasActiveVip = first.HasActiveVip,
+            HasCoinUnlock = first.HasCoinUnlock,
         };
         var pages = rows
             .Select(row => new ReadyChapterPageRow(
@@ -136,12 +148,42 @@ internal static class ChapterAccessQuery
         return new ChapterAccessManifestRow(access, pages, CalculateRevision(pages));
     }
 
+    private static IQueryable<ChapterUnlock> ValidCoinUnlocks(AppDbContext dbContext) =>
+        from unlock in dbContext.ChapterUnlocks.AsNoTracking()
+        join operation in dbContext.WalletOperations.AsNoTracking()
+            on new { Id = unlock.WalletOperationId, unlock.UserId }
+            equals new { operation.Id, operation.UserId }
+        where operation.OperationType == WalletOperationTypes.ChapterUnlock &&
+              operation.SourceType == WalletOperationSourceTypes.ReadingUnlock &&
+              operation.SourceId == unlock.Id &&
+              !dbContext.WalletEntries.Any(entry =>
+                  entry.OperationId == operation.Id &&
+                  (entry.UserId != unlock.UserId ||
+                   entry.Bucket != WalletBuckets.Available ||
+                   entry.DeltaCoins >= 0 ||
+                   entry.CoinType != WalletCoinTypes.Bonus &&
+                   entry.CoinType != WalletCoinTypes.Paid)) &&
+              -(dbContext.WalletEntries
+                  .Where(entry =>
+                      entry.OperationId == operation.Id &&
+                      entry.CoinType == WalletCoinTypes.Bonus)
+                  .Sum(entry => (decimal?)entry.DeltaCoins) ?? 0) == unlock.BonusSpentCoins &&
+              -(dbContext.WalletEntries
+                  .Where(entry =>
+                      entry.OperationId == operation.Id &&
+                      entry.CoinType == WalletCoinTypes.Paid)
+                  .Sum(entry => (decimal?)entry.DeltaCoins) ?? 0) == unlock.PaidSpentCoins &&
+              (dbContext.WalletAllocations
+                  .Where(allocation => allocation.OperationId == operation.Id)
+                  .Sum(allocation => (decimal?)allocation.AmountCoins) ?? 0) == unlock.PaidSpentCoins
+        select unlock;
+
     internal static ChapterAccessProjection ToProjection(ChapterAccessQueryRow row) => new(
         row.ChapterId,
         row.EffectivePriceCoins,
         row.VipEligible,
         row.HasActiveVip,
-        HasCoinUnlock: false,
+        HasCoinUnlock: row.HasCoinUnlock,
         ActiveVipDiscountPercent: row.HasActiveVip
             ? VipPlan.FixedDiscountPercent
             : 0);

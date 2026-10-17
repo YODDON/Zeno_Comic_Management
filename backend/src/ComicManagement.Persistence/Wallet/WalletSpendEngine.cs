@@ -1,10 +1,16 @@
 using ComicManagement.Wallet.Ledger;
+using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Spending;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 
 namespace ComicManagement.Persistence;
+
+internal sealed record WalletSpendLockResult(
+    SpendCoinsOutcome Outcome,
+    WalletAccount? Wallet,
+    IReadOnlyList<PaidCoinLot> PaidLots);
 
 // This transaction-neutral engine is shared by W02 and later cross-module
 // workflows. The caller owns the transaction and SaveChanges boundary.
@@ -28,20 +34,109 @@ internal sealed class WalletSpendEngine(
             return new SpendCoinsResult(SpendCoinsOutcome.ValidationFailed);
         }
 
-        await EnsureWalletExistsAsync(command.UserId, occurredAt, cancellationToken);
-        var wallet = await LockWalletAsync(command.UserId, cancellationToken);
-        if (wallet is null)
+        var locked = await AcquireAsync(command.UserId, occurredAt, cancellationToken);
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded)
         {
-            return new SpendCoinsResult(SpendCoinsOutcome.WalletUnavailable);
+            return new SpendCoinsResult(locked.Outcome);
         }
 
-        var paidLots = await LockPaidLotsAsync(command.UserId, cancellationToken);
-        if (!await IsReconciledAsync(wallet, paidLots, cancellationToken))
+        return await ApplyLockedAsync(command, locked, occurredAt, cancellationToken);
+    }
+
+    internal async Task<WalletSpendLockResult> AcquireAsync(
+        Guid userId,
+        DateTimeOffset walletCreatedAt,
+        CancellationToken cancellationToken)
+    {
+        var locked = await AcquireLocksAsync(userId, walletCreatedAt, cancellationToken);
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded)
+        {
+            return locked;
+        }
+
+        return await ValidateReconciliationAsync(locked, cancellationToken);
+    }
+
+    internal async Task<WalletSpendLockResult> AcquireLocksAsync(
+        Guid userId,
+        CancellationToken cancellationToken) =>
+        await AcquireLocksCoreAsync(userId, null, cancellationToken);
+
+    private async Task<WalletSpendLockResult> AcquireLocksAsync(
+        Guid userId,
+        DateTimeOffset walletCreatedAt,
+        CancellationToken cancellationToken) =>
+        await AcquireLocksCoreAsync(userId, walletCreatedAt, cancellationToken);
+
+    private async Task<WalletSpendLockResult> AcquireLocksCoreAsync(
+        Guid userId,
+        DateTimeOffset? walletCreatedAt,
+        CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "Wallet spending requires an active database transaction.");
+        }
+
+        if (userId == Guid.Empty ||
+            walletCreatedAt.HasValue && walletCreatedAt.Value.Offset != TimeSpan.Zero)
+        {
+            return new WalletSpendLockResult(
+                SpendCoinsOutcome.ValidationFailed,
+                null,
+                Array.Empty<PaidCoinLot>());
+        }
+
+        await EnsureWalletExistsAsync(userId, walletCreatedAt, cancellationToken);
+        var wallet = await LockWalletAsync(userId, cancellationToken);
+        if (wallet is null)
+        {
+            return new WalletSpendLockResult(
+                SpendCoinsOutcome.WalletUnavailable,
+                null,
+                Array.Empty<PaidCoinLot>());
+        }
+
+        var paidLots = await LockPaidLotsAsync(userId, cancellationToken);
+        return new WalletSpendLockResult(SpendCoinsOutcome.Succeeded, wallet, paidLots);
+    }
+
+    internal async Task<WalletSpendLockResult> ValidateReconciliationAsync(
+        WalletSpendLockResult locked,
+        CancellationToken cancellationToken)
+    {
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded || locked.Wallet is null)
+        {
+            return locked;
+        }
+
+        if (!await IsReconciledAsync(locked.Wallet, locked.PaidLots, cancellationToken))
         {
             logger.LogCritical(
                 "Wallet reconciliation failed before spending for user {UserId}.",
-                command.UserId);
-            return new SpendCoinsResult(SpendCoinsOutcome.InvariantViolation);
+                locked.Wallet.UserId);
+            return new WalletSpendLockResult(
+                SpendCoinsOutcome.InvariantViolation,
+                locked.Wallet,
+                locked.PaidLots);
+        }
+
+        return locked;
+    }
+
+    internal async Task<SpendCoinsResult> ApplyLockedAsync(
+        SpendCoinsCommand command,
+        WalletSpendLockResult locked,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken)
+    {
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded ||
+            locked.Wallet is null ||
+            locked.Wallet.UserId != command.UserId ||
+            !WalletSpendingPolicy.IsValid(command, occurredAt))
+        {
+            return new SpendCoinsResult(SpendCoinsOutcome.ValidationFailed);
         }
 
         var replay = await TryReplayAsync(command, cancellationToken);
@@ -50,7 +145,11 @@ internal sealed class WalletSpendEngine(
             return replay;
         }
 
-        var decision = WalletSpendingPolicy.Apply(command, wallet, paidLots, occurredAt);
+        var decision = WalletSpendingPolicy.Apply(
+            command,
+            locked.Wallet,
+            locked.PaidLots,
+            occurredAt);
         if (decision.Result.Outcome != SpendCoinsOutcome.Succeeded)
         {
             return decision.Result;
@@ -121,13 +220,26 @@ internal sealed class WalletSpendEngine(
 
     private async Task EnsureWalletExistsAsync(
         Guid userId,
-        DateTimeOffset occurredAt,
+        DateTimeOffset? occurredAt,
         CancellationToken cancellationToken)
     {
+        if (!occurredAt.HasValue)
+        {
+            await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO wallet.wallets
+                    (user_id, paid_available, paid_reserved, bonus_available, version, created_at, updated_at)
+                SELECT id, 0, 0, 0, 1, clock_timestamp(), clock_timestamp()
+                FROM identity.users
+                WHERE id = {userId}
+                ON CONFLICT (user_id) DO NOTHING
+                """, cancellationToken);
+            return;
+        }
+
         await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO wallet.wallets
                 (user_id, paid_available, paid_reserved, bonus_available, version, created_at, updated_at)
-            SELECT id, 0, 0, 0, 1, {occurredAt}, {occurredAt}
+            SELECT id, 0, 0, 0, 1, {occurredAt.Value}, {occurredAt.Value}
             FROM identity.users
             WHERE id = {userId}
             ON CONFLICT (user_id) DO NOTHING

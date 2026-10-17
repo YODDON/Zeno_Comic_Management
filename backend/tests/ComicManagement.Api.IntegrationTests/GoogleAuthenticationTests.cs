@@ -20,6 +20,7 @@ using ComicManagement.Reading.Sessions;
 using ComicManagement.Reading.Unlocks;
 using ComicManagement.Workflows.Reading;
 using ComicManagement.Wallet.Ledger;
+using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Events;
@@ -129,6 +130,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChapterUnlockQuoteHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterUnlockQuoteStore>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChapterUnlockHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterUnlockStore>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageContentProvider>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicChapterListWorkflow>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReadingSessionHandler>());
@@ -1584,6 +1587,323 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         {
             Assert.Equal(HttpStatusCode.Created, accepted.StatusCode);
         }
+    }
+
+    [Fact]
+    public async Task Chapter_unlock_http_flow_enforces_auth_csrf_idempotency_and_server_pricing()
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var comic = Comic.Create(
+                comicId,
+                $"u02-api-{comicId:N}",
+                "U02 API",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                80,
+                false,
+                now);
+            AddApiPublishedChapter(context, comicId, chapterId, 1, null, now);
+            comic.Publish(true, 1, now.AddSeconds(2));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        using var anonymous = CreateClient();
+        using var anonymousRequest = UnlockRequest(chapterId, Guid.NewGuid(), "anonymous");
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymous.SendAsync(anonymousRequest)).StatusCode);
+
+        const string subject = "google-subject-u02-unlock";
+        _factory.TokenEndpoint.SetProfile(subject, "U02 User", "u02@example.com", null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/reader"));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrf = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        var userId = (await me.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("id")
+            .GetGuid();
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var wallet = ComicManagement.Wallet.Accounts.Wallet.Create(userId, now);
+            var bonusOperation = WalletOperation.Create(
+                Guid.NewGuid(), userId, "MissionReward", "RewardGrant",
+                Guid.NewGuid(), $"u02-bonus-{Guid.NewGuid():N}", now);
+            wallet.CreditBonus(30, now);
+            var orderId = Guid.NewGuid();
+            var order = PaymentOrder.CreateTopUp(
+                orderId, userId, $"U02-{orderId:N}", 10_000, 1_000,
+                $"u02-topup-{orderId:N}",
+                new string('a', PaymentOrder.RequestFingerprintLength),
+                now, now.AddMinutes(30));
+            order.FulfillTopUp(now);
+            var paidOperation = WalletOperation.Create(
+                Guid.NewGuid(), userId, WalletOperationTypes.TopUpCredit,
+                WalletOperationSourceTypes.PaymentOrder, orderId,
+                $"u02-credit-{orderId:N}", now);
+            wallet.CreditPaid(100, now);
+            context.Wallets.Add(wallet);
+            context.PaymentOrders.Add(order);
+            context.PaidCoinLots.Add(PaidCoinLot.Create(
+                Guid.NewGuid(), userId, orderId, 100, now));
+            context.WalletOperations.AddRange(bonusOperation, paidOperation);
+            context.WalletEntries.AddRange(
+                WalletEntry.Create(
+                    Guid.NewGuid(), bonusOperation, WalletCoinTypes.Bonus,
+                    WalletBuckets.Available, 30, 1, now),
+                WalletEntry.Create(
+                    Guid.NewGuid(), paidOperation, WalletCoinTypes.Paid,
+                    WalletBuckets.Available, 100, 1, now));
+            await context.SaveChangesAsync();
+        }
+
+        async Task<Guid> QuoteAsync()
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/chapters/{chapterId}/unlock-quotes");
+            request.Headers.Add("X-CSRF-TOKEN", csrf);
+            var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+            return (await response.Content.ReadFromJsonAsync<JsonElement>())
+                .GetProperty("quoteId")
+                .GetGuid();
+        }
+
+        var quoteId = await QuoteAsync();
+        var otherQuoteId = await QuoteAsync();
+
+        var expiredQuote = ChapterUnlockQuote.Create(
+            Guid.NewGuid(),
+            userId,
+            chapterId,
+            80,
+            0,
+            30,
+            100,
+            DateTimeOffset.UtcNow.AddMinutes(-10));
+        await using (var expiredScope = _factory.Services.CreateAsyncScope())
+        {
+            var context = expiredScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.ChapterUnlockQuotes.Add(expiredQuote);
+            await context.SaveChangesAsync();
+        }
+
+        using (var expiredRequest = UnlockRequest(
+                   chapterId,
+                   expiredQuote.Id,
+                   "u02-expired",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(expiredRequest),
+                HttpStatusCode.Conflict,
+                "QUOTE_EXPIRED");
+        }
+
+        var changedQuoteId = await QuoteAsync();
+        await using (var changeScope = _factory.Services.CreateAsyncScope())
+        {
+            await changeScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)81));
+        }
+
+        using (var changedRequest = UnlockRequest(
+                   chapterId,
+                   changedQuoteId,
+                   "u02-price-changed",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(changedRequest),
+                HttpStatusCode.Conflict,
+                "PRICE_CHANGED");
+        }
+
+        await using (var restorePriceScope = _factory.Services.CreateAsyncScope())
+        {
+            await restorePriceScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)null));
+        }
+
+        var hiddenQuoteId = await QuoteAsync();
+        await using (var hideScope = _factory.Services.CreateAsyncScope())
+        {
+            await hideScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PublicationStatus,
+                    ChapterPublicationStatuses.Hidden));
+        }
+
+        using (var hiddenRequest = UnlockRequest(
+                   chapterId,
+                   hiddenQuoteId,
+                   "u02-hidden",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(hiddenRequest),
+                HttpStatusCode.NotFound,
+                "CHAPTER_UNAVAILABLE");
+        }
+
+        await using (var publishScope = _factory.Services.CreateAsyncScope())
+        {
+            await publishScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PublicationStatus,
+                    ChapterPublicationStatuses.Published));
+        }
+
+        await using (var expensiveScope = _factory.Services.CreateAsyncScope())
+        {
+            await expensiveScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)200));
+        }
+
+        var expensiveQuoteId = await QuoteAsync();
+        using (var insufficientRequest = UnlockRequest(
+                   chapterId,
+                   expensiveQuoteId,
+                   "u02-insufficient",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(insufficientRequest),
+                HttpStatusCode.UnprocessableEntity,
+                "INSUFFICIENT_COINS");
+        }
+
+        await using (var restoreScope = _factory.Services.CreateAsyncScope())
+        {
+            await restoreScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)null));
+        }
+
+        using (var missingCsrf = UnlockRequest(chapterId, quoteId, "missing-csrf"))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(missingCsrf),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using (var missingKey = UnlockRequest(chapterId, quoteId, null, csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(missingKey),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using (var emptyKey = UnlockRequest(chapterId, quoteId, string.Empty, csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(emptyKey),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using (var longKey = UnlockRequest(chapterId, quoteId, new string('k', 201), csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(longKey),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using (var malformed = UnlockRequest(chapterId, quoteId, "malformed", csrf))
+        {
+            malformed.Content = new StringContent(
+                "{\"quoteId\":",
+                Encoding.UTF8,
+                "application/json");
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(malformed),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using var request = UnlockRequest(chapterId, quoteId, "u02-http", csrf);
+        request.Content = JsonContent.Create(new
+        {
+            quoteId,
+            pricePaidCoins = 1,
+            bonusSpentCoins = 999,
+            paidSpentCoins = 999,
+            accessType = "Free",
+            unlockedAt = DateTimeOffset.UtcNow.AddYears(1),
+        });
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("no-store", response.Headers.CacheControl!.ToString());
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("CoinUnlocked", body.GetProperty("accessType").GetString());
+        Assert.Equal(30, body.GetProperty("spent").GetProperty("bonusCoins").GetInt64());
+        Assert.Equal(50, body.GetProperty("spent").GetProperty("paidCoins").GetInt64());
+        Assert.False(body.GetProperty("alreadyUnlocked").GetBoolean());
+
+        using var replayRequest = UnlockRequest(chapterId, quoteId, "u02-http", csrf);
+        var replay = await client.SendAsync(replayRequest);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        Assert.False((await replay.Content.ReadFromJsonAsync<JsonElement>())
+            .GetProperty("alreadyUnlocked")
+            .GetBoolean());
+
+        using var mismatchRequest = UnlockRequest(
+            chapterId,
+            otherQuoteId,
+            "u02-http",
+            csrf);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(mismatchRequest),
+            HttpStatusCode.Conflict,
+            "IDEMPOTENCY_CONFLICT");
+
+        var access = await client.GetFromJsonAsync<JsonElement>(
+            $"/api/v1/chapters/{chapterId}/access");
+        Assert.Equal("CoinUnlocked", access.GetProperty("accessType").GetString());
+    }
+
+    [Fact]
+    public async Task Chapter_unlock_returns_forbidden_without_user_role()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            useInsufficientRoleTestAuthentication: true);
+        using var client = CreateClient(factory);
+        using var request = UnlockRequest(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "u02-insufficient-role");
+
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(request),
+            HttpStatusCode.Forbidden,
+            "FORBIDDEN");
     }
 
     [Fact]
@@ -3105,6 +3425,70 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             }
         }
 
+        var unlock = paths
+            .GetProperty("/api/v1/chapters/{chapterId}/unlock")
+            .GetProperty("post");
+        foreach (var status in new[] { "200", "400", "401", "403", "404", "409", "422" })
+        {
+            Assert.True(unlock.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var idempotencyHeader = unlock.GetProperty("parameters")
+            .EnumerateArray()
+            .Single(parameter => parameter.GetProperty("name").GetString() == "Idempotency-Key");
+        Assert.True(idempotencyHeader.GetProperty("required").GetBoolean());
+        Assert.Equal(
+            200,
+            idempotencyHeader.GetProperty("schema").GetProperty("maxLength").GetInt32());
+        var unlockRequestSchema = ResolveOpenApiSchema(
+            document,
+            unlock.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        Assert.Contains(
+            "quoteId",
+            unlockRequestSchema.GetProperty("required")
+                .EnumerateArray()
+                .Select(value => value.GetString()));
+        Assert.Equal(
+            "uuid",
+            unlockRequestSchema.GetProperty("properties")
+                .GetProperty("quoteId")
+                .GetProperty("format")
+                .GetString());
+        var unlockSchema = ResolveResponseSchema(document, unlock, "200");
+        foreach (var property in new[]
+                 {
+                     "chapterId", "accessType", "spent", "walletAfter", "alreadyUnlocked",
+                 })
+        {
+            Assert.True(unlockSchema.GetProperty("properties").TryGetProperty(property, out _));
+            Assert.Contains(
+                property,
+                unlockSchema.GetProperty("required")
+                    .EnumerateArray()
+                    .Select(value => value.GetString()));
+        }
+
+        var unlockAccessType = ResolveOpenApiSchema(
+            document,
+            unlockSchema.GetProperty("properties").GetProperty("accessType"));
+        Assert.Equal(
+            ["CoinUnlocked"],
+            unlockAccessType.GetProperty("enum")
+                .EnumerateArray()
+                .Select(value => value.GetString()));
+
+        foreach (var status in new[] { "400", "401", "403", "404", "409", "422" })
+        {
+            var unlockError = ResolveResponseSchema(document, unlock, status);
+            foreach (var property in new[] { "errorCode", "message", "traceId" })
+            {
+                Assert.True(unlockError.GetProperty("properties").TryGetProperty(property, out _));
+            }
+        }
+
         var pages = paths
             .GetProperty("/api/v1/chapters/{chapterId}/pages")
             .GetProperty("get");
@@ -3922,6 +4306,31 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             Content = JsonContent.Create(new { amountVnd }),
         };
         request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        if (csrfToken is not null)
+        {
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        }
+
+        return request;
+    }
+
+    private static HttpRequestMessage UnlockRequest(
+        Guid chapterId,
+        Guid quoteId,
+        string? idempotencyKey,
+        string? csrfToken = null)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/chapters/{chapterId}/unlock")
+        {
+            Content = JsonContent.Create(new { quoteId }),
+        };
+        if (idempotencyKey is not null)
+        {
+            request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        }
+
         if (csrfToken is not null)
         {
             request.Headers.Add("X-CSRF-TOKEN", csrfToken);

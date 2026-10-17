@@ -43,6 +43,10 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<ChapterAccessHandler>();
         services.TryAddScoped<IChapterUnlockQuoteStore, ChapterUnlockQuoteStore>();
         services.TryAddScoped<ChapterUnlockQuoteHandler>();
+        services.TryAddScoped<IChapterUnlockStore, ChapterUnlockStore>();
+        services.TryAddSingleton<IChapterUnlockCriticalSectionObserver,
+            NoOpChapterUnlockCriticalSectionObserver>();
+        services.TryAddScoped<ChapterUnlockHandler>();
         services.TryAddScoped<IReadingSessionStore, ReadingSessionStore>();
         services.TryAddScoped<ReadingSessionHandler>();
         services.TryAddScoped<IWalletQueryStore, WalletQueryStore>();
