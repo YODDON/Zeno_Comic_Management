@@ -392,8 +392,19 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
         Assert.Equal(30, walletAfter.BonusAvailable);
         Assert.Equal(1_000, walletAfter.PaidAvailable);
 
-        var invalid = await Assert.ThrowsAsync<PostgresException>(() =>
-            verification.Database.ExecuteSqlInterpolatedAsync($"""
+        async Task AssertRejectedAsync(
+            string expectedConstraint,
+            FormattableString command)
+        {
+            var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+                verification.Database.ExecuteSqlInterpolatedAsync(command));
+            Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+            Assert.Equal(expectedConstraint, exception.ConstraintName);
+        }
+
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_price",
+            $"""
                 INSERT INTO reading.chapter_unlock_quotes
                     (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
                      vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
@@ -402,9 +413,73 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
                     ({Guid.NewGuid()}, {userId}, {chapterId}, {101L}, {true}, {20}, {80L},
                      {30L}, {50L}, {new string('a', 64)},
                      {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
-                """));
-        Assert.Equal(PostgresErrorCodes.CheckViolation, invalid.SqlState);
-        Assert.Equal("ck_chapter_unlock_quotes_price", invalid.ConstraintName);
+                """);
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_estimate",
+            $"""
+                INSERT INTO reading.chapter_unlock_quotes
+                    (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                     vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                     price_revision, expires_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                     {80L}, {30L}, {new string('a', 64)},
+                     {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
+                """);
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_expiry",
+            $"""
+                INSERT INTO reading.chapter_unlock_quotes
+                    (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                     vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                     price_revision, expires_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                     {30L}, {50L}, {new string('a', 64)},
+                     {persisted.CreatedAt.AddMinutes(4)}, {persisted.CreatedAt});
+                """);
+        await AssertRejectedAsync(
+            "ck_chapter_unlock_quotes_revision",
+            $"""
+                INSERT INTO reading.chapter_unlock_quotes
+                    (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                     vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                     price_revision, expires_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                     {30L}, {50L}, {new string('z', 64)},
+                     {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
+                """);
+
+        async Task AssertForeignKeyRejectedAsync(
+            string expectedConstraint,
+            Guid candidateUserId,
+            Guid candidateChapterId)
+        {
+            var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+                verification.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO reading.chapter_unlock_quotes
+                        (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                         vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                         price_revision, expires_at, created_at)
+                    VALUES
+                        ({Guid.NewGuid()}, {candidateUserId}, {candidateChapterId},
+                         {100L}, {false}, {0}, {100L}, {30L}, {50L},
+                         {new string('a', 64)},
+                         {persisted.CreatedAt.AddMinutes(5)}, {persisted.CreatedAt});
+                    """));
+            Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, exception.SqlState);
+            Assert.Equal(expectedConstraint, exception.ConstraintName);
+        }
+
+        await AssertForeignKeyRejectedAsync(
+            "fk_chapter_unlock_quotes_users",
+            Guid.NewGuid(),
+            chapterId);
+        await AssertForeignKeyRejectedAsync(
+            "fk_chapter_unlock_quotes_chapters",
+            userId,
+            Guid.NewGuid());
 
         var mutation = await Assert.ThrowsAsync<PostgresException>(() =>
             verification.Database.ExecuteSqlInterpolatedAsync($"""
@@ -413,7 +488,35 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
                 WHERE id = {quote.QuoteId};
                 """));
         Assert.Equal("23000", mutation.SqlState);
-        Assert.Contains("append-only", mutation.MessageText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("immutable", mutation.MessageText, StringComparison.OrdinalIgnoreCase);
+
+        var earlyDelete = await Assert.ThrowsAsync<PostgresException>(() =>
+            verification.Database.ExecuteSqlInterpolatedAsync($"""
+                DELETE FROM reading.chapter_unlock_quotes WHERE id = {quote.QuoteId};
+                """));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, earlyDelete.SqlState);
+        Assert.Contains(
+            "retention window",
+            earlyDelete.MessageText,
+            StringComparison.OrdinalIgnoreCase);
+
+        var oldQuoteId = Guid.NewGuid();
+        var oldCreatedAt = DateTimeOffset.UtcNow.AddDays(-31);
+        await verification.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO reading.chapter_unlock_quotes
+                (id, user_id, chapter_id, base_price_coins, vip_discount_applied,
+                 vip_discount_percent, final_price_coins, bonus_to_spend, paid_to_spend,
+                 price_revision, expires_at, created_at)
+            VALUES
+                ({oldQuoteId}, {userId}, {chapterId}, {100L}, {false}, {0}, {100L},
+                 {30L}, {50L}, {new string('a', 64)},
+                 {oldCreatedAt.AddMinutes(5)}, {oldCreatedAt});
+            """);
+        Assert.Equal(
+            1,
+            await verification.Database.ExecuteSqlInterpolatedAsync($"""
+                DELETE FROM reading.chapter_unlock_quotes WHERE id = {oldQuoteId};
+                """));
     }
 
     [Fact]

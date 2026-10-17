@@ -66,20 +66,29 @@ namespace ComicManagement.Persistence.Migrations
 
             migrationBuilder.Sql(
                 """
-                CREATE FUNCTION reading.prevent_chapter_unlock_quote_mutation()
+                CREATE FUNCTION reading.enforce_chapter_unlock_quote_lifecycle()
                 RETURNS trigger
                 LANGUAGE plpgsql
                 AS $function$
                 BEGIN
-                    RAISE EXCEPTION 'Chapter unlock quotes are append-only'
-                        USING ERRCODE = '23000';
+                    IF TG_OP = 'UPDATE' THEN
+                        RAISE EXCEPTION 'Chapter unlock quotes are immutable'
+                            USING ERRCODE = '23000';
+                    END IF;
+
+                    IF OLD.expires_at + interval '30 days' > clock_timestamp() THEN
+                        RAISE EXCEPTION 'Chapter unlock quote retention window has not elapsed'
+                            USING ERRCODE = '23514';
+                    END IF;
+
+                    RETURN OLD;
                 END;
                 $function$;
 
-                CREATE TRIGGER chapter_unlock_quotes_append_only
+                CREATE TRIGGER chapter_unlock_quotes_lifecycle
                 BEFORE UPDATE OR DELETE ON reading.chapter_unlock_quotes
                 FOR EACH ROW
-                EXECUTE FUNCTION reading.prevent_chapter_unlock_quote_mutation();
+                EXECUTE FUNCTION reading.enforce_chapter_unlock_quote_lifecycle();
                 """);
         }
 
@@ -88,9 +97,9 @@ namespace ComicManagement.Persistence.Migrations
         {
             migrationBuilder.Sql(
                 """
-                DROP TRIGGER IF EXISTS chapter_unlock_quotes_append_only
+                DROP TRIGGER IF EXISTS chapter_unlock_quotes_lifecycle
                     ON reading.chapter_unlock_quotes;
-                DROP FUNCTION IF EXISTS reading.prevent_chapter_unlock_quote_mutation();
+                DROP FUNCTION IF EXISTS reading.enforce_chapter_unlock_quote_lifecycle();
                 """);
 
             migrationBuilder.DropTable(

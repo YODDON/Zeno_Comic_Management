@@ -39,10 +39,10 @@ public static class ChapterUnlockPricingPolicy
             throw new ArgumentException("A chapter identifier is required.", nameof(chapterId));
         }
 
-        _ = CalculateFinalPrice(basePriceCoins, discountPercent);
+        var finalPriceCoins = CalculateFinalPrice(basePriceCoins, discountPercent);
         var canonical = string.Create(
             CultureInfo.InvariantCulture,
-            $"{Revision}|{chapterId:N}|{basePriceCoins}|{discountPercent}");
+            $"{Revision}|{chapterId:N}|{basePriceCoins}|{discountPercent}|{finalPriceCoins}");
         return Convert.ToHexStringLower(
             SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
@@ -89,7 +89,6 @@ public sealed class ChapterUnlockQuote
         int vipDiscountPercent,
         long bonusAvailable,
         long paidAvailable,
-        string priceRevision,
         DateTimeOffset createdAt)
     {
         if (id == Guid.Empty || userId == Guid.Empty || chapterId == Guid.Empty)
@@ -109,18 +108,11 @@ public sealed class ChapterUnlockQuote
             throw new ArgumentException("Quote time must use the UTC offset.", nameof(createdAt));
         }
 
-        ArgumentNullException.ThrowIfNull(priceRevision);
-
-        if (priceRevision.Length != PriceRevisionLength ||
-            priceRevision.Any(character => character is not (>= '0' and <= '9') and
-                not (>= 'a' and <= 'f')))
-        {
-            throw new ArgumentException(
-                "Price revision must be a lowercase SHA-256 digest.",
-                nameof(priceRevision));
-        }
-
         var finalPriceCoins = ChapterUnlockPricingPolicy.CalculateFinalPrice(
+            basePriceCoins,
+            vipDiscountPercent);
+        var priceRevision = ChapterUnlockPricingPolicy.CalculateRevision(
+            chapterId,
             basePriceCoins,
             vipDiscountPercent);
         var bonusToSpend = Math.Min(bonusAvailable, finalPriceCoins);
@@ -212,10 +204,6 @@ public sealed class ChapterUnlockQuoteHandler(
         var discountPercent = source.Access.HasActiveVip && !source.Access.VipEligible
             ? source.Access.ActiveVipDiscountPercent
             : 0;
-        var revision = ChapterUnlockPricingPolicy.CalculateRevision(
-            chapterId,
-            source.Access.EffectivePriceCoins,
-            discountPercent);
         var quote = ChapterUnlockQuote.Create(
             Guid.NewGuid(),
             userId,
@@ -224,7 +212,6 @@ public sealed class ChapterUnlockQuoteHandler(
             discountPercent,
             source.BonusAvailable,
             source.PaidAvailable,
-            revision,
             clock.UtcNow);
         await store.AddAsync(quote, cancellationToken);
 

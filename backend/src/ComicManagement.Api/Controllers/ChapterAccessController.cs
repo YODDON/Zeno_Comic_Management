@@ -2,10 +2,12 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Authorization;
+using ComicManagement.Api.Reading;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Unlocks;
 using ComicManagement.Shared.Identity;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ComicManagement.Api.Controllers;
@@ -18,13 +20,16 @@ public sealed class ChapterAccessController(
     ICurrentUser currentUser) : ControllerBase
 {
     [Authorize(Policy = AuthorizationPolicies.User)]
+    [EnableRateLimiting(ReadingRateLimitConstants.UnlockQuoteCreatePolicy)]
     [HttpPost("{chapterId:guid}/unlock-quotes")]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType<ChapterUnlockQuoteResponse>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<ChapterUnlockQuoteResponse>> CreateUnlockQuote(
         Guid chapterId,
         CancellationToken cancellationToken)

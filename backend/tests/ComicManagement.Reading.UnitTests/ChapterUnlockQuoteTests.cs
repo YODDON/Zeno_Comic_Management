@@ -119,6 +119,36 @@ public sealed class ChapterUnlockQuoteTests
             ChapterUnlockPricingPolicy.CalculateRevision(chapterId, 101, 0));
     }
 
+    [Fact]
+    public void Factory_derives_revision_and_does_not_accept_caller_supplied_digest()
+    {
+        var chapterId = Guid.NewGuid();
+        var quote = ChapterUnlockQuote.Create(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            chapterId,
+            101,
+            ChapterUnlockPricingPolicy.VipDiscountPercent,
+            bonusAvailable: 30,
+            paidAvailable: 100,
+            createdAt: Now);
+
+        Assert.Equal(
+            ChapterUnlockPricingPolicy.CalculateRevision(
+                chapterId,
+                101,
+                ChapterUnlockPricingPolicy.VipDiscountPercent),
+            quote.PriceRevision);
+        Assert.NotEqual(new string('a', ChapterUnlockQuote.PriceRevisionLength), quote.PriceRevision);
+        Assert.DoesNotContain(
+            typeof(ChapterUnlockQuote).GetMethod(nameof(ChapterUnlockQuote.Create))!
+                .GetParameters(),
+            parameter => string.Equals(
+                parameter.Name,
+                "priceRevision",
+                StringComparison.Ordinal));
+    }
+
     private sealed class FakeStore(ChapterUnlockQuoteSource? source)
         : IChapterUnlockQuoteStore
     {

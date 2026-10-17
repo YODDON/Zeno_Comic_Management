@@ -124,9 +124,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         }
 
         if (ChangeTracker.Entries<ChapterUnlockQuote>().Any(entry =>
-                entry.State is EntityState.Modified or EntityState.Deleted))
+                entry.State == EntityState.Modified))
         {
-            throw new InvalidOperationException("Chapter unlock quotes are append-only.");
+            throw new InvalidOperationException("Chapter unlock quotes are immutable.");
         }
     }
 
