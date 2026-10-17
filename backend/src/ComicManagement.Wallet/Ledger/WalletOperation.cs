@@ -3,11 +3,13 @@ namespace ComicManagement.Wallet.Ledger;
 public static class WalletOperationTypes
 {
     public const string TopUpCredit = "TopUpCredit";
+    public const string ChapterUnlock = "ChapterUnlock";
 }
 
 public static class WalletOperationSourceTypes
 {
     public const string PaymentOrder = "PaymentOrder";
+    public const string ReadingUnlock = "ReadingUnlock";
 }
 
 public sealed class WalletOperation

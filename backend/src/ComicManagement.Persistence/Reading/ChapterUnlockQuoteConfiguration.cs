@@ -33,6 +33,8 @@ internal sealed class ChapterUnlockQuoteConfiguration :
         });
 
         builder.HasKey(quote => quote.Id).HasName("pk_chapter_unlock_quotes");
+        builder.HasAlternateKey(quote => new { quote.Id, quote.UserId, quote.ChapterId })
+            .HasName("ak_chapter_unlock_quotes_id_user_chapter");
         builder.HasIndex(quote => new { quote.UserId, quote.ExpiresAt })
             .HasDatabaseName("ix_chapter_unlock_quotes_user_expiry");
         builder.HasIndex(quote => new { quote.ChapterId, quote.ExpiresAt })

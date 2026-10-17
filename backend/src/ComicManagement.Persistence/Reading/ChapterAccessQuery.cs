@@ -19,6 +19,8 @@ internal sealed class ChapterAccessQueryRow
     internal bool VipEligible { get; init; }
 
     internal bool HasActiveVip { get; init; }
+
+    internal bool HasCoinUnlock { get; init; }
 }
 
 internal sealed record ReadyChapterPageRow(
@@ -39,6 +41,7 @@ internal sealed record ChapterAccessManifestPageRow(
     long EffectivePriceCoins,
     bool VipEligible,
     bool HasActiveVip,
+    bool HasCoinUnlock,
     Guid PageId,
     int PageOrder,
     int Width,
@@ -70,6 +73,9 @@ internal static class ChapterAccessQuery
             HasActiveVip = userId.HasValue && dbContext.VipSubscriptions.Any(subscription =>
                 subscription.UserId == userId.Value &&
                 subscription.ExpiresAt > DateTimeOffset.UtcNow),
+            HasCoinUnlock = userId.HasValue && dbContext.ChapterUnlocks.Any(unlock =>
+                unlock.UserId == userId.Value &&
+                unlock.ChapterId == chapter.Id),
         };
 
     internal static async Task<ChapterAccessManifestRow?> LoadManifestAsync(
@@ -103,6 +109,9 @@ internal static class ChapterAccessQuery
                 userId.HasValue && dbContext.VipSubscriptions.Any(subscription =>
                     subscription.UserId == userId.Value &&
                     subscription.ExpiresAt > DateTimeOffset.UtcNow),
+                userId.HasValue && dbContext.ChapterUnlocks.Any(unlock =>
+                    unlock.UserId == userId.Value &&
+                    unlock.ChapterId == chapter.Id),
                 page.Id,
                 page.PageOrder,
                 page.Width,
@@ -123,6 +132,7 @@ internal static class ChapterAccessQuery
             EffectivePriceCoins = first.EffectivePriceCoins,
             VipEligible = first.VipEligible,
             HasActiveVip = first.HasActiveVip,
+            HasCoinUnlock = first.HasCoinUnlock,
         };
         var pages = rows
             .Select(row => new ReadyChapterPageRow(
@@ -141,7 +151,7 @@ internal static class ChapterAccessQuery
         row.EffectivePriceCoins,
         row.VipEligible,
         row.HasActiveVip,
-        HasCoinUnlock: false,
+        HasCoinUnlock: row.HasCoinUnlock,
         ActiveVipDiscountPercent: row.HasActiveVip
             ? VipPlan.FixedDiscountPercent
             : 0);

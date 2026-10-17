@@ -1,10 +1,16 @@
 using ComicManagement.Wallet.Ledger;
+using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Spending;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 
 namespace ComicManagement.Persistence;
+
+internal sealed record WalletSpendLockResult(
+    SpendCoinsOutcome Outcome,
+    WalletAccount? Wallet,
+    IReadOnlyList<PaidCoinLot> PaidLots);
 
 // This transaction-neutral engine is shared by W02 and later cross-module
 // workflows. The caller owns the transaction and SaveChanges boundary.
@@ -28,20 +34,71 @@ internal sealed class WalletSpendEngine(
             return new SpendCoinsResult(SpendCoinsOutcome.ValidationFailed);
         }
 
-        await EnsureWalletExistsAsync(command.UserId, occurredAt, cancellationToken);
-        var wallet = await LockWalletAsync(command.UserId, cancellationToken);
-        if (wallet is null)
+        var locked = await AcquireAsync(command.UserId, occurredAt, cancellationToken);
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded)
         {
-            return new SpendCoinsResult(SpendCoinsOutcome.WalletUnavailable);
+            return new SpendCoinsResult(locked.Outcome);
         }
 
-        var paidLots = await LockPaidLotsAsync(command.UserId, cancellationToken);
+        return await ApplyLockedAsync(command, locked, occurredAt, cancellationToken);
+    }
+
+    internal async Task<WalletSpendLockResult> AcquireAsync(
+        Guid userId,
+        DateTimeOffset walletCreatedAt,
+        CancellationToken cancellationToken)
+    {
+        if (dbContext.Database.CurrentTransaction is null)
+        {
+            throw new InvalidOperationException(
+                "Wallet spending requires an active database transaction.");
+        }
+
+        if (userId == Guid.Empty || walletCreatedAt.Offset != TimeSpan.Zero)
+        {
+            return new WalletSpendLockResult(
+                SpendCoinsOutcome.ValidationFailed,
+                null,
+                Array.Empty<PaidCoinLot>());
+        }
+
+        await EnsureWalletExistsAsync(userId, walletCreatedAt, cancellationToken);
+        var wallet = await LockWalletAsync(userId, cancellationToken);
+        if (wallet is null)
+        {
+            return new WalletSpendLockResult(
+                SpendCoinsOutcome.WalletUnavailable,
+                null,
+                Array.Empty<PaidCoinLot>());
+        }
+
+        var paidLots = await LockPaidLotsAsync(userId, cancellationToken);
         if (!await IsReconciledAsync(wallet, paidLots, cancellationToken))
         {
             logger.LogCritical(
                 "Wallet reconciliation failed before spending for user {UserId}.",
-                command.UserId);
-            return new SpendCoinsResult(SpendCoinsOutcome.InvariantViolation);
+                userId);
+            return new WalletSpendLockResult(
+                SpendCoinsOutcome.InvariantViolation,
+                wallet,
+                paidLots);
+        }
+
+        return new WalletSpendLockResult(SpendCoinsOutcome.Succeeded, wallet, paidLots);
+    }
+
+    internal async Task<SpendCoinsResult> ApplyLockedAsync(
+        SpendCoinsCommand command,
+        WalletSpendLockResult locked,
+        DateTimeOffset occurredAt,
+        CancellationToken cancellationToken)
+    {
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded ||
+            locked.Wallet is null ||
+            locked.Wallet.UserId != command.UserId ||
+            !WalletSpendingPolicy.IsValid(command, occurredAt))
+        {
+            return new SpendCoinsResult(SpendCoinsOutcome.ValidationFailed);
         }
 
         var replay = await TryReplayAsync(command, cancellationToken);
@@ -50,7 +107,11 @@ internal sealed class WalletSpendEngine(
             return replay;
         }
 
-        var decision = WalletSpendingPolicy.Apply(command, wallet, paidLots, occurredAt);
+        var decision = WalletSpendingPolicy.Apply(
+            command,
+            locked.Wallet,
+            locked.PaidLots,
+            occurredAt);
         if (decision.Result.Outcome != SpendCoinsOutcome.Succeeded)
         {
             return decision.Result;

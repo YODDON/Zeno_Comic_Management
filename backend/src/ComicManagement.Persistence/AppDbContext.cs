@@ -53,6 +53,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<ChapterUnlockQuote> ChapterUnlockQuotes => Set<ChapterUnlockQuote>();
 
+    internal DbSet<ChapterUnlock> ChapterUnlocks => Set<ChapterUnlock>();
+
     internal DbSet<WalletAccount> Wallets => Set<WalletAccount>();
 
     internal DbSet<PaidCoinLot> PaidCoinLots => Set<PaidCoinLot>();
@@ -115,6 +117,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
             throw new InvalidOperationException("Wallet ledger records are append-only.");
+        }
+
+        if (ChangeTracker.Entries<ChapterUnlock>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException("Chapter unlocks are append-only.");
         }
 
         if (ChangeTracker.Entries<VipTransaction>().Any(entry =>

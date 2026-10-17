@@ -19,6 +19,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
     private const string PreV01Migration = "20261016073318_AddTopUpFulfillment";
     private const string V01Migration = "20261016172119_AddVipMembership";
     private const string U01Migration = "20261017082258_AddChapterUnlockQuotes";
+    private const string U02Migration = "20261017130827_AddAtomicChapterUnlocks";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -43,6 +44,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261016073318_AddTopUpFulfillment",
         "20261016172119_AddVipMembership",
         U01Migration,
+        U02Migration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -817,6 +819,90 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             "DROP FUNCTION reading.enforce_chapter_unlock_quote_lifecycle();");
         await migrator.MigrateAsync(U01Migration);
         Assert.True(await TableExists(context, "reading.chapter_unlock_quotes"));
+    }
+
+    [Fact]
+    public async Task U02_upgrade_preserves_existing_quotes_and_adds_entitlement_constraints()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(U01Migration);
+
+        var now = DateTimeOffset.UtcNow;
+        var userId = Guid.NewGuid();
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId, "U02 Upgrade User", null, null, now));
+        var comic = Comic.Create(
+            comicId, $"u02-upgrade-{comicId:N}", "U02 Upgrade", string.Empty,
+            ComicSeriesStatuses.Ongoing, null, 80, false, now);
+        var chapter = Chapter.Create(
+            chapterId, comicId, "Chapter 1", 1, null, null, now);
+        var page = ChapterPage.CreatePending(
+            Guid.NewGuid(), chapterId, 1, $"u02/{chapterId:N}/1",
+            $"sha256:{new string('c', 64)}", now);
+        page.MarkReady(1200, 1800);
+        chapter.Publish(true, 1, now.AddSeconds(1));
+        comic.Publish(true, 1, now.AddSeconds(2));
+        context.Comics.Add(comic);
+        context.Chapters.Add(chapter);
+        context.ChapterPages.Add(page);
+        var quote = ComicManagement.Reading.Unlocks.ChapterUnlockQuote.Create(
+            Guid.NewGuid(), userId, chapterId, 80, 0, 0, 80, now);
+        context.ChapterUnlockQuotes.Add(quote);
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(U02Migration);
+        context.ChangeTracker.Clear();
+
+        Assert.True(await context.ChapterUnlockQuotes.AsNoTracking()
+            .AnyAsync(value => value.Id == quote.Id));
+        Assert.True(await TableExists(context, "reading.chapter_unlocks"));
+        Assert.True(await ConstraintIsValidated(
+            context,
+            "reading",
+            "chapter_unlocks",
+            "ck_chapter_unlocks_spend"));
+        Assert.True(await TriggerExists(
+            context,
+            "reading",
+            "chapter_unlocks",
+            "trg_chapter_unlocks_append_only"));
+    }
+
+    [Fact]
+    public async Task U02_migration_failure_rolls_back_without_partial_quote_schema_change()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(U01Migration);
+        await context.Database.ExecuteSqlRawAsync(
+            "CREATE TABLE reading.chapter_unlocks (id uuid PRIMARY KEY);");
+
+        await Assert.ThrowsAsync<PostgresException>(() =>
+            migrator.MigrateAsync(U02Migration));
+
+        Assert.False(await context.Database.SqlQueryRaw<bool>(
+                "SELECT EXISTS (SELECT 1 FROM pg_constraint " +
+                "WHERE conname = 'ak_chapter_unlock_quotes_id_user_chapter') AS \"Value\"")
+            .SingleAsync());
+        Assert.False(await context.Database.SqlQueryRaw<bool>(
+                "SELECT EXISTS (SELECT 1 FROM infrastructure.__ef_migrations_history " +
+                $"WHERE \"MigrationId\" = '{U02Migration}') AS \"Value\"")
+            .SingleAsync());
+
+        await context.Database.ExecuteSqlRawAsync("DROP TABLE reading.chapter_unlocks;");
+        await migrator.MigrateAsync(U02Migration);
+        Assert.True(await TableExists(context, "reading.chapter_unlocks"));
     }
 
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)

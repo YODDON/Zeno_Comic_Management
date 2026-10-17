@@ -17,8 +17,100 @@ namespace ComicManagement.Api.Controllers;
 public sealed class ChapterAccessController(
     ChapterAccessHandler accessHandler,
     ChapterUnlockQuoteHandler quoteHandler,
+    ChapterUnlockHandler unlockHandler,
     ICurrentUser currentUser) : ControllerBase
 {
+    [Authorize(Policy = AuthorizationPolicies.User)]
+    [HttpPost("{chapterId:guid}/unlock")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    [ProducesResponseType<UnlockChapterResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status422UnprocessableEntity)]
+    public async Task<ActionResult<UnlockChapterResponse>> Unlock(
+        Guid chapterId,
+        UnlockChapterRequest request,
+        [FromHeader(Name = "Idempotency-Key"), Required, StringLength(
+            200,
+            MinimumLength = 1)]
+        string idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        Response.Headers.CacheControl = "no-store";
+        var userId = currentUser.UserId ?? throw new InvalidOperationException(
+            "An authenticated user identifier is required.");
+        var result = await unlockHandler.UnlockAsync(
+            userId,
+            chapterId,
+            request.QuoteId,
+            idempotencyKey,
+            cancellationToken);
+        if (result.Outcome == UnlockChapterOutcome.Succeeded)
+        {
+            var state = result.State ?? throw new InvalidOperationException(
+                "A successful unlock requires state.");
+            return Ok(new UnlockChapterResponse(
+                state.ChapterId,
+                ChapterAccessTypeResponse.CoinUnlocked,
+                new UnlockSpentResponse(
+                    state.BonusCoins,
+                    state.PaidCoins,
+                    checked(state.BonusCoins + state.PaidCoins)),
+                new UnlockWalletAfterResponse(
+                    state.PaidAvailableAfter,
+                    state.BonusAvailableAfter),
+                state.AlreadyUnlocked));
+        }
+
+        return result.Outcome switch
+        {
+            UnlockChapterOutcome.ValidationFailed => BadRequest(CreateProblem(
+                StatusCodes.Status400BadRequest,
+                "VALIDATION_FAILED",
+                "Validation failed",
+                "The unlock request or Idempotency-Key is invalid.")),
+            UnlockChapterOutcome.NotFound => NotFound(CreateProblem(
+                StatusCodes.Status404NotFound,
+                "CHAPTER_UNAVAILABLE",
+                "Chapter unavailable",
+                "The requested chapter or quote is unavailable.")),
+            UnlockChapterOutcome.QuoteExpired => Conflict(CreateProblem(
+                StatusCodes.Status409Conflict,
+                "QUOTE_EXPIRED",
+                "Quote expired",
+                "Create a new unlock quote before retrying.")),
+            UnlockChapterOutcome.PriceChanged => Conflict(CreateProblem(
+                StatusCodes.Status409Conflict,
+                "PRICE_CHANGED",
+                "Price changed",
+                "Create a new unlock quote with the current price.")),
+            UnlockChapterOutcome.UnlockNotRequired => Conflict(CreateProblem(
+                StatusCodes.Status409Conflict,
+                "ALREADY_UNLOCKED",
+                "Unlock not required",
+                "The chapter is already accessible without a Coin unlock.")),
+            UnlockChapterOutcome.IdempotencyConflict => Conflict(CreateProblem(
+                StatusCodes.Status409Conflict,
+                "IDEMPOTENCY_CONFLICT",
+                "Idempotency conflict",
+                "The Idempotency-Key was already used with a different request.")),
+            UnlockChapterOutcome.InvariantViolation => Conflict(CreateProblem(
+                StatusCodes.Status409Conflict,
+                "CONCURRENCY_CONFLICT",
+                "Financial state conflict",
+                "The Wallet state could not be reconciled safely.")),
+            UnlockChapterOutcome.InsufficientCoins => UnprocessableEntity(CreateProblem(
+                StatusCodes.Status422UnprocessableEntity,
+                "INSUFFICIENT_COINS",
+                "Insufficient Coins",
+                "The Wallet does not contain enough available Coins.")),
+            _ => throw new InvalidOperationException("Unknown unlock outcome."),
+        };
+    }
+
     [Authorize(Policy = AuthorizationPolicies.User)]
     [EnableRateLimiting(ReadingRateLimitConstants.UnlockQuoteCreatePolicy)]
     [HttpPost("{chapterId:guid}/unlock-quotes")]
@@ -277,6 +369,28 @@ public sealed record ChapterUnlockQuoteResponse(
     [property: StringLength(64, MinimumLength = 64)]
     [property: RegularExpression("^[0-9a-f]{64}$")]
     string PriceRevision);
+
+public sealed class UnlockChapterRequest
+{
+    [Required]
+    public Guid QuoteId { get; init; }
+}
+
+public sealed record UnlockSpentResponse(
+    [property: Range(0, long.MaxValue)] long BonusCoins,
+    [property: Range(0, long.MaxValue)] long PaidCoins,
+    [property: Range(1, long.MaxValue)] long TotalCoins);
+
+public sealed record UnlockWalletAfterResponse(
+    [property: Range(0, long.MaxValue)] long PaidAvailable,
+    [property: Range(0, long.MaxValue)] long BonusAvailable);
+
+public sealed record UnlockChapterResponse(
+    Guid ChapterId,
+    ChapterAccessTypeResponse AccessType,
+    UnlockSpentResponse Spent,
+    UnlockWalletAfterResponse WalletAfter,
+    bool AlreadyUnlocked);
 
 public sealed record ChapterManifestPageResponse(
     int Order,
