@@ -1,7 +1,11 @@
+using System.ComponentModel.DataAnnotations;
 using System.Text.Json.Serialization;
 using ComicManagement.Api.Authentication;
+using ComicManagement.Api.Authorization;
 using ComicManagement.Reading.Access;
+using ComicManagement.Reading.Unlocks;
 using ComicManagement.Shared.Identity;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace ComicManagement.Api.Controllers;
@@ -10,8 +14,44 @@ namespace ComicManagement.Api.Controllers;
 [Route("api/v1/chapters")]
 public sealed class ChapterAccessController(
     ChapterAccessHandler accessHandler,
+    ChapterUnlockQuoteHandler quoteHandler,
     ICurrentUser currentUser) : ControllerBase
 {
+    [Authorize(Policy = AuthorizationPolicies.User)]
+    [HttpPost("{chapterId:guid}/unlock-quotes")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    [ProducesResponseType<ChapterUnlockQuoteResponse>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ChapterUnlockQuoteResponse>> CreateUnlockQuote(
+        Guid chapterId,
+        CancellationToken cancellationToken)
+    {
+        var userId = currentUser.UserId ?? throw new InvalidOperationException(
+            "An authenticated user identifier is required.");
+        var result = await quoteHandler.CreateAsync(userId, chapterId, cancellationToken);
+        return result.Outcome switch
+        {
+            ChapterUnlockQuoteOutcome.Succeeded => StatusCode(
+                StatusCodes.Status201Created,
+                ToResponse(result.Quote ?? throw new InvalidOperationException(
+                    "A successful quote command requires a quote."))),
+            ChapterUnlockQuoteOutcome.NotFound => NotFound(CreateProblem(
+                StatusCodes.Status404NotFound,
+                "CHAPTER_UNAVAILABLE",
+                "Chapter unavailable",
+                "The requested chapter is unavailable.")),
+            ChapterUnlockQuoteOutcome.UnlockNotRequired => Conflict(CreateProblem(
+                StatusCodes.Status409Conflict,
+                "ALREADY_UNLOCKED",
+                "Unlock not required",
+                "The chapter is already accessible to this account.")),
+            _ => throw new InvalidOperationException("Unknown unlock quote outcome."),
+        };
+    }
+
     [HttpGet("{chapterId:guid}/access")]
     [ProducesResponseType<ChapterAccessResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
@@ -169,6 +209,17 @@ public sealed class ChapterAccessController(
         access.PriceCoins,
         access.NeedsLogin);
 
+    private static ChapterUnlockQuoteResponse ToResponse(ChapterUnlockQuoteState quote) => new(
+        quote.QuoteId,
+        quote.ChapterId,
+        quote.BasePriceCoins,
+        quote.VipDiscountApplied,
+        quote.FinalPriceCoins,
+        quote.BonusToSpend,
+        quote.PaidToSpend,
+        quote.ExpiresAt,
+        quote.PriceRevision);
+
     private ChapterManifestResponse ToResponse(ChapterManifest manifest) => new(
         manifest.ChapterId,
         manifest.Pages.Select(page => new ChapterManifestPageResponse(
@@ -204,6 +255,23 @@ public sealed record ChapterAccessResponse(
     bool CanRead,
     long PriceCoins,
     bool NeedsLogin);
+
+public sealed record ChapterUnlockQuoteResponse(
+    Guid QuoteId,
+    Guid ChapterId,
+    [property: Range(1, long.MaxValue)]
+    long BasePriceCoins,
+    bool VipDiscountApplied,
+    [property: Range(1, long.MaxValue)]
+    long FinalPriceCoins,
+    [property: Range(0, long.MaxValue)]
+    long BonusToSpend,
+    [property: Range(0, long.MaxValue)]
+    long PaidToSpend,
+    DateTimeOffset ExpiresAt,
+    [property: StringLength(64, MinimumLength = 64)]
+    [property: RegularExpression("^[0-9a-f]{64}$")]
+    string PriceRevision);
 
 public sealed record ChapterManifestPageResponse(
     int Order,

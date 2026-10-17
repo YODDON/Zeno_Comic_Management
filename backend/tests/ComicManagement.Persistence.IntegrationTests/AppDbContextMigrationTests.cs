@@ -18,6 +18,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
     private const string InitialMigration = "20261011120000_InitialSchemas";
     private const string PreV01Migration = "20261016073318_AddTopUpFulfillment";
     private const string V01Migration = "20261016172119_AddVipMembership";
+    private const string U01Migration = "20261017082258_AddChapterUnlockQuotes";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -41,6 +42,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261015185709_AddSePayWebhookIngestion",
         "20261016073318_AddTopUpFulfillment",
         "20261016172119_AddVipMembership",
+        U01Migration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -88,6 +90,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "catalog.chapter_pages"));
         Assert.True(await TableExists(context, "administration.audit_logs"));
         Assert.True(await TableExists(context, "reading.reading_sessions"));
+        Assert.True(await TableExists(context, "reading.chapter_unlock_quotes"));
         Assert.True(await TableExists(context, "reading.reading_progress"));
         Assert.True(await TableExists(context, "wallet.wallets"));
         Assert.True(await TableExists(context, "wallet.paid_coin_lots"));
@@ -669,6 +672,74 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
                 "SELECT EXISTS (SELECT 1 FROM infrastructure.__ef_migrations_history " +
                 $"WHERE \"MigrationId\" = '{V01Migration}') AS \"Value\"")
             .SingleAsync());
+    }
+
+    [Fact]
+    public async Task U01_upgrade_preserves_existing_catalog_and_identity_data()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(V01Migration);
+
+        var now = new DateTimeOffset(2026, 10, 17, 7, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "U01 Upgrade User",
+            null,
+            null,
+            now));
+        var comic = Comic.Create(
+            comicId,
+            $"u01-upgrade-{comicId:N}",
+            "U01 Upgrade",
+            string.Empty,
+            ComicSeriesStatuses.Ongoing,
+            null,
+            100,
+            false,
+            now);
+        var chapter = Chapter.Create(
+            chapterId,
+            comicId,
+            "Chapter 1",
+            1,
+            null,
+            null,
+            now);
+        var page = ChapterPage.CreatePending(
+            Guid.NewGuid(),
+            chapterId,
+            1,
+            $"u01-upgrade/{chapterId:N}/1",
+            $"sha256:{new string('a', 64)}",
+            now);
+        page.MarkReady(1200, 1800);
+        chapter.Publish(true, 1, now.AddMinutes(1));
+        comic.Publish(true, 1, now.AddMinutes(2));
+        context.Comics.Add(comic);
+        context.Chapters.Add(chapter);
+        context.ChapterPages.Add(page);
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(U01Migration);
+        context.ChangeTracker.Clear();
+
+        Assert.True(await context.Users.AnyAsync(candidate => candidate.Id == userId));
+        Assert.True(await context.Comics.AnyAsync(candidate => candidate.Id == comicId));
+        Assert.True(await context.Chapters.AnyAsync(candidate => candidate.Id == chapterId));
+        Assert.Empty(await context.ChapterUnlockQuotes.ToArrayAsync());
+        Assert.True(await ConstraintIsValidated(
+            context,
+            "reading",
+            "chapter_unlock_quotes",
+            "ck_chapter_unlock_quotes_price"));
     }
 
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)

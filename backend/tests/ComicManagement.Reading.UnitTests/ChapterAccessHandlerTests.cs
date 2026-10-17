@@ -47,6 +47,24 @@ public sealed class ChapterAccessHandlerTests
     }
 
     [Fact]
+    public async Task Active_vip_receives_rounded_discount_on_other_locked_chapter()
+    {
+        var projection = new ChapterAccessProjection(
+            Guid.NewGuid(),
+            101,
+            VipEligible: false,
+            HasActiveVip: true,
+            HasCoinUnlock: false,
+            ActiveVipDiscountPercent: 20);
+
+        var result = await Handler(new FakeStore(projection))
+            .GetAccessAsync(projection.ChapterId, Guid.NewGuid());
+
+        Assert.Equal(ChapterAccessTypes.Locked, result.Access!.AccessType);
+        Assert.Equal(81, result.Access.PriceCoins);
+    }
+
+    [Fact]
     public async Task Batch_projection_resolves_all_visible_chapters_in_one_store_call()
     {
         var free = Projection(0);

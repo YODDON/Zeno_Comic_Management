@@ -1,4 +1,5 @@
 using ComicManagement.Shared.Time;
+using ComicManagement.Reading.Unlocks;
 
 namespace ComicManagement.Reading.Access;
 
@@ -32,7 +33,8 @@ public sealed record ChapterAccessProjection(
     long EffectivePriceCoins,
     bool VipEligible,
     bool HasActiveVip,
-    bool HasCoinUnlock);
+    bool HasCoinUnlock,
+    int ActiveVipDiscountPercent = 0);
 
 public sealed record ChapterManifestPageSource(
     int Order,
@@ -124,7 +126,11 @@ public static class ChapterAccessPolicy
             projection.ChapterId,
             ChapterAccessTypes.Locked,
             false,
-            projection.EffectivePriceCoins,
+            isAuthenticated && projection.HasActiveVip
+                ? ChapterUnlockPricingPolicy.CalculateFinalPrice(
+                    projection.EffectivePriceCoins,
+                    projection.ActiveVipDiscountPercent)
+                : projection.EffectivePriceCoins,
             !isAuthenticated);
     }
 }

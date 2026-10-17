@@ -17,6 +17,7 @@ using ComicManagement.Identity.Users;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Library;
 using ComicManagement.Reading.Sessions;
+using ComicManagement.Reading.Unlocks;
 using ComicManagement.Workflows.Reading;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Queries;
@@ -25,6 +26,7 @@ using ComicManagement.Billing.Events;
 using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Membership.Plans;
+using ComicManagement.Membership.Subscriptions;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
@@ -125,6 +127,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChapterAccessHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<ChapterUnlockQuoteHandler>());
+        Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterUnlockQuoteStore>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageContentProvider>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<PublicChapterListWorkflow>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<ReadingSessionHandler>());
@@ -1310,6 +1314,114 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 await hiddenResponse.Content.ReadAsStringAsync(),
                 StringComparison.OrdinalIgnoreCase);
         }
+    }
+
+    [Fact]
+    public async Task Unlock_quote_requires_user_csrf_and_persists_server_pricing()
+    {
+        var comicId = Guid.NewGuid();
+        var lockedChapterId = Guid.NewGuid();
+        var freeChapterId = Guid.NewGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var comic = Comic.Create(
+                comicId,
+                $"u01-api-{comicId:N}",
+                "U01 API",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                101,
+                false,
+                now);
+            AddApiPublishedChapter(context, comicId, lockedChapterId, 1, null, now);
+            AddApiPublishedChapter(context, comicId, freeChapterId, 2, 0, now);
+            comic.Publish(true, 1, now.AddMinutes(3));
+            context.Comics.Add(comic);
+            await context.SaveChangesAsync();
+        }
+
+        using var anonymousClient = CreateClient();
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymousClient.PostAsync(
+                $"/api/v1/chapters/{lockedChapterId}/unlock-quotes",
+                content: null)).StatusCode);
+
+        const string subject = "google-subject-u01-quote";
+        _factory.TokenEndpoint.SetProfile(
+            subject,
+            "U01 Quote User",
+            "u01-quote@example.com",
+            null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/reader"));
+
+        var missingCsrf = await client.PostAsync(
+            $"/api/v1/chapters/{lockedChapterId}/unlock-quotes",
+            content: null);
+        Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
+        var missingCsrfProblem = await missingCsrf.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(
+            "VALIDATION_FAILED",
+            missingCsrfProblem.GetProperty("errorCode").GetString());
+
+        var me = await client.GetAsync("/api/v1/me");
+        var meJson = await me.Content.ReadFromJsonAsync<JsonElement>();
+        var userId = meJson.GetProperty("id").GetGuid();
+        var csrfToken = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        await using (var membershipScope = _factory.Services.CreateAsyncScope())
+        {
+            var context = membershipScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var (subscription, _) = VipSubscription.Create(
+                userId,
+                DateTimeOffset.UtcNow,
+                VipPlan.FixedDurationHours);
+            context.VipSubscriptions.Add(subscription);
+            await context.SaveChangesAsync();
+        }
+
+        async Task<HttpResponseMessage> CreateQuoteAsync(Guid chapterId)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/chapters/{chapterId}/unlock-quotes");
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+            return await client.SendAsync(request);
+        }
+
+        var response = await CreateQuoteAsync(lockedChapterId);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Contains("no-store", response.Headers.CacheControl!.ToString());
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(lockedChapterId, document.GetProperty("chapterId").GetGuid());
+        Assert.Equal(101, document.GetProperty("basePriceCoins").GetInt64());
+        Assert.True(document.GetProperty("vipDiscountApplied").GetBoolean());
+        Assert.Equal(81, document.GetProperty("finalPriceCoins").GetInt64());
+        Assert.Equal(0, document.GetProperty("bonusToSpend").GetInt64());
+        Assert.Equal(0, document.GetProperty("paidToSpend").GetInt64());
+        Assert.Matches(
+            "^[0-9a-f]{64}$",
+            document.GetProperty("priceRevision").GetString()!);
+
+        await using (var verificationScope = _factory.Services.CreateAsyncScope())
+        {
+            var context = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var quoteId = document.GetProperty("quoteId").GetGuid();
+            var quote = await context.ChapterUnlockQuotes.AsNoTracking().SingleAsync(candidate =>
+                candidate.Id == quoteId);
+            Assert.Equal(TimeSpan.FromMinutes(5), quote.ExpiresAt - quote.CreatedAt);
+            Assert.Equal(userId, quote.UserId);
+        }
+
+        var unnecessary = await CreateQuoteAsync(freeChapterId);
+        Assert.Equal(HttpStatusCode.Conflict, unnecessary.StatusCode);
+        var unnecessaryProblem = await unnecessary.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(
+            "ALREADY_UNLOCKED",
+            unnecessaryProblem.GetProperty("errorCode").GetString());
     }
 
     [Fact]
@@ -2792,6 +2904,40 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             accessTypeSchema.GetProperty("enum")
                 .EnumerateArray()
                 .Select(value => value.GetString()));
+
+        var quote = paths
+            .GetProperty("/api/v1/chapters/{chapterId}/unlock-quotes")
+            .GetProperty("post");
+        foreach (var status in new[] { "201", "401", "403", "404", "409" })
+        {
+            Assert.True(quote.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var quoteSchema = ResolveResponseSchema(document, quote, "201");
+        foreach (var property in new[]
+                 {
+                     "quoteId", "chapterId", "basePriceCoins", "vipDiscountApplied",
+                     "finalPriceCoins", "bonusToSpend", "paidToSpend", "expiresAt",
+                     "priceRevision",
+                 })
+        {
+            Assert.True(quoteSchema.GetProperty("properties").TryGetProperty(property, out _));
+            Assert.Contains(
+                property,
+                quoteSchema.GetProperty("required")
+                    .EnumerateArray()
+                    .Select(value => value.GetString()));
+        }
+
+        var revisionSchema = quoteSchema.GetProperty("properties").GetProperty("priceRevision");
+        Assert.Equal(64, revisionSchema.GetProperty("minLength").GetInt32());
+        Assert.Equal(64, revisionSchema.GetProperty("maxLength").GetInt32());
+        Assert.Equal("^[0-9a-f]{64}$", revisionSchema.GetProperty("pattern").GetString());
+        var quoteErrorSchema = ResolveResponseSchema(document, quote, "409");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(quoteErrorSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
 
         var pages = paths
             .GetProperty("/api/v1/chapters/{chapterId}/pages")

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
+using ComicManagement.Membership.Plans;
 using ComicManagement.Reading.Access;
 using Microsoft.EntityFrameworkCore;
 
@@ -140,7 +141,10 @@ internal static class ChapterAccessQuery
         row.EffectivePriceCoins,
         row.VipEligible,
         row.HasActiveVip,
-        HasCoinUnlock: false);
+        HasCoinUnlock: false,
+        ActiveVipDiscountPercent: row.HasActiveVip
+            ? VipPlan.FixedDiscountPercent
+            : 0);
 
     private static string CalculateRevision(IReadOnlyList<ReadyChapterPageRow> pages)
     {

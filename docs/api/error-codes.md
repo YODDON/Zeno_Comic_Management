@@ -17,7 +17,7 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 409 | OPERATION_IN_PROGRESS | Poll/retry with same key after Retry-After |
 | 409 | QUOTE_EXPIRED | Get fresh five-minute quote |
 | 409 | PRICE_CHANGED | Get quote with current pricing |
-| 409 | ALREADY_UNLOCKED | Prefer 200 existing entitlement rather than duplicate debit |
+| 409 | ALREADY_UNLOCKED | Quote is unnecessary because access is already Free, VIP-included or coin-unlocked; the U02 unlock command should replay an existing entitlement rather than debit twice |
 | 409 | REFUND_ALREADY_EXISTS | One refund request per TopUp even if Rejected |
 | 409 | TRANSFER_REFERENCE_CONFLICT | Reconcile transfer, never silently overwrite |
 | 422 | INSUFFICIENT_COINS | Offer TopUp; no debit |

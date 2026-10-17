@@ -14,6 +14,7 @@ Original Paid lot granted 10,000; before approval `spent=0`, `refunded=0`, `rese
 - 1 fulfilled VipPurchase = exactly 1 immutable `VipTransaction`, exactly 1 fulfilled provider transaction and exactly 1 VIP-activation outbox message whose identifiers and snapshots agree. `VipSubscription.Version` equals the latest consecutive per-user `SubscriptionVersion`, with no missing/intermediate version and a continuous `PreviousExpiry -> NewExpiry` chain. The complete historical artifact chain is validated fail-closed before renewal.
 - A VIP success atomically updates PaymentOrder/provider state, extends the subscription, appends its versioned VIP transaction and writes one activation outbox row. Late, mismatched or integrity-drifted payment evidence creates no entitlement or success outbox. VIP orders never credit Paid Coins; no Bonus Coins refunds.
 - Bonus before Paid FIFO and never consume reserved Paid.
+- An unlock quote is an append-only five-minute pricing/balance estimate only: creating it cannot mutate Wallet, PaidCoinLot, ledger or entitlement state. U02 must revalidate price, access and balances under its financial locks.
 - Refund whole original Paid lot or reject: never substitute a different lot; 7-day request window, 5% fee, one request/order.
 - Complete manual refund only with external transfer evidence and reference; outcome ambiguity blocks automatic release/retry.
 - Mission grants Bonus at most 300 per VN local event date, without partial grant; transactionally update daily counter and wallet.
