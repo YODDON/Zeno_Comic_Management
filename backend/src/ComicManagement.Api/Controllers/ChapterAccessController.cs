@@ -54,7 +54,7 @@ public sealed class ChapterAccessController(
                 "A successful unlock requires state.");
             return Ok(new UnlockChapterResponse(
                 state.ChapterId,
-                ChapterAccessTypeResponse.CoinUnlocked,
+                UnlockChapterAccessTypeResponse.CoinUnlocked,
                 new UnlockSpentResponse(
                     state.BonusCoins,
                     state.PaidCoins,
@@ -387,10 +387,16 @@ public sealed record UnlockWalletAfterResponse(
 
 public sealed record UnlockChapterResponse(
     Guid ChapterId,
-    ChapterAccessTypeResponse AccessType,
+    UnlockChapterAccessTypeResponse AccessType,
     UnlockSpentResponse Spent,
     UnlockWalletAfterResponse WalletAfter,
     bool AlreadyUnlocked);
+
+[JsonConverter(typeof(JsonStringEnumConverter<UnlockChapterAccessTypeResponse>))]
+public enum UnlockChapterAccessTypeResponse
+{
+    CoinUnlocked = 0,
+}
 
 public sealed record ChapterManifestPageResponse(
     int Order,

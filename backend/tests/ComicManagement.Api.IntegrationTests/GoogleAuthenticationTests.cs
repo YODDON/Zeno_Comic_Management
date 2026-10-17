@@ -1680,6 +1680,128 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         var quoteId = await QuoteAsync();
         var otherQuoteId = await QuoteAsync();
+
+        var expiredQuote = ChapterUnlockQuote.Create(
+            Guid.NewGuid(),
+            userId,
+            chapterId,
+            80,
+            0,
+            30,
+            100,
+            DateTimeOffset.UtcNow.AddMinutes(-10));
+        await using (var expiredScope = _factory.Services.CreateAsyncScope())
+        {
+            var context = expiredScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.ChapterUnlockQuotes.Add(expiredQuote);
+            await context.SaveChangesAsync();
+        }
+
+        using (var expiredRequest = UnlockRequest(
+                   chapterId,
+                   expiredQuote.Id,
+                   "u02-expired",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(expiredRequest),
+                HttpStatusCode.Conflict,
+                "QUOTE_EXPIRED");
+        }
+
+        var changedQuoteId = await QuoteAsync();
+        await using (var changeScope = _factory.Services.CreateAsyncScope())
+        {
+            await changeScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)81));
+        }
+
+        using (var changedRequest = UnlockRequest(
+                   chapterId,
+                   changedQuoteId,
+                   "u02-price-changed",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(changedRequest),
+                HttpStatusCode.Conflict,
+                "PRICE_CHANGED");
+        }
+
+        await using (var restorePriceScope = _factory.Services.CreateAsyncScope())
+        {
+            await restorePriceScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)null));
+        }
+
+        var hiddenQuoteId = await QuoteAsync();
+        await using (var hideScope = _factory.Services.CreateAsyncScope())
+        {
+            await hideScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PublicationStatus,
+                    ChapterPublicationStatuses.Hidden));
+        }
+
+        using (var hiddenRequest = UnlockRequest(
+                   chapterId,
+                   hiddenQuoteId,
+                   "u02-hidden",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(hiddenRequest),
+                HttpStatusCode.NotFound,
+                "CHAPTER_UNAVAILABLE");
+        }
+
+        await using (var publishScope = _factory.Services.CreateAsyncScope())
+        {
+            await publishScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PublicationStatus,
+                    ChapterPublicationStatuses.Published));
+        }
+
+        await using (var expensiveScope = _factory.Services.CreateAsyncScope())
+        {
+            await expensiveScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)200));
+        }
+
+        var expensiveQuoteId = await QuoteAsync();
+        using (var insufficientRequest = UnlockRequest(
+                   chapterId,
+                   expensiveQuoteId,
+                   "u02-insufficient",
+                   csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(insufficientRequest),
+                HttpStatusCode.UnprocessableEntity,
+                "INSUFFICIENT_COINS");
+        }
+
+        await using (var restoreScope = _factory.Services.CreateAsyncScope())
+        {
+            await restoreScope.ServiceProvider.GetRequiredService<AppDbContext>().Chapters
+                .Where(chapter => chapter.Id == chapterId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    chapter => chapter.PriceOverrideCoins,
+                    (long?)null));
+        }
+
         using (var missingCsrf = UnlockRequest(chapterId, quoteId, "missing-csrf"))
         {
             await AssertStandardizedErrorAsync(
@@ -1696,7 +1818,44 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 "VALIDATION_FAILED");
         }
 
+        using (var emptyKey = UnlockRequest(chapterId, quoteId, string.Empty, csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(emptyKey),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using (var longKey = UnlockRequest(chapterId, quoteId, new string('k', 201), csrf))
+        {
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(longKey),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using (var malformed = UnlockRequest(chapterId, quoteId, "malformed", csrf))
+        {
+            malformed.Content = new StringContent(
+                "{\"quoteId\":",
+                Encoding.UTF8,
+                "application/json");
+            await AssertStandardizedErrorAsync(
+                await client.SendAsync(malformed),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
         using var request = UnlockRequest(chapterId, quoteId, "u02-http", csrf);
+        request.Content = JsonContent.Create(new
+        {
+            quoteId,
+            pricePaidCoins = 1,
+            bonusSpentCoins = 999,
+            paidSpentCoins = 999,
+            accessType = "Free",
+            unlockedAt = DateTimeOffset.UtcNow.AddYears(1),
+        });
         var response = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Contains("no-store", response.Headers.CacheControl!.ToString());
@@ -3311,6 +3470,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     .EnumerateArray()
                     .Select(value => value.GetString()));
         }
+
+        var unlockAccessType = ResolveOpenApiSchema(
+            document,
+            unlockSchema.GetProperty("properties").GetProperty("accessType"));
+        Assert.Equal(
+            ["CoinUnlocked"],
+            unlockAccessType.GetProperty("enum")
+                .EnumerateArray()
+                .Select(value => value.GetString()));
 
         foreach (var status in new[] { "400", "401", "403", "404", "409", "422" })
         {

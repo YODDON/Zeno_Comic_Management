@@ -90,5 +90,32 @@ internal sealed class ChapterUnlockConfiguration : IEntityTypeConfiguration<Chap
             .HasForeignKey(unlock => new { unlock.WalletOperationId, unlock.UserId })
             .HasPrincipalKey(operation => new { operation.Id, operation.UserId })
             .OnDelete(DeleteBehavior.Restrict);
+
+        // The unique single-column indexes on quote_id and wallet_operation_id
+        // already cover these FK prefixes. Remove convention-created duplicates.
+        RemoveRedundantConventionIndex(
+            builder,
+            nameof(ChapterUnlock.QuoteId),
+            nameof(ChapterUnlock.UserId),
+            nameof(ChapterUnlock.ChapterId));
+        RemoveRedundantConventionIndex(
+            builder,
+            nameof(ChapterUnlock.WalletOperationId),
+            nameof(ChapterUnlock.UserId));
+    }
+
+    private static void RemoveRedundantConventionIndex(
+        EntityTypeBuilder<ChapterUnlock> builder,
+        params string[] propertyNames)
+    {
+        var properties = propertyNames
+            .Select(name => builder.Metadata.FindProperty(name)
+                ?? throw new InvalidOperationException($"Property '{name}' was not configured."))
+            .ToArray();
+        var index = builder.Metadata.FindIndex(properties);
+        if (index is not null && !index.IsUnique)
+        {
+            builder.Metadata.RemoveIndex(index);
+        }
     }
 }

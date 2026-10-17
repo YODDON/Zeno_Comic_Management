@@ -1,7 +1,9 @@
+using System.Text.Json;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Identity.Users;
+using ComicManagement.Membership.Subscriptions;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Events;
 using ComicManagement.Reading.Unlocks;
@@ -81,9 +83,21 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
         Assert.Equal(50, await context.WalletAllocations
             .Where(value => value.OperationId == operation.Id)
             .SumAsync(value => value.AmountCoins));
-        Assert.Single(await context.OutboxMessages.AsNoTracking()
+        var outbox = Assert.Single(await context.OutboxMessages.AsNoTracking()
             .Where(value => value.EventType == ReadingEventTypes.ChapterUnlocked)
             .ToArrayAsync());
+        var payload = JsonSerializer.Deserialize<ChapterUnlocked>(
+            outbox.Payload,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        Assert.NotNull(payload);
+        Assert.Equal(unlock.Id, payload.UnlockId);
+        Assert.Equal(unlock.UserId, payload.UserId);
+        Assert.Equal(unlock.ChapterId, payload.ChapterId);
+        Assert.Equal(unlock.QuoteId, payload.QuoteId);
+        Assert.Equal(operation.Id, payload.WalletOperationId);
+        Assert.Equal(80, payload.PricePaidCoins);
+        Assert.Equal(30, payload.BonusSpentCoins);
+        Assert.Equal(50, payload.PaidSpentCoins);
         var accessProjection = await scope.ServiceProvider
             .GetRequiredService<IChapterAccessProjectionStore>()
             .GetManyAsync([seed.ChapterId], seed.UserId);
@@ -125,6 +139,116 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         Assert.Single(await context.ChapterUnlocks.ToArrayAsync());
         Assert.Equal(120, (await context.Wallets.SingleAsync()).PaidAvailable);
+    }
+
+    [Fact]
+    public async Task Exact_replay_ignores_later_wallet_drift_and_missing_request_quote()
+    {
+        var seed = await SeedAsync(_services, 80, 0, 200);
+        Assert.Equal(
+            UnlockChapterOutcome.Succeeded,
+            (await UnlockAsync(_services, seed, "stable-replay")).Outcome);
+
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await context.Wallets
+                .Where(wallet => wallet.UserId == seed.UserId)
+                .ExecuteUpdateAsync(setters => setters.SetProperty(
+                    wallet => wallet.PaidAvailable,
+                    wallet => wallet.PaidAvailable + 1));
+        }
+
+        var replay = await UnlockAsync(_services, seed, "stable-replay");
+        var conflict = await UnlockAsync(
+            _services,
+            seed with { QuoteId = Guid.NewGuid() },
+            "stable-replay");
+
+        Assert.Equal(UnlockChapterOutcome.Succeeded, replay.Outcome);
+        Assert.False(replay.State!.AlreadyUnlocked);
+        Assert.Equal(UnlockChapterOutcome.IdempotencyConflict, conflict.Outcome);
+        await using var verificationScope = _services.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Single(await verification.ChapterUnlocks.ToArrayAsync());
+        Assert.Single(await verification.WalletOperations
+            .Where(operation => operation.OperationType == WalletOperationTypes.ChapterUnlock)
+            .ToArrayAsync());
+        Assert.Single(await verification.OutboxMessages
+            .Where(message => message.EventType == ReadingEventTypes.ChapterUnlocked)
+            .ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Quote_lock_wait_crossing_expiry_fails_closed()
+    {
+        var observer = new SignalingObserver();
+        await using var services = BuildServices(collection =>
+        {
+            collection.RemoveAll<IChapterUnlockCriticalSectionObserver>();
+            collection.AddSingleton<IChapterUnlockCriticalSectionObserver>(observer);
+        });
+        var seed = await SeedAsync(
+            services,
+            80,
+            0,
+            100,
+            quoteCreatedAt: DateTimeOffset.UtcNow - ChapterUnlockQuote.TimeToLive +
+                TimeSpan.FromMilliseconds(900));
+
+        await using var blocker = new NpgsqlConnection(_postgres.GetConnectionString());
+        await blocker.OpenAsync();
+        await using var blockerTransaction = await blocker.BeginTransactionAsync();
+        await ExecuteAsync(
+            blocker,
+            $"SELECT 1 FROM reading.chapter_unlock_quotes WHERE id = '{seed.QuoteId:D}' FOR UPDATE");
+
+        var unlockTask = UnlockAsync(services, seed, "quote-expiry-race");
+        await observer.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(1_100);
+        await blockerTransaction.CommitAsync();
+
+        Assert.Equal(UnlockChapterOutcome.QuoteExpired, (await unlockTask).Outcome);
+        await AssertNoUnlockSideEffectsAsync(services, seed.UserId);
+    }
+
+    [Fact]
+    public async Task Vip_lock_wait_crossing_expiry_reprices_and_fails_closed()
+    {
+        var observer = new SignalingObserver();
+        await using var services = BuildServices(collection =>
+        {
+            collection.RemoveAll<IChapterUnlockCriticalSectionObserver>();
+            collection.AddSingleton<IChapterUnlockCriticalSectionObserver>(observer);
+        });
+        var vipExpiresAt = DateTimeOffset.UtcNow.AddMilliseconds(900);
+        var seed = await SeedAsync(
+            services,
+            100,
+            0,
+            100,
+            vipExpiresAt: vipExpiresAt,
+            vipDiscountPercent: ChapterUnlockPricingPolicy.VipDiscountPercent);
+
+        await using var blocker = new NpgsqlConnection(_postgres.GetConnectionString());
+        await blocker.OpenAsync();
+        await using var blockerTransaction = await blocker.BeginTransactionAsync();
+        await using (var lockCommand = new NpgsqlCommand(
+            "SELECT pg_advisory_xact_lock(hashtextextended(@lock_key, 0));",
+            blocker,
+            blockerTransaction))
+        {
+            lockCommand.Parameters.AddWithValue("lock_key", $"vip-subscription:{seed.UserId:N}");
+            await lockCommand.ExecuteNonQueryAsync();
+        }
+
+        var unlockTask = UnlockAsync(services, seed, "vip-expiry-race");
+        await observer.Entered.WaitAsync(TimeSpan.FromSeconds(10));
+        await Task.Delay(1_100);
+        await blockerTransaction.CommitAsync();
+
+        Assert.Equal(UnlockChapterOutcome.PriceChanged, (await unlockTask).Outcome);
+        await AssertNoUnlockSideEffectsAsync(services, seed.UserId);
     }
 
     [Fact]
@@ -296,6 +420,139 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
         Assert.Equal(PostgresErrorCodes.CheckViolation, invalidSpend.SqlState);
     }
 
+    [Theory]
+    [InlineData("TopUpCredit")]
+    [InlineData("WrongOperationType")]
+    [InlineData("WrongSourceType")]
+    [InlineData("WrongSourceId")]
+    [InlineData("MissingLedgerDebit")]
+    [InlineData("ExcessLedgerDebit")]
+    [InlineData("PaidAllocationMismatch")]
+    public async Task PostgreSql_rejects_entitlement_without_matching_unlock_debit(
+        string invalidCase)
+    {
+        var seed = await SeedAsync(_services, 80, 0, 100);
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var paidLotId = await context.PaidCoinLots
+            .Where(lot => lot.UserId == seed.UserId)
+            .Select(lot => lot.Id)
+            .SingleAsync();
+        var topUpOperationId = await context.WalletOperations
+            .Where(operation =>
+                operation.UserId == seed.UserId &&
+                operation.OperationType == WalletOperationTypes.TopUpCredit)
+            .Select(operation => operation.Id)
+            .SingleAsync();
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+            InsertInvalidUnlockAsync(
+                seed,
+                paidLotId,
+                topUpOperationId,
+                invalidCase));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+
+        var accessProjection = await scope.ServiceProvider
+            .GetRequiredService<IChapterAccessProjectionStore>()
+            .GetManyAsync([seed.ChapterId], seed.UserId);
+        Assert.Equal(
+            ChapterAccessTypes.Locked,
+            ChapterAccessPolicy.Resolve(
+                accessProjection[seed.ChapterId],
+                isAuthenticated: true).AccessType);
+        Assert.Empty(await context.ChapterUnlocks
+            .Where(unlock => unlock.UserId == seed.UserId)
+            .ToArrayAsync());
+    }
+
+    private async Task InsertInvalidUnlockAsync(
+        Seed seed,
+        Guid paidLotId,
+        Guid topUpOperationId,
+        string invalidCase)
+    {
+        var unlockId = Guid.NewGuid();
+        var operationId = invalidCase == "TopUpCredit"
+            ? topUpOperationId
+            : Guid.NewGuid();
+        var operationType = invalidCase == "WrongOperationType"
+            ? "OtherDebit"
+            : WalletOperationTypes.ChapterUnlock;
+        var sourceType = invalidCase == "WrongSourceType"
+            ? "OtherSource"
+            : WalletOperationSourceTypes.ReadingUnlock;
+        var sourceId = invalidCase == "WrongSourceId"
+            ? Guid.NewGuid()
+            : unlockId;
+        var usesPaid = invalidCase == "PaidAllocationMismatch";
+
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        if (invalidCase != "TopUpCredit")
+        {
+            await ExecuteAsync(
+                connection,
+                $"""
+                INSERT INTO wallet.wallet_operations
+                    (id,user_id,operation_type,source_type,source_id,idempotency_key,created_at)
+                VALUES ('{operationId:D}','{seed.UserId:D}','{operationType}',
+                        '{sourceType}','{sourceId:D}','invalid-{operationId:N}',clock_timestamp())
+                """);
+
+            if (invalidCase == "ExcessLedgerDebit")
+            {
+                await InsertDebitEntryAsync(connection, operationId, seed.UserId, "Bonus", -81);
+            }
+            else if (usesPaid)
+            {
+                await InsertDebitEntryAsync(connection, operationId, seed.UserId, "Paid", -80);
+                await ExecuteAsync(
+                    connection,
+                    $"""
+                    INSERT INTO wallet.wallet_allocations
+                        (id,operation_id,paid_coin_lot_id,amount_coins,created_at)
+                    VALUES ('{Guid.NewGuid():D}','{operationId:D}','{paidLotId:D}',79,clock_timestamp())
+                    """);
+            }
+            else if (invalidCase is not "MissingLedgerDebit")
+            {
+                await InsertDebitEntryAsync(connection, operationId, seed.UserId, "Bonus", -80);
+            }
+        }
+
+        await ExecuteAsync(
+            connection,
+            $"""
+            INSERT INTO reading.chapter_unlocks
+                (id,user_id,chapter_id,quote_id,wallet_operation_id,
+                 price_paid_coins,bonus_spent_coins,paid_spent_coins,
+                 wallet_paid_available_after,wallet_bonus_available_after,unlocked_at)
+            VALUES ('{unlockId:D}','{seed.UserId:D}','{seed.ChapterId:D}','{seed.QuoteId:D}',
+                    '{operationId:D}',80,{(usesPaid ? 0 : 80)},{(usesPaid ? 80 : 0)},
+                    20,0,clock_timestamp())
+            """);
+
+        await transaction.CommitAsync();
+    }
+
+    private static Task InsertDebitEntryAsync(
+        NpgsqlConnection connection,
+        Guid operationId,
+        Guid userId,
+        string coinType,
+        long delta) =>
+        ExecuteAsync(
+            connection,
+            $"""
+            INSERT INTO wallet.wallet_entries
+                (id,operation_id,user_id,coin_type,bucket,delta_coins,leg_order,created_at)
+            VALUES ('{Guid.NewGuid():D}','{operationId:D}','{userId:D}',
+                    '{coinType}','Available',{delta},1,clock_timestamp())
+            """);
+
     private ServiceProvider BuildServices(Action<IServiceCollection>? configure = null)
     {
         var collection = new ServiceCollection()
@@ -323,7 +580,9 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
         long price,
         long bonusCoins,
         long paidCoins,
-        DateTimeOffset? quoteCreatedAt = null)
+        DateTimeOffset? quoteCreatedAt = null,
+        DateTimeOffset? vipExpiresAt = null,
+        int vipDiscountPercent = 0)
     {
         var now = DateTimeOffset.UtcNow.AddMinutes(-1);
         var userId = Guid.NewGuid();
@@ -387,7 +646,7 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
         chapter.Publish(true, 1, now.AddSeconds(1));
         comic.Publish(true, 1, now.AddSeconds(2));
         var quote = ChapterUnlockQuote.Create(
-            Guid.NewGuid(), userId, chapterId, price, 0,
+            Guid.NewGuid(), userId, chapterId, price, vipDiscountPercent,
             bonusCoins, paidCoins, quoteCreatedAt ?? DateTimeOffset.UtcNow);
 
         await using var scope = services.CreateAsyncScope();
@@ -403,8 +662,33 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
         context.WalletEntries.AddRange(entries);
         context.PaidCoinLots.Add(lot);
         context.ChapterUnlockQuotes.Add(quote);
+        if (vipExpiresAt.HasValue)
+        {
+            var (subscription, _) = VipSubscription.Create(
+                userId,
+                vipExpiresAt.Value.AddHours(-720),
+                720);
+            context.VipSubscriptions.Add(subscription);
+        }
+
         await context.SaveChangesAsync();
         return new Seed(userId, chapterId, quote.Id);
+    }
+
+    private static async Task AssertNoUnlockSideEffectsAsync(
+        ServiceProvider services,
+        Guid userId)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Empty(await context.ChapterUnlocks
+            .Where(unlock => unlock.UserId == userId)
+            .ToArrayAsync());
+        Assert.False(await context.WalletOperations.AnyAsync(operation =>
+            operation.UserId == userId &&
+            operation.OperationType == WalletOperationTypes.ChapterUnlock));
+        Assert.False(await context.OutboxMessages.AnyAsync(message =>
+            message.EventType == ReadingEventTypes.ChapterUnlocked));
     }
 
     private static async Task<Guid> AddQuoteAsync(
@@ -451,6 +735,20 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
 
             _entered.TrySetResult();
             await _release.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    private sealed class SignalingObserver : IChapterUnlockCriticalSectionObserver
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal Task Entered => _entered.Task;
+
+        public Task AfterWalletLockedAsync(CancellationToken cancellationToken)
+        {
+            _entered.TrySetResult();
+            return Task.CompletedTask;
         }
     }
 

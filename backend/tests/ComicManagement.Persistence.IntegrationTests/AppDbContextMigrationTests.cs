@@ -20,6 +20,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
     private const string V01Migration = "20261016172119_AddVipMembership";
     private const string U01Migration = "20261017082258_AddChapterUnlockQuotes";
     private const string U02Migration = "20261017130827_AddAtomicChapterUnlocks";
+    private const string U02HardeningMigration =
+        "20261017191312_HardenChapterUnlockIntegrity";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -45,6 +47,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261016172119_AddVipMembership",
         U01Migration,
         U02Migration,
+        U02HardeningMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -857,7 +860,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         context.ChapterUnlockQuotes.Add(quote);
         await context.SaveChangesAsync();
 
-        await migrator.MigrateAsync(U02Migration);
+        await migrator.MigrateAsync(U02HardeningMigration);
         context.ChangeTracker.Clear();
 
         Assert.True(await context.ChapterUnlockQuotes.AsNoTracking()
@@ -873,6 +876,42 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             "reading",
             "chapter_unlocks",
             "trg_chapter_unlocks_append_only"));
+        Assert.True(await TriggerExists(
+            context,
+            "reading",
+            "chapter_unlocks",
+            "trg_chapter_unlock_financial_integrity"));
+        Assert.True(await IndexExists(
+            context,
+            "reading",
+            "ux_chapter_unlocks_user_chapter"));
+        Assert.True(await IndexExists(
+            context,
+            "reading",
+            "ux_chapter_unlocks_quote"));
+        Assert.True(await IndexExists(
+            context,
+            "reading",
+            "ux_chapter_unlocks_wallet_operation"));
+        Assert.True(await IndexExists(
+            context,
+            "reading",
+            "ix_chapter_unlocks_chapter"));
+        Assert.False(await IndexExists(
+            context,
+            "reading",
+            "IX_chapter_unlocks_quote_id_user_id_chapter_id"));
+        Assert.False(await IndexExists(
+            context,
+            "reading",
+            "IX_chapter_unlocks_wallet_operation_id_user_id"));
+        Assert.Equal(
+            4,
+            await context.Database.SqlQueryRaw<int>(
+                    "SELECT count(*)::integer AS \"Value\" FROM pg_constraint " +
+                    "WHERE conrelid = 'reading.chapter_unlocks'::regclass " +
+                    "AND contype = 'f'")
+                .SingleAsync());
     }
 
     [Fact]
@@ -903,6 +942,79 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         await context.Database.ExecuteSqlRawAsync("DROP TABLE reading.chapter_unlocks;");
         await migrator.MigrateAsync(U02Migration);
         Assert.True(await TableExists(context, "reading.chapter_unlocks"));
+    }
+
+    [Fact]
+    public async Task U02_hardening_rejects_legacy_invalid_financial_link_and_rolls_back()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(U02Migration);
+
+        var now = DateTimeOffset.UtcNow;
+        var userId = Guid.NewGuid();
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        var operationId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId, "Invalid Legacy Unlock", null, null, now));
+        var comic = Comic.Create(
+            comicId, $"invalid-u02-{comicId:N}", "Invalid U02", string.Empty,
+            ComicSeriesStatuses.Ongoing, null, 80, false, now);
+        var chapter = Chapter.Create(
+            chapterId, comicId, "Chapter 1", 1, null, null, now);
+        var page = ChapterPage.CreatePending(
+            Guid.NewGuid(), chapterId, 1, $"invalid-u02/{chapterId:N}/1",
+            $"sha256:{new string('d', 64)}", now);
+        page.MarkReady(1200, 1800);
+        chapter.Publish(true, 1, now.AddSeconds(1));
+        comic.Publish(true, 1, now.AddSeconds(2));
+        var quote = ComicManagement.Reading.Unlocks.ChapterUnlockQuote.Create(
+            Guid.NewGuid(), userId, chapterId, 80, 0, 0, 80, now);
+        context.Comics.Add(comic);
+        context.Chapters.Add(chapter);
+        context.ChapterPages.Add(page);
+        context.ChapterUnlockQuotes.Add(quote);
+        context.WalletOperations.Add(ComicManagement.Wallet.Ledger.WalletOperation.Create(
+            operationId,
+            userId,
+            ComicManagement.Wallet.Ledger.WalletOperationTypes.TopUpCredit,
+            ComicManagement.Wallet.Ledger.WalletOperationSourceTypes.PaymentOrder,
+            Guid.NewGuid(),
+            $"invalid-u02-{Guid.NewGuid():N}",
+            now));
+        await context.SaveChangesAsync();
+
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO reading.chapter_unlocks
+                (id,user_id,chapter_id,quote_id,wallet_operation_id,
+                 price_paid_coins,bonus_spent_coins,paid_spent_coins,
+                 wallet_paid_available_after,wallet_bonus_available_after,unlocked_at)
+            VALUES ({Guid.NewGuid()},{userId},{chapterId},{quote.Id},{operationId},
+                    {80L},{80L},{0L},{0L},{0L},{now})
+            """);
+
+        var failure = await Assert.ThrowsAsync<PostgresException>(() =>
+            migrator.MigrateAsync(U02HardeningMigration));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, failure.SqlState);
+        Assert.True(await IndexExists(
+            context,
+            "reading",
+            "IX_chapter_unlocks_quote_id_user_id_chapter_id"));
+        Assert.False(await TriggerExists(
+            context,
+            "reading",
+            "chapter_unlocks",
+            "trg_chapter_unlock_financial_integrity"));
+        Assert.False(await context.Database.SqlQueryRaw<bool>(
+                "SELECT EXISTS (SELECT 1 FROM infrastructure.__ef_migrations_history " +
+                $"WHERE \"MigrationId\" = '{U02HardeningMigration}') AS \"Value\"")
+            .SingleAsync());
+        Assert.True(await context.ChapterUnlocks.AsNoTracking().AnyAsync());
     }
 
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)

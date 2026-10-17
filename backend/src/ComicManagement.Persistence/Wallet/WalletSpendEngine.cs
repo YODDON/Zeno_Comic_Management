@@ -48,13 +48,39 @@ internal sealed class WalletSpendEngine(
         DateTimeOffset walletCreatedAt,
         CancellationToken cancellationToken)
     {
+        var locked = await AcquireLocksAsync(userId, walletCreatedAt, cancellationToken);
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded)
+        {
+            return locked;
+        }
+
+        return await ValidateReconciliationAsync(locked, cancellationToken);
+    }
+
+    internal async Task<WalletSpendLockResult> AcquireLocksAsync(
+        Guid userId,
+        CancellationToken cancellationToken) =>
+        await AcquireLocksCoreAsync(userId, null, cancellationToken);
+
+    private async Task<WalletSpendLockResult> AcquireLocksAsync(
+        Guid userId,
+        DateTimeOffset walletCreatedAt,
+        CancellationToken cancellationToken) =>
+        await AcquireLocksCoreAsync(userId, walletCreatedAt, cancellationToken);
+
+    private async Task<WalletSpendLockResult> AcquireLocksCoreAsync(
+        Guid userId,
+        DateTimeOffset? walletCreatedAt,
+        CancellationToken cancellationToken)
+    {
         if (dbContext.Database.CurrentTransaction is null)
         {
             throw new InvalidOperationException(
                 "Wallet spending requires an active database transaction.");
         }
 
-        if (userId == Guid.Empty || walletCreatedAt.Offset != TimeSpan.Zero)
+        if (userId == Guid.Empty ||
+            walletCreatedAt.HasValue && walletCreatedAt.Value.Offset != TimeSpan.Zero)
         {
             return new WalletSpendLockResult(
                 SpendCoinsOutcome.ValidationFailed,
@@ -73,18 +99,30 @@ internal sealed class WalletSpendEngine(
         }
 
         var paidLots = await LockPaidLotsAsync(userId, cancellationToken);
-        if (!await IsReconciledAsync(wallet, paidLots, cancellationToken))
+        return new WalletSpendLockResult(SpendCoinsOutcome.Succeeded, wallet, paidLots);
+    }
+
+    internal async Task<WalletSpendLockResult> ValidateReconciliationAsync(
+        WalletSpendLockResult locked,
+        CancellationToken cancellationToken)
+    {
+        if (locked.Outcome != SpendCoinsOutcome.Succeeded || locked.Wallet is null)
+        {
+            return locked;
+        }
+
+        if (!await IsReconciledAsync(locked.Wallet, locked.PaidLots, cancellationToken))
         {
             logger.LogCritical(
                 "Wallet reconciliation failed before spending for user {UserId}.",
-                userId);
+                locked.Wallet.UserId);
             return new WalletSpendLockResult(
                 SpendCoinsOutcome.InvariantViolation,
-                wallet,
-                paidLots);
+                locked.Wallet,
+                locked.PaidLots);
         }
 
-        return new WalletSpendLockResult(SpendCoinsOutcome.Succeeded, wallet, paidLots);
+        return locked;
     }
 
     internal async Task<SpendCoinsResult> ApplyLockedAsync(
@@ -182,13 +220,26 @@ internal sealed class WalletSpendEngine(
 
     private async Task EnsureWalletExistsAsync(
         Guid userId,
-        DateTimeOffset occurredAt,
+        DateTimeOffset? occurredAt,
         CancellationToken cancellationToken)
     {
+        if (!occurredAt.HasValue)
+        {
+            await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO wallet.wallets
+                    (user_id, paid_available, paid_reserved, bonus_available, version, created_at, updated_at)
+                SELECT id, 0, 0, 0, 1, clock_timestamp(), clock_timestamp()
+                FROM identity.users
+                WHERE id = {userId}
+                ON CONFLICT (user_id) DO NOTHING
+                """, cancellationToken);
+            return;
+        }
+
         await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO wallet.wallets
                 (user_id, paid_available, paid_reserved, bonus_available, version, created_at, updated_at)
-            SELECT id, 0, 0, 0, 1, {occurredAt}, {occurredAt}
+            SELECT id, 0, 0, 0, 1, {occurredAt.Value}, {occurredAt.Value}
             FROM identity.users
             WHERE id = {userId}
             ON CONFLICT (user_id) DO NOTHING

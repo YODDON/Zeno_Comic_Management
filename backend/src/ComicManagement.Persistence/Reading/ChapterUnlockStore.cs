@@ -37,14 +37,15 @@ internal sealed class ChapterUnlockStore(
         string idempotencyKey,
         CancellationToken cancellationToken = default)
     {
-        var quotedAmount = await dbContext.ChapterUnlockQuotes
-            .AsNoTracking()
-            .Where(quote => quote.Id == quoteId && quote.UserId == userId)
-            .Select(quote => (long?)quote.FinalPriceCoins)
-            .SingleOrDefaultAsync(cancellationToken);
-        if (quotedAmount is null)
+        var durableReplay = await TryLoadIdempotentReplayAsync(
+            userId,
+            chapterId,
+            quoteId,
+            idempotencyKey,
+            cancellationToken);
+        if (durableReplay is not null)
         {
-            return Failed(UnlockChapterOutcome.NotFound);
+            return durableReplay;
         }
 
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
@@ -52,10 +53,8 @@ internal sealed class ChapterUnlockStore(
             cancellationToken);
         try
         {
-            var initialServerTime = await GetServerTimeAsync(cancellationToken);
-            var walletLock = await spendEngine.AcquireAsync(
+            var walletLock = await spendEngine.AcquireLocksAsync(
                 userId,
-                initialServerTime,
                 cancellationToken);
             if (walletLock.Outcome != SpendCoinsOutcome.Succeeded || walletLock.Wallet is null)
             {
@@ -64,9 +63,6 @@ internal sealed class ChapterUnlockStore(
             }
 
             await observer.AfterWalletLockedAsync(cancellationToken);
-            await AcquireVipSubscriptionLockAsync(userId, cancellationToken);
-            var serverNow = await GetServerTimeAsync(cancellationToken);
-
             var replay = await TryLoadIdempotentReplayAsync(
                 userId,
                 chapterId,
@@ -78,6 +74,8 @@ internal sealed class ChapterUnlockStore(
                 await transaction.CommitAsync(cancellationToken);
                 return replay;
             }
+
+            await AcquireVipSubscriptionLockAsync(userId, cancellationToken);
 
             var quote = await dbContext.ChapterUnlockQuotes
                 .FromSqlInterpolated($"""
@@ -145,6 +143,21 @@ internal sealed class ChapterUnlockStore(
                 return Succeeded(existingUnlock, alreadyUnlocked: true);
             }
 
+            // Authoritative lock order for a new unlock is Wallet -> Paid lots ->
+            // per-user VIP advisory lock -> Quote -> Chapter -> Comic -> Pages.
+            // PostgreSQL time and every mutable invariant are evaluated only after
+            // all decision-bearing rows/keys are held.
+            var serverNow = await GetServerTimeAsync(cancellationToken);
+
+            walletLock = await spendEngine.ValidateReconciliationAsync(
+                walletLock,
+                cancellationToken);
+            if (walletLock.Outcome != SpendCoinsOutcome.Succeeded || walletLock.Wallet is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Failed(MapSpendOutcome(walletLock.Outcome));
+            }
+
             if (serverNow >= quote.ExpiresAt)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -176,8 +189,7 @@ internal sealed class ChapterUnlockStore(
             if (quote.BasePriceCoins != basePrice ||
                 quote.VipDiscountPercent != discountPercent ||
                 quote.FinalPriceCoins != currentFinalPrice ||
-                quote.PriceRevision != currentRevision ||
-                quotedAmount.Value != currentFinalPrice)
+                quote.PriceRevision != currentRevision)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Failed(UnlockChapterOutcome.PriceChanged);
