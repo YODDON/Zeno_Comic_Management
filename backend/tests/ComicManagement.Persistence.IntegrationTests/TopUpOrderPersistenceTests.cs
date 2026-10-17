@@ -2,6 +2,7 @@ using ComicManagement.Billing.Payments;
 using ComicManagement.Identity.Users;
 using ComicManagement.Persistence;
 using ComicManagement.Wallet.Lots;
+using ComicManagement.Membership.Plans;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -251,7 +252,7 @@ public sealed class TopUpOrderPersistenceTests : IAsyncLifetime
                  verified_paid_at, fulfilled_at, created_at, version)
             VALUES
                 ({vipOrderId}, {_userId}, {$"VIP-{vipOrderId:N}"},
-                 {PaymentOrderTypes.VipPurchase}, {29_000L}, NULL, {Guid.NewGuid()},
+                 {PaymentOrderTypes.VipPurchase}, {29_000L}, NULL, {VipPlan.InitialPlanId},
                  {720}, {20}, {PaymentProviders.SePay}, {ProviderPaymentStatuses.Pending},
                  {PaymentFulfillmentStatuses.NotStarted}, {$"vip-{vipOrderId:N}"},
                  {new string('c', 64)}, {TopUpOrderStatuses.Pending},

@@ -16,6 +16,8 @@ internal sealed class ChapterAccessQueryRow
     internal long EffectivePriceCoins { get; init; }
 
     internal bool VipEligible { get; init; }
+
+    internal bool HasActiveVip { get; init; }
 }
 
 internal sealed record ReadyChapterPageRow(
@@ -35,6 +37,7 @@ internal sealed record ChapterAccessManifestPageRow(
     Guid ComicId,
     long EffectivePriceCoins,
     bool VipEligible,
+    bool HasActiveVip,
     Guid PageId,
     int PageOrder,
     int Width,
@@ -44,7 +47,8 @@ internal sealed record ChapterAccessManifestPageRow(
 internal static class ChapterAccessQuery
 {
     internal static IQueryable<ChapterAccessQueryRow> PublicReadableChapters(
-        AppDbContext dbContext) =>
+        AppDbContext dbContext,
+        Guid? userId = null) =>
         from chapter in dbContext.Chapters.AsNoTracking()
         join comic in dbContext.Comics.AsNoTracking()
             on chapter.ComicId equals comic.Id
@@ -62,11 +66,15 @@ internal static class ChapterAccessQuery
             ComicId = chapter.ComicId,
             EffectivePriceCoins = chapter.PriceOverrideCoins ?? comic.DefaultPriceCoins,
             VipEligible = chapter.VipOverride ?? comic.DefaultVipEligible,
+            HasActiveVip = userId.HasValue && dbContext.VipSubscriptions.Any(subscription =>
+                subscription.UserId == userId.Value &&
+                subscription.ExpiresAt > DateTimeOffset.UtcNow),
         };
 
     internal static async Task<ChapterAccessManifestRow?> LoadManifestAsync(
         AppDbContext dbContext,
         Guid chapterId,
+        Guid? userId,
         CancellationToken cancellationToken)
     {
         // Publication/access state and the Ready manifest must come from the same
@@ -91,6 +99,9 @@ internal static class ChapterAccessQuery
                 chapter.ComicId,
                 chapter.PriceOverrideCoins ?? comic.DefaultPriceCoins,
                 chapter.VipOverride ?? comic.DefaultVipEligible,
+                userId.HasValue && dbContext.VipSubscriptions.Any(subscription =>
+                    subscription.UserId == userId.Value &&
+                    subscription.ExpiresAt > DateTimeOffset.UtcNow),
                 page.Id,
                 page.PageOrder,
                 page.Width,
@@ -110,6 +121,7 @@ internal static class ChapterAccessQuery
             ComicId = first.ComicId,
             EffectivePriceCoins = first.EffectivePriceCoins,
             VipEligible = first.VipEligible,
+            HasActiveVip = first.HasActiveVip,
         };
         var pages = rows
             .Select(row => new ReadyChapterPageRow(
@@ -127,7 +139,7 @@ internal static class ChapterAccessQuery
         row.ChapterId,
         row.EffectivePriceCoins,
         row.VipEligible,
-        HasActiveVip: false,
+        row.HasActiveVip,
         HasCoinUnlock: false);
 
     private static string CalculateRevision(IReadOnlyList<ReadyChapterPageRow> pages)

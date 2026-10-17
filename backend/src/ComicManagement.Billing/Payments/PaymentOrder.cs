@@ -51,6 +51,8 @@ public sealed class PaymentOrder
     public const int MaximumStatusLength = 32;
     public const int MaximumIdempotencyKeyLength = 200;
     public const int RequestFingerprintLength = 64;
+    public const int VipPurchaseDurationHours = 720;
+    public const int VipPurchaseDiscountPercent = 20;
 
     private PaymentOrder()
     {
@@ -151,6 +153,75 @@ public sealed class PaymentOrder
         };
     }
 
+    public static PaymentOrder CreateVipPurchase(
+        Guid id,
+        Guid userId,
+        string orderCode,
+        long amountVnd,
+        Guid vipPlanId,
+        int durationHours,
+        int discountPercent,
+        string idempotencyKey,
+        string requestFingerprint,
+        DateTimeOffset createdAt,
+        DateTimeOffset expiresAt)
+    {
+        EnsureIdentifier(id, nameof(id));
+        EnsureIdentifier(userId, nameof(userId));
+        EnsureIdentifier(vipPlanId, nameof(vipPlanId));
+        EnsureText(orderCode, MaximumOrderCodeLength, nameof(orderCode));
+        if (amountVnd <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(amountVnd));
+        }
+
+        if (durationHours != VipPurchaseDurationHours)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(durationHours),
+                $"VIP purchase duration must be {VipPurchaseDurationHours} hours.");
+        }
+
+        if (discountPercent != VipPurchaseDiscountPercent)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(discountPercent),
+                $"VIP purchase discount must be {VipPurchaseDiscountPercent} percent.");
+        }
+
+        EnsureText(idempotencyKey, MaximumIdempotencyKeyLength, nameof(idempotencyKey));
+        EnsureFingerprint(requestFingerprint);
+        EnsureUtc(createdAt, nameof(createdAt));
+        EnsureUtc(expiresAt, nameof(expiresAt));
+        if (expiresAt <= createdAt)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(expiresAt),
+                "Payment order expiry must be after creation time.");
+        }
+
+        return new PaymentOrder
+        {
+            Id = id,
+            UserId = userId,
+            OrderCode = orderCode,
+            OrderType = PaymentOrderTypes.VipPurchase,
+            AmountVnd = amountVnd,
+            VipPlanId = vipPlanId,
+            VipDurationHoursSnapshot = durationHours,
+            VipDiscountPercentSnapshot = discountPercent,
+            Provider = PaymentProviders.SePay,
+            ProviderPaymentStatus = ProviderPaymentStatuses.Pending,
+            FulfillmentStatus = PaymentFulfillmentStatuses.NotStarted,
+            IdempotencyKey = idempotencyKey,
+            RequestFingerprint = requestFingerprint,
+            OrderStatus = TopUpOrderStatuses.Pending,
+            CreatedAt = createdAt,
+            ExpiresAt = expiresAt,
+            Version = 1,
+        };
+    }
+
     public bool ExpireIfDue(DateTimeOffset serverNow)
     {
         EnsureUtc(serverNow, nameof(serverNow));
@@ -182,6 +253,31 @@ public sealed class PaymentOrder
         if (serverNow >= ExpiresAt)
         {
             throw new InvalidOperationException("An expired TopUp order cannot be fulfilled.");
+        }
+
+        ProviderPaymentStatus = ProviderPaymentStatuses.Verified;
+        FulfillmentStatus = PaymentFulfillmentStatuses.Fulfilled;
+        OrderStatus = TopUpOrderStatuses.Succeeded;
+        VerifiedPaidAt = serverNow;
+        FulfilledAt = serverNow;
+        Version = checked(Version + 1);
+    }
+
+    public void FulfillVipPurchase(DateTimeOffset serverNow)
+    {
+        EnsureUtc(serverNow, nameof(serverNow));
+        if (OrderType != PaymentOrderTypes.VipPurchase ||
+            OrderStatus != TopUpOrderStatuses.Pending ||
+            ProviderPaymentStatus != ProviderPaymentStatuses.Pending ||
+            FulfillmentStatus != PaymentFulfillmentStatuses.NotStarted)
+        {
+            throw new InvalidOperationException(
+                "Only a pending, unfulfilled VIP purchase can be fulfilled.");
+        }
+
+        if (serverNow >= ExpiresAt)
+        {
+            throw new InvalidOperationException("An expired VIP order cannot be fulfilled.");
         }
 
         ProviderPaymentStatus = ProviderPaymentStatuses.Verified;

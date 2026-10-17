@@ -18,9 +18,9 @@
 | User | GET | `/api/v1/wallet`, `/api/v1/wallet/entries` | Wallet |
 | User | POST | `/api/v1/billing/topups` | Billing |
 | User | GET | `/api/v1/billing/orders/{id}` | Billing |
-| SePay | POST | `/api/v1/webhooks/sepay/ipn` | Billing adapter (B02 ingestion implemented; fulfillment excluded) |
-| User | GET | `/api/v1/membership/plan`, `/api/v1/membership/me` | Membership |
-| User | POST | `/api/v1/membership/checkout` | Membership/Billing |
+| SePay | POST | `/api/v1/webhooks/sepay/ipn` | Billing adapter (B02 ingestion; B03 TopUp and V01 VIP fulfillment implemented) |
+| User | GET | `/api/v1/membership/plan`, `/api/v1/membership/me` | Membership (V01 implemented) |
+| User | POST | `/api/v1/membership/checkout` | Membership/Billing (V01 implemented) |
 | User | GET | `/api/v1/missions`, `/api/v1/missions/daily-limit`, `/api/v1/missions/rewards` | Missions |
 | User | GET/POST | `/api/v1/refunds`, `/api/v1/refunds/eligibility` | Billing |
 | User | GET | `/api/v1/refunds/{id}` | Billing |
@@ -29,7 +29,7 @@
 | Admin | PATCH | `/api/v1/admin/comics/{comicId}/slug` | Catalog |
 | Admin | CRUD (proposed) | `/api/v1/admin/comics`, `/api/v1/admin/chapters`, `/api/v1/admin/genres`, etc. | Catalog |
 | Admin | GET/PUT | `/api/v1/admin/featured-comics` | Catalog |
-| Admin | GET/PATCH | `/api/v1/admin/vip-plan` | Membership |
+| Admin | GET/PATCH | `/api/v1/admin/vip-plan` | Membership (V01 implemented) |
 | Admin | CRUD/revisions/activate | `/api/v1/admin/missions` | Missions |
 | Admin | review/approve/reject/transfer-attempts/complete/release | `/api/v1/admin/refunds/{id}/...` | Billing/Wallet workflow |
 | Admin | GET | `/api/v1/admin/payments`, `/api/v1/admin/ledger`, `/api/v1/admin/audit-logs`, `/api/v1/admin/dashboard` | Billing/Wallet/Admin |

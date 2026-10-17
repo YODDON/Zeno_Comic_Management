@@ -26,6 +26,7 @@ internal sealed class ReadingSessionStore(
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             chapterId,
+            userId,
             cancellationToken);
         var accessFailure = GetAccessFailure(manifest, userId);
         if (accessFailure is not null)
@@ -89,6 +90,7 @@ internal sealed class ReadingSessionStore(
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             session.ChapterId,
+            userId,
             cancellationToken);
         var accessFailure = GetAccessFailure(manifest, userId);
         if (accessFailure is not null)
@@ -166,6 +168,7 @@ internal sealed class ReadingSessionStore(
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             session.ChapterId,
+            userId,
             cancellationToken);
         var accessFailure = GetAccessFailure(manifest, userId);
         if (accessFailure is not null)

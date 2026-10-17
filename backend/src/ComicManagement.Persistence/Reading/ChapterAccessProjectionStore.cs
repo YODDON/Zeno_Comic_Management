@@ -18,12 +18,12 @@ internal sealed class ChapterAccessProjectionStore(AppDbContext dbContext)
         }
 
         var ids = chapterIds.Distinct().ToArray();
-        var rows = await ChapterAccessQuery.PublicReadableChapters(dbContext)
+        var rows = await ChapterAccessQuery.PublicReadableChapters(dbContext, userId)
             .Where(row => ids.Contains(row.ChapterId))
             .ToListAsync(cancellationToken);
 
-        // V01 and U02 add the production Membership/ChapterUnlock sources. Keeping
-        // both flags false here avoids inventing entitlement storage in R01.
+        // V01 supplies active VIP membership through the shared query. U02 has not
+        // landed, so coin-unlock access remains fail-closed in that query.
         return rows.ToDictionary(
             row => row.ChapterId,
             ChapterAccessQuery.ToProjection);
@@ -37,6 +37,7 @@ internal sealed class ChapterAccessProjectionStore(AppDbContext dbContext)
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             chapterId,
+            userId,
             cancellationToken);
         if (manifest is null)
         {
@@ -62,6 +63,7 @@ internal sealed class ChapterAccessProjectionStore(AppDbContext dbContext)
         var manifest = await ChapterAccessQuery.LoadManifestAsync(
             dbContext,
             chapterId,
+            userId,
             cancellationToken);
         var page = manifest?.Pages.SingleOrDefault(row => row.PageOrder == pageOrder);
         if (manifest is null || page is null)

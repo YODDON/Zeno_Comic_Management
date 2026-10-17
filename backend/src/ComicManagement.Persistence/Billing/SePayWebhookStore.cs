@@ -1,7 +1,10 @@
 using System.Data;
+using System.Text.Json;
 using ComicManagement.Billing.Events;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Shared.Messaging;
+using ComicManagement.Membership.Events;
+using ComicManagement.Membership.Subscriptions;
 using ComicManagement.Wallet.Accounts;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
@@ -59,6 +62,9 @@ internal sealed class SePayWebhookStore(
     ISePayWebhookCriticalSectionObserver webhookObserver,
     ISePayFulfillmentCriticalSectionObserver fulfillmentObserver) : ISePayWebhookStore
 {
+    private static readonly JsonSerializerOptions OutboxSerializerOptions =
+        new(JsonSerializerDefaults.Web);
+
     public async Task<SePayWebhookStoreResult> IngestAsync(
         SePayNormalizedTransaction transaction,
         DateTimeOffset verifiedAt,
@@ -169,7 +175,7 @@ internal sealed class SePayWebhookStore(
             .SingleOrDefaultAsync(cancellationToken);
 
         if (orderProjection is null ||
-            orderProjection.OrderType != PaymentOrderTypes.TopUp ||
+            !IsSupportedOrderType(orderProjection.OrderType) ||
             orderProjection.OrderStatus != TopUpOrderStatuses.Pending)
         {
             var providerTransaction = existing ?? ProviderTransaction.CreateSePay(
@@ -183,7 +189,7 @@ internal sealed class SePayWebhookStore(
 
             var reason = orderProjection is null
                 ? SePayReconciliationReasons.OrderNotFound
-                : orderProjection.OrderType != PaymentOrderTypes.TopUp
+                : !IsSupportedOrderType(orderProjection.OrderType)
                     ? SePayReconciliationReasons.UnsupportedOrderType
                     : orderProjection.OrderStatus == TopUpOrderStatuses.Expired
                         ? SePayReconciliationReasons.LatePayment
@@ -206,7 +212,7 @@ internal sealed class SePayWebhookStore(
         if (orderProjection.AmountVnd != transaction.AmountVnd)
         {
             var mismatchedOrder = await LockPaymentOrderAsync(orderProjection.Id, cancellationToken)
-                ?? throw new InvalidOperationException("Matched TopUp order no longer exists.");
+                ?? throw new InvalidOperationException("Matched payment order no longer exists.");
             var mismatchCheckedAt = await GetAuthoritativeServerTimeAsync(cancellationToken);
             var providerTransaction = existing ?? ProviderTransaction.CreateSePay(
                 Guid.NewGuid(),
@@ -246,6 +252,19 @@ internal sealed class SePayWebhookStore(
                 SePayWebhookStoreOutcome.ReconciliationRequired,
                 providerTransaction.Id,
                 isReplay);
+        }
+
+        if (orderProjection.OrderType == PaymentOrderTypes.VipPurchase)
+        {
+            return await FulfillVipPurchaseAsync(
+                databaseTransaction,
+                transaction,
+                verifiedAt,
+                orderProjection.Id,
+                orderProjection.UserId,
+                existing,
+                isReplay,
+                cancellationToken);
         }
 
         await EnsureWalletExistsAsync(
@@ -427,6 +446,340 @@ internal sealed class SePayWebhookStore(
         await databaseTransaction.CommitAsync(cancellationToken);
     }
 
+    private async Task<SePayWebhookStoreResult> FulfillVipPurchaseAsync(
+        IDbContextTransaction databaseTransaction,
+        SePayNormalizedTransaction transaction,
+        DateTimeOffset verifiedAt,
+        Guid orderId,
+        Guid userId,
+        ProviderTransaction? existing,
+        bool isReplay,
+        CancellationToken cancellationToken)
+    {
+        await AcquireVipSubscriptionLockAsync(userId, cancellationToken);
+        var subscription = await LockVipSubscriptionAsync(userId, cancellationToken);
+        var order = await LockPaymentOrderAsync(orderId, cancellationToken)
+            ?? throw new InvalidOperationException("Matched VIP order no longer exists.");
+        await fulfillmentObserver.AfterFinancialLocksAcquiredAsync(
+            transaction.ProviderTransactionId,
+            order.Id,
+            cancellationToken);
+        var authoritativeNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
+
+        var providerTransaction = existing ?? ProviderTransaction.CreateSePay(
+            Guid.NewGuid(),
+            transaction,
+            verifiedAt);
+        if (existing is null)
+        {
+            dbContext.ProviderTransactions.Add(providerTransaction);
+        }
+
+        string? reconciliationReason = null;
+        if (order.OrderType != PaymentOrderTypes.VipPurchase)
+        {
+            reconciliationReason = SePayReconciliationReasons.UnsupportedOrderType;
+        }
+        else if (order.OrderStatus == TopUpOrderStatuses.Expired ||
+                 authoritativeNow >= order.ExpiresAt)
+        {
+            order.ExpireIfDue(authoritativeNow);
+            reconciliationReason = SePayReconciliationReasons.LatePayment;
+        }
+        else if (order.OrderStatus != TopUpOrderStatuses.Pending)
+        {
+            reconciliationReason = SePayReconciliationReasons.OrderAlreadyFulfilled;
+        }
+        else if (order.AmountVnd != transaction.AmountVnd)
+        {
+            reconciliationReason = SePayReconciliationReasons.AmountMismatch;
+        }
+        else if (!await IsVipFulfillmentStateValidAsync(
+                     order,
+                     subscription,
+                     cancellationToken))
+        {
+            reconciliationReason = SePayReconciliationReasons.FulfillmentStateConflict;
+        }
+
+        if (reconciliationReason is not null)
+        {
+            providerTransaction.RequireReconciliation(reconciliationReason, order.Id);
+            await AddDeliveryAndCommitAsync(
+                databaseTransaction,
+                providerTransaction,
+                transaction.PayloadFingerprint,
+                verifiedAt,
+                WebhookDeliveryProcessingResults.ReconciliationRequired,
+                reconciliationReason,
+                cancellationToken);
+            return new SePayWebhookStoreResult(
+                SePayWebhookStoreOutcome.ReconciliationRequired,
+                providerTransaction.Id,
+                isReplay);
+        }
+
+        var planId = order.VipPlanId ?? throw new InvalidOperationException(
+            "A VIP order requires a plan snapshot.");
+        var durationHours = order.VipDurationHoursSnapshot ?? throw new InvalidOperationException(
+            "A VIP order requires a duration snapshot.");
+        var discountPercent = order.VipDiscountPercentSnapshot ??
+            throw new InvalidOperationException("A VIP order requires a discount snapshot.");
+        VipExtension extension;
+        if (subscription is null)
+        {
+            (subscription, extension) = VipSubscription.Create(
+                order.UserId,
+                authoritativeNow,
+                durationHours);
+            dbContext.VipSubscriptions.Add(subscription);
+        }
+        else
+        {
+            extension = subscription.Extend(authoritativeNow, durationHours);
+        }
+
+        var vipTransaction = VipTransaction.Create(
+            Guid.NewGuid(),
+            order.Id,
+            order.UserId,
+            PaymentOrderTypes.VipPurchase,
+            subscription.Version,
+            extension,
+            durationHours,
+            authoritativeNow);
+        dbContext.VipTransactions.Add(vipTransaction);
+        order.FulfillVipPurchase(authoritativeNow);
+        providerTransaction.MarkFulfilled(order.Id);
+        outboxWriter.Enqueue(
+            MembershipEventTypes.VipMembershipActivated,
+            new VipMembershipActivatedEvent(
+                order.Id,
+                providerTransaction.Id,
+                vipTransaction.Id,
+                order.UserId,
+                planId,
+                order.AmountVnd,
+                durationHours,
+                discountPercent,
+                extension.EffectiveStart,
+                extension.NewExpiry,
+                authoritativeNow),
+            authoritativeNow);
+        await fulfillmentObserver.BeforeFulfillmentCommitAsync(
+            transaction.ProviderTransactionId,
+            order.Id,
+            cancellationToken);
+
+        await AddDeliveryAndCommitAsync(
+            databaseTransaction,
+            providerTransaction,
+            transaction.PayloadFingerprint,
+            verifiedAt,
+            WebhookDeliveryProcessingResults.Accepted,
+            errorCode: null,
+            cancellationToken);
+        return new SePayWebhookStoreResult(
+            SePayWebhookStoreOutcome.Fulfilled,
+            providerTransaction.Id,
+            isReplay);
+    }
+
+    private async Task<bool> IsVipFulfillmentStateValidAsync(
+        PaymentOrder order,
+        VipSubscription? subscription,
+        CancellationToken cancellationToken)
+    {
+        var existingTransaction = await dbContext.VipTransactions
+            .AsNoTracking()
+            .AnyAsync(candidate => candidate.PaymentOrderId == order.Id, cancellationToken);
+        var existingSuccessOutbox = await dbContext.OutboxMessages
+            .AsNoTracking()
+            .AnyAsync(message =>
+                message.EventType == MembershipEventTypes.VipMembershipActivated &&
+                EF.Functions.JsonContains(
+                    message.Payload,
+                    $"{{\"paymentOrderId\":\"{order.Id:D}\"}}"),
+                cancellationToken);
+        var existingFulfilledProviderTransaction = await dbContext.ProviderTransactions
+            .AsNoTracking()
+            .AnyAsync(candidate =>
+                candidate.MatchedOrderId == order.Id &&
+                candidate.ProcessingStatus == ProviderTransactionProcessingStatuses.Fulfilled,
+                cancellationToken);
+        if (existingTransaction || existingSuccessOutbox || existingFulfilledProviderTransaction)
+        {
+            return false;
+        }
+
+        var history = await dbContext.VipTransactions
+            .AsNoTracking()
+            .Where(candidate => candidate.UserId == order.UserId)
+            .OrderBy(candidate => candidate.SubscriptionVersion)
+            .ToArrayAsync(cancellationToken);
+        if (subscription is null)
+        {
+            return history.Length == 0;
+        }
+
+        if (subscription.Version != history.LongLength || history.Length == 0)
+        {
+            return false;
+        }
+
+        VipTransaction? previous = null;
+        foreach (var transaction in history)
+        {
+            var expectedVersion = previous is null
+                ? 1L
+                : checked(previous.SubscriptionVersion + 1);
+            var expectedStart = previous is null
+                ? transaction.FulfilledAt
+                : previous.NewExpiry > transaction.FulfilledAt
+                    ? previous.NewExpiry
+                    : transaction.FulfilledAt;
+            if (transaction.SubscriptionVersion != expectedVersion ||
+                transaction.PreviousExpiry != previous?.NewExpiry ||
+                transaction.EffectiveStart != expectedStart ||
+                transaction.NewExpiry != expectedStart.AddHours(transaction.DurationHours))
+            {
+                return false;
+            }
+
+            previous = transaction;
+        }
+
+        if (!await HasValidVipFulfillmentArtifactsAsync(history, cancellationToken))
+        {
+            return false;
+        }
+
+        return previous is not null &&
+               previous.SubscriptionVersion == subscription.Version &&
+               previous.NewExpiry == subscription.ExpiresAt &&
+               previous.FulfilledAt == subscription.LastFulfilledAt;
+    }
+
+    private async Task<bool> HasValidVipFulfillmentArtifactsAsync(
+        IReadOnlyCollection<VipTransaction> history,
+        CancellationToken cancellationToken)
+    {
+        var orderIds = history.Select(transaction => transaction.PaymentOrderId).ToArray();
+        var orders = await dbContext.PaymentOrders
+            .AsNoTracking()
+            .Where(order => orderIds.Contains(order.Id))
+            .ToDictionaryAsync(order => order.Id, cancellationToken);
+        var providers = await dbContext.ProviderTransactions
+            .AsNoTracking()
+            .Where(transaction =>
+                transaction.MatchedOrderId.HasValue &&
+                orderIds.Contains(transaction.MatchedOrderId.Value) &&
+                transaction.ProcessingStatus == ProviderTransactionProcessingStatuses.Fulfilled)
+            .ToArrayAsync(cancellationToken);
+        var providersByOrder = providers
+            .GroupBy(transaction => transaction.MatchedOrderId!.Value)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+
+        var eventPayloads = await dbContext.OutboxMessages
+            .AsNoTracking()
+            .Where(message => message.EventType == MembershipEventTypes.VipMembershipActivated)
+            .Select(message => message.Payload)
+            .ToArrayAsync(cancellationToken);
+        var eventsByOrder = eventPayloads
+            .Select(TryDeserializeVipActivation)
+            .Where(activation =>
+                activation is not null &&
+                orderIds.Contains(activation.PaymentOrderId))
+            .Cast<VipMembershipActivatedEvent>()
+            .GroupBy(activation => activation.PaymentOrderId)
+            .ToDictionary(group => group.Key, group => group.ToArray());
+
+        foreach (var transaction in history)
+        {
+            if (!orders.TryGetValue(transaction.PaymentOrderId, out var order) ||
+                order.UserId != transaction.UserId ||
+                order.OrderType != PaymentOrderTypes.VipPurchase ||
+                order.OrderStatus != TopUpOrderStatuses.Succeeded ||
+                order.ProviderPaymentStatus != ProviderPaymentStatuses.Verified ||
+                order.FulfillmentStatus != PaymentFulfillmentStatuses.Fulfilled ||
+                order.FulfilledAt != transaction.FulfilledAt ||
+                order.VerifiedPaidAt != transaction.FulfilledAt ||
+                order.VipPlanId is null ||
+                order.VipDurationHoursSnapshot != transaction.DurationHours ||
+                order.VipDiscountPercentSnapshot != PaymentOrder.VipPurchaseDiscountPercent ||
+                !providersByOrder.TryGetValue(order.Id, out var matchingProviders) ||
+                matchingProviders.Length != 1 ||
+                matchingProviders[0].AmountVnd != order.AmountVnd ||
+                !eventsByOrder.TryGetValue(order.Id, out var matchingEvents) ||
+                matchingEvents.Length != 1)
+            {
+                return false;
+            }
+
+            var provider = matchingProviders[0];
+            var activation = matchingEvents[0];
+            if (activation.ProviderTransactionId != provider.Id ||
+                activation.VipTransactionId != transaction.Id ||
+                activation.UserId != transaction.UserId ||
+                activation.PlanId != order.VipPlanId.Value ||
+                activation.AmountVnd != order.AmountVnd ||
+                activation.DurationHours != transaction.DurationHours ||
+                activation.DiscountPercent != order.VipDiscountPercentSnapshot.Value ||
+                activation.EffectiveStart != transaction.EffectiveStart ||
+                activation.ExpiresAt != transaction.NewExpiry ||
+                activation.FulfilledAt != transaction.FulfilledAt)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static VipMembershipActivatedEvent? TryDeserializeVipActivation(string payload)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<VipMembershipActivatedEvent>(
+                payload,
+                OutboxSerializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private async Task AcquireVipSubscriptionLockAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var connection = dbContext.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.Transaction = dbContext.Database.CurrentTransaction?.GetDbTransaction()
+            ?? throw new InvalidOperationException(
+                "A VIP subscription lock requires a database transaction.");
+        command.CommandText =
+            "SELECT pg_advisory_xact_lock(hashtextextended(@lock_key, 0));";
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "lock_key";
+        parameter.Value = $"vip-subscription:{userId:N}";
+        command.Parameters.Add(parameter);
+        await command.ExecuteScalarAsync(cancellationToken);
+    }
+
+    private Task<VipSubscription?> LockVipSubscriptionAsync(
+        Guid userId,
+        CancellationToken cancellationToken) =>
+        dbContext.VipSubscriptions
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM membership.vip_subscriptions
+                WHERE user_id = {userId}
+                FOR UPDATE
+                """)
+            .SingleOrDefaultAsync(cancellationToken);
+
     private static SePayWebhookStoreOutcome ToStoreOutcome(
         ProviderTransaction transaction) => transaction.ProcessingStatus switch
         {
@@ -436,6 +789,9 @@ internal sealed class SePayWebhookStore(
                 SePayWebhookStoreOutcome.ReconciliationRequired,
             _ => SePayWebhookStoreOutcome.Accepted,
         };
+
+    private static bool IsSupportedOrderType(string orderType) =>
+        orderType is PaymentOrderTypes.TopUp or PaymentOrderTypes.VipPurchase;
 
     private async Task AcquireProviderTransactionLockAsync(
         SePayNormalizedTransaction transaction,

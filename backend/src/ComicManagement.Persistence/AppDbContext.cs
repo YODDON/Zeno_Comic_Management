@@ -10,6 +10,8 @@ using ComicManagement.Wallet.Spending;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using ComicManagement.Reading.Library;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Membership.Plans;
+using ComicManagement.Membership.Subscriptions;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -66,6 +68,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
 
+    internal DbSet<VipPlan> VipPlans => Set<VipPlan>();
+
+    internal DbSet<VipSubscription> VipSubscriptions => Set<VipSubscription>();
+
+    internal DbSet<VipTransaction> VipTransactions => Set<VipTransaction>();
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnsureAppendOnlyRecords();
@@ -104,6 +112,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
             throw new InvalidOperationException("Wallet ledger records are append-only.");
+        }
+
+        if (ChangeTracker.Entries<VipTransaction>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException("VIP transactions are append-only.");
         }
     }
 

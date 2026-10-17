@@ -1,6 +1,7 @@
 using ComicManagement.Billing.Payments;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
+using ComicManagement.Membership.Plans;
 using ComicManagement.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -15,6 +16,8 @@ namespace ComicManagement.Persistence.IntegrationTests;
 public sealed class AppDbContextMigrationTests : IAsyncLifetime
 {
     private const string InitialMigration = "20261011120000_InitialSchemas";
+    private const string PreV01Migration = "20261016073318_AddTopUpFulfillment";
+    private const string V01Migration = "20261016172119_AddVipMembership";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -37,6 +40,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261015145756_HardenB01PaymentOrderInvariants",
         "20261015185709_AddSePayWebhookIngestion",
         "20261016073318_AddTopUpFulfillment",
+        "20261016172119_AddVipMembership",
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -94,6 +98,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "billing.payment_orders"));
         Assert.True(await TableExists(context, "billing.provider_transactions"));
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
+        Assert.True(await TableExists(context, "membership.vip_plans"));
+        Assert.True(await TableExists(context, "membership.vip_subscriptions"));
+        Assert.True(await TableExists(context, "membership.vip_transactions"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(
@@ -105,6 +112,11 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await IndexExists(context, "wallet", "ix_wallet_entries_user_created_id"));
         Assert.True(await IndexExists(context, "wallet", "ux_wallet_operations_business_source"));
         Assert.True(await IndexExists(context, "billing", "ux_payment_orders_order_code"));
+        Assert.Equal(
+            29_000L,
+            await context.Database.SqlQueryRaw<long>(
+                    "SELECT price_vnd AS \"Value\" FROM membership.vip_plans WHERE is_active")
+                .SingleAsync());
         Assert.True(await IndexExists(
             context,
             "billing",
@@ -115,6 +127,11 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             "wallet",
             "wallet_allocations",
             "wallet_allocations_enforce_ownership"));
+        Assert.True(await TriggerExists(
+            context,
+            "membership",
+            "vip_transactions",
+            "vip_transactions_append_only"));
 
         var now = new DateTimeOffset(2026, 10, 13, 1, 0, 0, TimeSpan.Zero);
         var comicId = Guid.NewGuid();
@@ -408,6 +425,250 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await context.PaymentOrders.AnyAsync(order => order.Id == orderId));
         Assert.True(await TableExists(context, "billing.provider_transactions"));
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
+    }
+
+    [Fact]
+    public async Task V01_upgrade_preserves_existing_B03_topup_state()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(PreV01Migration);
+
+        var now = new DateTimeOffset(2026, 10, 16, 17, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "V01 Upgrade User",
+            null,
+            null,
+            now));
+        context.PaymentOrders.Add(PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            "TOPUP-V01-UPGRADE",
+            100_000,
+            10_000,
+            "v01-upgrade-key",
+            new string('b', PaymentOrder.RequestFingerprintLength),
+            now,
+            now.AddMinutes(30)));
+        await context.SaveChangesAsync();
+
+        await context.Database.MigrateAsync();
+        context.ChangeTracker.Clear();
+
+        var preserved = await context.PaymentOrders
+            .AsNoTracking()
+            .SingleAsync(order => order.Id == orderId);
+        Assert.Equal(PaymentOrderTypes.TopUp, preserved.OrderType);
+        Assert.Equal(100_000, preserved.AmountVnd);
+        Assert.Equal(10_000, preserved.PaidCoinsSnapshot);
+        Assert.Equal(
+            29_000,
+            await context.Database.SqlQueryRaw<long>(
+                    "SELECT price_vnd AS \"Value\" " +
+                    "FROM membership.vip_plans WHERE is_active")
+                .SingleAsync());
+    }
+
+    [Fact]
+    public async Task V01_upgrade_preserves_compatible_legacy_vip_purchase_and_links_seeded_plan()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(PreV01Migration);
+
+        var now = new DateTimeOffset(2026, 10, 16, 18, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "V01 Legacy Compatible",
+            null,
+            null,
+            now));
+        context.PaymentOrders.Add(PaymentOrder.CreateVipPurchase(
+            orderId,
+            userId,
+            $"ZENO-VIP-{orderId:N}",
+            29_000,
+            VipPlan.InitialPlanId,
+            VipPlan.FixedDurationHours,
+            VipPlan.FixedDiscountPercent,
+            "v01-legacy-compatible",
+            new string('c', PaymentOrder.RequestFingerprintLength),
+            now,
+            now.AddMinutes(30)));
+        await context.SaveChangesAsync();
+
+        await context.Database.MigrateAsync();
+        context.ChangeTracker.Clear();
+
+        var preserved = await context.PaymentOrders.AsNoTracking().SingleAsync(candidate =>
+            candidate.Id == orderId);
+        Assert.Equal(PaymentOrderTypes.VipPurchase, preserved.OrderType);
+        Assert.Equal(VipPlan.InitialPlanId, preserved.VipPlanId);
+        Assert.Equal(VipPlan.FixedDurationHours, preserved.VipDurationHoursSnapshot);
+        Assert.Equal(VipPlan.FixedDiscountPercent, preserved.VipDiscountPercentSnapshot);
+        Assert.Equal(
+            1,
+            await context.Database.SqlQueryRaw<int>(
+                    "SELECT count(*)::int AS \"Value\" " +
+                    "FROM membership.vip_plans AS plan " +
+                    "JOIN billing.payment_orders AS payment_order " +
+                    "ON payment_order.vip_plan_id = plan.id " +
+                    "WHERE payment_order.id = {0}",
+                    orderId)
+                .SingleAsync());
+        Assert.True(await ConstraintIsValidated(
+            context,
+            "billing",
+            "payment_orders",
+            "fk_payment_orders_vip_plans"));
+    }
+
+    [Fact]
+    public async Task V01_upgrade_rejects_fulfilled_legacy_vip_purchase_and_rolls_back()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(PreV01Migration);
+
+        var createdAt = new DateTimeOffset(2026, 10, 16, 18, 30, 0, TimeSpan.Zero);
+        var fulfilledAt = createdAt.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "V01 Legacy Fulfilled",
+            null,
+            null,
+            createdAt));
+        var order = PaymentOrder.CreateVipPurchase(
+            orderId,
+            userId,
+            $"ZENO-VIP-{orderId:N}",
+            29_000,
+            VipPlan.InitialPlanId,
+            VipPlan.FixedDurationHours,
+            VipPlan.FixedDiscountPercent,
+            "v01-legacy-fulfilled",
+            new string('e', PaymentOrder.RequestFingerprintLength),
+            createdAt,
+            createdAt.AddMinutes(30));
+        order.FulfillVipPurchase(fulfilledAt);
+        context.PaymentOrders.Add(order);
+        await context.SaveChangesAsync();
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+            context.Database.MigrateAsync());
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+        Assert.Contains(
+            "fulfilled legacy VipPurchase requires reconciliation",
+            exception.MessageText,
+            StringComparison.Ordinal);
+
+        await using var verificationProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var verificationScope = verificationProvider.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.False(await TableExists(verification, "membership.vip_plans"));
+        Assert.Equal(
+            TopUpOrderStatuses.Succeeded,
+            await verification.Database.SqlQueryRaw<string>(
+                    "SELECT order_status AS \"Value\" " +
+                    "FROM billing.payment_orders WHERE id = {0}",
+                    orderId)
+                .SingleAsync());
+        Assert.False(await verification.Database.SqlQueryRaw<bool>(
+                "SELECT EXISTS (SELECT 1 FROM infrastructure.__ef_migrations_history " +
+                $"WHERE \"MigrationId\" = '{V01Migration}') AS \"Value\"")
+            .SingleAsync());
+    }
+
+    [Fact]
+    public async Task V01_upgrade_rejects_incompatible_legacy_vip_purchase_and_rolls_back()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(PreV01Migration);
+
+        var now = new DateTimeOffset(2026, 10, 16, 19, 0, 0, TimeSpan.Zero);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var orderCode = $"ZENO-VIP-{orderId:N}";
+        var legacyPlanId = Guid.NewGuid();
+        var orderType = PaymentOrderTypes.VipPurchase;
+        var providerName = PaymentProviders.SePay;
+        var providerStatus = ProviderPaymentStatuses.Pending;
+        var fulfillmentStatus = PaymentFulfillmentStatuses.NotStarted;
+        var orderStatus = TopUpOrderStatuses.Pending;
+        const string idempotencyKey = "v01-legacy-incompatible";
+        var requestFingerprint = new string('d', PaymentOrder.RequestFingerprintLength);
+        context.Users.Add(ComicManagement.Identity.Users.User.CreateFromGoogle(
+            userId,
+            "V01 Legacy Incompatible",
+            null,
+            null,
+            now));
+        await context.SaveChangesAsync();
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO billing.payment_orders
+                (id, user_id, order_code, order_type, amount_vnd, paid_coins_snapshot,
+                 vip_plan_id, vip_duration_hours_snapshot, vip_discount_percent_snapshot,
+                 provider, provider_payment_status, fulfillment_status, idempotency_key,
+                 request_fingerprint, order_status, expires_at, expired_at,
+                 verified_paid_at, fulfilled_at, created_at, version)
+            VALUES
+                ({orderId}, {userId}, {orderCode}, {orderType}, {29_000L}, NULL,
+                 {legacyPlanId}, {24}, {10}, {providerName}, {providerStatus}, {fulfillmentStatus},
+                 {idempotencyKey}, {requestFingerprint}, {orderStatus},
+                 {now.AddMinutes(30)}, NULL, NULL, NULL, {now}, {1L});
+            """);
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+            context.Database.MigrateAsync());
+        Assert.Equal("23514", exception.SqlState);
+        Assert.Contains(
+            "legacy VipPurchase snapshots require reconciliation",
+            exception.MessageText,
+            StringComparison.Ordinal);
+
+        await using var verificationProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var verificationScope = verificationProvider.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.False(await TableExists(verification, "membership.vip_plans"));
+        Assert.Equal(
+            24,
+            await verification.Database.SqlQueryRaw<int>(
+                    "SELECT vip_duration_hours_snapshot AS \"Value\" " +
+                    "FROM billing.payment_orders WHERE id = {0}",
+                    orderId)
+                .SingleAsync());
+        Assert.False(await verification.Database.SqlQueryRaw<bool>(
+                "SELECT EXISTS (SELECT 1 FROM infrastructure.__ef_migrations_history " +
+                $"WHERE \"MigrationId\" = '{V01Migration}') AS \"Value\"")
+            .SingleAsync());
     }
 
     private static async Task<string[]> GetApplicationSchemas(AppDbContext context)

@@ -4,6 +4,9 @@ using ComicManagement.Catalog.Comics;
 using ComicManagement.Persistence;
 using ComicManagement.Reading.Access;
 using ComicManagement.Shared.Time;
+using ComicManagement.Identity.Users;
+using ComicManagement.Membership.Plans;
+using ComicManagement.Membership.Subscriptions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
@@ -210,6 +213,92 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
         Assert.Contains("publication_status", interceptor.ManifestCommandText, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Vip_entitlement_is_loaded_with_access_and_expires_authoritatively()
+    {
+        var userId = Guid.NewGuid();
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        await using (var seedScope = _services.CreateAsyncScope())
+        {
+            var context = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            context.Users.Add(User.CreateFromGoogle(
+                userId,
+                "V01 Reader",
+                null,
+                null,
+                now));
+            var comic = Comic.Create(
+                comicId,
+                $"v01-access-{comicId:N}",
+                "V01 Access",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                100,
+                true,
+                now);
+            var chapter = Chapter.Create(
+                chapterId,
+                comicId,
+                "VIP Chapter",
+                1,
+                null,
+                null,
+                now);
+            AddReadyPage(context, chapterId, 1, $"v01/{chapterId:N}/1");
+            chapter.Publish(true, 1, now.AddSeconds(1));
+            comic.Publish(true, 1, now.AddSeconds(2));
+            context.Comics.Add(comic);
+            context.Chapters.Add(chapter);
+            var (subscription, _) = VipSubscription.Create(
+                userId,
+                now,
+                VipPlan.FixedDurationHours);
+            context.VipSubscriptions.Add(subscription);
+            await context.SaveChangesAsync();
+        }
+
+        await using (var activeScope = _services.CreateAsyncScope())
+        {
+            var handler = new ChapterAccessHandler(
+                activeScope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>(),
+                new UnusedContentProvider(),
+                new StubClock(DateTimeOffset.UtcNow));
+            var active = await handler.GetAccessAsync(chapterId, userId);
+            Assert.Equal(ChapterAccessTypes.VipIncluded, active.Access!.AccessType);
+            Assert.True(active.Access.CanRead);
+            Assert.Equal(
+                ChapterManifestOutcome.ProtectedDeliveryUnavailable,
+                (await handler.GetManifestAsync(chapterId, userId)).Outcome);
+        }
+
+        await using (var expireScope = _services.CreateAsyncScope())
+        {
+            var context = expireScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var expiredAt = DateTimeOffset.UtcNow.AddSeconds(-1);
+            await context.VipSubscriptions
+                .Where(subscription => subscription.UserId == userId)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(
+                        subscription => subscription.ExpiresAt,
+                        expiredAt)
+                    .SetProperty(
+                        subscription => subscription.LastFulfilledAt,
+                        expiredAt.AddHours(-720)));
+        }
+
+        await using var expiredScope = _services.CreateAsyncScope();
+        var expiredHandler = new ChapterAccessHandler(
+            expiredScope.ServiceProvider.GetRequiredService<IChapterAccessProjectionStore>(),
+            new UnusedContentProvider(),
+            new StubClock(DateTimeOffset.UtcNow));
+        var expired = await expiredHandler.GetAccessAsync(chapterId, userId);
+        Assert.Equal(ChapterAccessTypes.Locked, expired.Access!.AccessType);
+        Assert.False(expired.Access.CanRead);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -336,6 +425,15 @@ public sealed class ChapterAccessProjectionPersistenceTests : IAsyncLifetime
             await _release.Task.WaitAsync(cancellationToken);
             return new ChapterPageContent([1, 2, 3], "image/webp");
         }
+    }
+
+    private sealed class UnusedContentProvider : IChapterPageContentProvider
+    {
+        public Task<ChapterPageContent?> GetAsync(
+            string assetKey,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException(
+                "Protected VIP access must fail closed before provider delivery.");
     }
 
     private sealed class StubClock(DateTimeOffset utcNow) : IClock
