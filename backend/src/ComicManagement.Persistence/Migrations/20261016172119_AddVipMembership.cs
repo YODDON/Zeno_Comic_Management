@@ -120,6 +120,17 @@ namespace ComicManagement.Persistence.Migrations
                         SELECT 1
                         FROM billing.payment_orders
                         WHERE order_type = 'VipPurchase'
+                          AND order_status = 'Succeeded'
+                    ) THEN
+                        RAISE EXCEPTION USING
+                            ERRCODE = '23514',
+                            MESSAGE = 'V01 migration blocked: fulfilled legacy VipPurchase requires reconciliation';
+                    END IF;
+
+                    IF EXISTS (
+                        SELECT 1
+                        FROM billing.payment_orders
+                        WHERE order_type = 'VipPurchase'
                           AND (
                               vip_plan_id <> '8c884d82-fdc7-4e94-893d-6caa95a22f7a'::uuid
                               OR vip_duration_hours_snapshot <> 720

@@ -11,7 +11,7 @@ Original Paid lot granted 10,000; before approval `spent=0`, `refunded=0`, `rese
 
 ## Required invariants
 - 1 fulfilled TopUp = 1 immutable grant of Paid lot; 1 provider transaction cannot fulfill 2 orders.
-- 1 fulfilled VipPurchase = exactly 1 immutable `VipTransaction`; `VipSubscription.Version` equals the latest consecutive per-user `SubscriptionVersion`, with no missing/intermediate version and a continuous `PreviousExpiry -> NewExpiry` chain.
+- 1 fulfilled VipPurchase = exactly 1 immutable `VipTransaction`, exactly 1 fulfilled provider transaction and exactly 1 VIP-activation outbox message whose identifiers and snapshots agree. `VipSubscription.Version` equals the latest consecutive per-user `SubscriptionVersion`, with no missing/intermediate version and a continuous `PreviousExpiry -> NewExpiry` chain. The complete historical artifact chain is validated fail-closed before renewal.
 - A VIP success atomically updates PaymentOrder/provider state, extends the subscription, appends its versioned VIP transaction and writes one activation outbox row. Late, mismatched or integrity-drifted payment evidence creates no entitlement or success outbox. VIP orders never credit Paid Coins; no Bonus Coins refunds.
 - Bonus before Paid FIFO and never consume reserved Paid.
 - Refund whole original Paid lot or reject: never substitute a different lot; 7-day request window, 5% fee, one request/order.

@@ -18,7 +18,7 @@
 | User | GET | `/api/v1/wallet`, `/api/v1/wallet/entries` | Wallet |
 | User | POST | `/api/v1/billing/topups` | Billing |
 | User | GET | `/api/v1/billing/orders/{id}` | Billing |
-| SePay | POST | `/api/v1/webhooks/sepay/ipn` | Billing adapter (B02 ingestion implemented; fulfillment excluded) |
+| SePay | POST | `/api/v1/webhooks/sepay/ipn` | Billing adapter (B02 ingestion; B03 TopUp and V01 VIP fulfillment implemented) |
 | User | GET | `/api/v1/membership/plan`, `/api/v1/membership/me` | Membership (V01 implemented) |
 | User | POST | `/api/v1/membership/checkout` | Membership/Billing (V01 implemented) |
 | User | GET | `/api/v1/missions`, `/api/v1/missions/daily-limit`, `/api/v1/missions/rewards` | Missions |

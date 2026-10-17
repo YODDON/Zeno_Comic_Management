@@ -4,6 +4,7 @@ using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Membership.Subscriptions;
+using ComicManagement.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -367,6 +368,7 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
         await using (var scope = provider.CreateAsyncScope())
         {
             var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var outbox = scope.ServiceProvider.GetRequiredService<IOutboxWriter>();
             var subscription = await context.VipSubscriptions.SingleAsync(candidate =>
                 candidate.UserId == userId);
             var firstTransaction = await context.VipTransactions.SingleAsync(candidate =>
@@ -380,7 +382,15 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
                 secondFulfilledAt,
                 VipPlan.FixedDurationHours);
             authoritativeSecondOrder.FulfillVipPurchase(secondFulfilledAt);
-            context.VipTransactions.Add(VipTransaction.Create(
+            var providerTransaction = ProviderTransaction.CreateSePay(
+                Guid.NewGuid(),
+                Transaction(
+                    $"vip-provider-clock-second-{rollsBack}",
+                    authoritativeSecondOrder.OrderCode,
+                    authoritativeSecondOrder.AmountVnd),
+                secondFulfilledAt);
+            providerTransaction.MarkFulfilled(authoritativeSecondOrder.Id);
+            var vipTransaction = VipTransaction.Create(
                 Guid.NewGuid(),
                 authoritativeSecondOrder.Id,
                 userId,
@@ -388,7 +398,24 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
                 subscription.Version,
                 extension,
                 VipPlan.FixedDurationHours,
-                secondFulfilledAt));
+                secondFulfilledAt);
+            context.ProviderTransactions.Add(providerTransaction);
+            context.VipTransactions.Add(vipTransaction);
+            outbox.Enqueue(
+                MembershipEventTypes.VipMembershipActivated,
+                new VipMembershipActivatedEvent(
+                    authoritativeSecondOrder.Id,
+                    providerTransaction.Id,
+                    vipTransaction.Id,
+                    userId,
+                    authoritativeSecondOrder.VipPlanId!.Value,
+                    authoritativeSecondOrder.AmountVnd,
+                    VipPlan.FixedDurationHours,
+                    VipPlan.FixedDiscountPercent,
+                    extension.EffectiveStart,
+                    extension.NewExpiry,
+                    secondFulfilledAt),
+                secondFulfilledAt);
             await context.SaveChangesAsync();
         }
 
@@ -549,6 +576,153 @@ public sealed class VipMembershipPersistenceTests : IAsyncLifetime
             evidence.ReconciliationReason);
         Assert.Equal(1, await verification.OutboxMessages.CountAsync(message =>
             message.EventType == MembershipEventTypes.VipMembershipActivated));
+    }
+
+    [Theory]
+    [InlineData("PaymentOrder")]
+    [InlineData("ProviderTransaction")]
+    [InlineData("ActivationOutbox")]
+    public async Task Historical_fulfillment_artifact_drift_blocks_next_fulfillment(
+        string artifact)
+    {
+        await using var provider = Services().BuildServiceProvider(validateScopes: true);
+        var userId = await SeedUserAsync(provider, $"VIP Artifact Drift {artifact}");
+        var firstOrder = await CreateOrderAsync(provider, userId, $"vip-artifact-first-{artifact}");
+        var secondOrder = await CreateOrderAsync(provider, userId, $"vip-artifact-second-{artifact}");
+        Assert.Equal(
+            SePayWebhookStoreOutcome.Fulfilled,
+            (await IngestAsync(provider, Transaction(
+                $"vip-provider-artifact-first-{artifact}",
+                firstOrder.OrderCode,
+                firstOrder.AmountVnd))).Outcome);
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            switch (artifact)
+            {
+                case "PaymentOrder":
+                    await context.Database.ExecuteSqlInterpolatedAsync($"""
+                        UPDATE billing.payment_orders
+                        SET order_status = 'Pending',
+                            provider_payment_status = 'Pending',
+                            fulfillment_status = 'NotStarted',
+                            verified_paid_at = NULL,
+                            fulfilled_at = NULL
+                        WHERE id = {firstOrder.Id};
+                        """);
+                    break;
+                case "ProviderTransaction":
+                    await context.Database.ExecuteSqlInterpolatedAsync($"""
+                        UPDATE billing.provider_transactions
+                        SET processing_status = 'ReconciliationRequired',
+                            reconciliation_reason = 'ManualReview'
+                        WHERE matched_order_id = {firstOrder.Id};
+                        """);
+                    break;
+                case "ActivationOutbox":
+                    await context.OutboxMessages
+                        .Where(message =>
+                            message.EventType == MembershipEventTypes.VipMembershipActivated &&
+                            EF.Functions.JsonContains(
+                                message.Payload,
+                                $"{{\"paymentOrderId\":\"{firstOrder.Id:D}\"}}"))
+                        .ExecuteDeleteAsync();
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unknown artifact {artifact}.");
+            }
+        }
+
+        var result = await IngestAsync(provider, Transaction(
+            $"vip-provider-artifact-second-{artifact}",
+            secondOrder.OrderCode,
+            secondOrder.AmountVnd));
+
+        Assert.Equal(SePayWebhookStoreOutcome.ReconciliationRequired, result.Outcome);
+        await using var verificationScope = provider.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(1, await verification.VipTransactions.CountAsync(candidate =>
+            candidate.UserId == userId));
+        Assert.Equal(
+            TopUpOrderStatuses.Pending,
+            (await verification.PaymentOrders.SingleAsync(candidate =>
+                candidate.Id == secondOrder.Id)).OrderStatus);
+        Assert.Equal(
+            SePayReconciliationReasons.FulfillmentStateConflict,
+            (await verification.ProviderTransactions.SingleAsync(candidate =>
+                candidate.Id == result.ProviderTransactionId)).ReconciliationReason);
+    }
+
+    [Fact]
+    public async Task Duplicate_subscription_version_is_rejected_by_PostgreSql()
+    {
+        await using var provider = Services().BuildServiceProvider(validateScopes: true);
+        var userId = await SeedUserAsync(provider, "VIP Duplicate Version");
+        var firstOrder = await CreateOrderAsync(provider, userId, "vip-version-first");
+        var secondOrder = await CreateOrderAsync(provider, userId, "vip-version-second");
+        Assert.Equal(
+            SePayWebhookStoreOutcome.Fulfilled,
+            (await IngestAsync(provider, Transaction(
+                "vip-provider-version-first",
+                firstOrder.OrderCode,
+                firstOrder.AmountVnd))).Outcome);
+
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var second = await context.PaymentOrders.SingleAsync(candidate => candidate.Id == secondOrder.Id);
+        var fulfilledAt = DateTimeOffset.UtcNow;
+        second.FulfillVipPurchase(fulfilledAt);
+        await context.SaveChangesAsync();
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+            context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO membership.vip_transactions
+                    (id, payment_order_id, user_id, subscription_version, payment_order_type,
+                     previous_expiry, effective_start, new_expiry, duration_hours,
+                     fulfilled_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {second.Id}, {userId}, {1L}, {PaymentOrderTypes.VipPurchase},
+                     NULL, {fulfilledAt}, {fulfilledAt.AddHours(VipPlan.FixedDurationHours)},
+                     {VipPlan.FixedDurationHours}, {fulfilledAt}, {fulfilledAt});
+                """));
+
+        Assert.Equal(PostgresErrorCodes.UniqueViolation, exception.SqlState);
+        Assert.Equal("ux_vip_transactions_user_subscription_version", exception.ConstraintName);
+    }
+
+    [Theory]
+    [InlineData(1L, true)]
+    [InlineData(2L, false)]
+    public async Task Invalid_subscription_version_previous_expiry_shape_is_rejected_by_PostgreSql(
+        long version,
+        bool hasPreviousExpiry)
+    {
+        await using var provider = Services().BuildServiceProvider(validateScopes: true);
+        var userId = await SeedUserAsync(provider, $"VIP Invalid Version {version}");
+        var order = await CreateOrderAsync(provider, userId, $"vip-invalid-version-{version}");
+        var fulfilledAt = DateTimeOffset.UtcNow;
+        DateTimeOffset? previousExpiry = hasPreviousExpiry
+            ? fulfilledAt.AddHours(-VipPlan.FixedDurationHours)
+            : null;
+
+        await using var scope = provider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var exception = await Assert.ThrowsAsync<PostgresException>(() =>
+            context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO membership.vip_transactions
+                    (id, payment_order_id, user_id, subscription_version, payment_order_type,
+                     previous_expiry, effective_start, new_expiry, duration_hours,
+                     fulfilled_at, created_at)
+                VALUES
+                    ({Guid.NewGuid()}, {order.Id}, {userId}, {version}, {PaymentOrderTypes.VipPurchase},
+                     {previousExpiry}, {fulfilledAt},
+                     {fulfilledAt.AddHours(VipPlan.FixedDurationHours)},
+                     {VipPlan.FixedDurationHours}, {fulfilledAt}, {fulfilledAt});
+                """));
+
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+        Assert.Equal("ck_vip_transactions_subscription_version", exception.ConstraintName);
     }
 
     [Theory]
