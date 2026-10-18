@@ -11,6 +11,7 @@ public static class ActionReceiptStatuses
 public sealed class ActionReceipt
 {
     public const int MaximumSourceEventTypeLength = 200;
+    public const int PayloadFingerprintLength = 64;
 
     private ActionReceipt()
     {
@@ -26,6 +27,8 @@ public sealed class ActionReceipt
 
     public Guid? SubjectId { get; private set; }
 
+    public string PayloadFingerprint { get; private set; } = string.Empty;
+
     public DateTimeOffset OccurredAt { get; private set; }
 
     public DateOnly OccurredLocalDate { get; private set; }
@@ -40,6 +43,7 @@ public sealed class ActionReceipt
         string sourceEventType,
         Guid userId,
         Guid? subjectId,
+        string payloadFingerprint,
         DateTimeOffset occurredAt,
         DateTimeOffset receivedAt)
     {
@@ -49,6 +53,11 @@ public sealed class ActionReceipt
             sourceEventType.Length > MaximumSourceEventTypeLength ||
             userId == Guid.Empty ||
             subjectId == Guid.Empty ||
+            payloadFingerprint is null ||
+            payloadFingerprint.Length != PayloadFingerprintLength ||
+            payloadFingerprint.Any(character =>
+                character is not (>= '0' and <= '9') and
+                    not (>= 'a' and <= 'f')) ||
             occurredAt.Offset != TimeSpan.Zero ||
             receivedAt.Offset != TimeSpan.Zero)
         {
@@ -62,6 +71,7 @@ public sealed class ActionReceipt
             SourceEventType = sourceEventType,
             UserId = userId,
             SubjectId = subjectId,
+            PayloadFingerprint = payloadFingerprint,
             OccurredAt = occurredAt,
             OccurredLocalDate = MissionPeriodResolver.GetVietnamLocalDate(occurredAt),
             ReceivedAt = receivedAt,

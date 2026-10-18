@@ -695,6 +695,109 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Admin_mission_mutations_are_limited_to_twenty_per_minute_per_admin()
+    {
+        var (adminClient, csrf) = await CreateAdminClientAsync(
+            "google-subject-m01-rate-limit");
+        using (adminClient)
+        {
+            for (var index = 0; index < 20; index++)
+            {
+                using var request = CreateMissionRequest(
+                    $"rate-limited-mission-{index}",
+                    csrf);
+                Assert.Equal(
+                    HttpStatusCode.Created,
+                    (await adminClient.SendAsync(request)).StatusCode);
+            }
+
+            using var rejectedRequest = CreateMissionRequest(
+                "rate-limited-mission-rejected",
+                csrf);
+            await AssertStandardizedErrorAsync(
+                await adminClient.SendAsync(rejectedRequest),
+                HttpStatusCode.TooManyRequests,
+                "RATE_LIMITED");
+
+            Assert.Equal(
+                HttpStatusCode.OK,
+                (await adminClient.GetAsync("/api/v1/admin/missions")).StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task Admin_mission_contract_rejects_numeric_enum_values()
+    {
+        var (adminClient, csrf) = await CreateAdminClientAsync(
+            "google-subject-m01-string-enums");
+        using (adminClient)
+        {
+            using var numericAction = new HttpRequestMessage(
+                HttpMethod.Post,
+                "/api/v1/admin/missions")
+            {
+                Content = JsonContent.Create(new
+                {
+                    code = "numeric-action",
+                    name = "Numeric action",
+                    description = string.Empty,
+                    actionType = 1,
+                    cycleType = "Daily",
+                }),
+            };
+            numericAction.Headers.Add("X-CSRF-TOKEN", csrf);
+            await AssertStandardizedErrorAsync(
+                await adminClient.SendAsync(numericAction),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+
+            using var numericCycle = new HttpRequestMessage(
+                HttpMethod.Post,
+                "/api/v1/admin/missions")
+            {
+                Content = JsonContent.Create(new
+                {
+                    code = "numeric-cycle",
+                    name = "Numeric cycle",
+                    description = string.Empty,
+                    actionType = "ChapterReadQualified",
+                    cycleType = 2,
+                }),
+            };
+            numericCycle.Headers.Add("X-CSRF-TOKEN", csrf);
+            await AssertStandardizedErrorAsync(
+                await adminClient.SendAsync(numericCycle),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+
+            using var validMission = CreateMissionRequest("numeric-repeat-policy", csrf);
+            var createResponse = await adminClient.SendAsync(validMission);
+            Assert.Equal(HttpStatusCode.Created, createResponse.StatusCode);
+            var mission = await createResponse.Content.ReadFromJsonAsync<JsonElement>();
+
+            using var numericRepeat = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/admin/missions/{mission.GetProperty("id").GetGuid():D}/revisions")
+            {
+                Content = JsonContent.Create(new
+                {
+                    targetCount = 1,
+                    rewardBonusCoins = 10,
+                    repeatPolicy = 2,
+                    effectiveFrom = new DateTimeOffset(
+                        2026, 10, 18, 0, 0, 0, TimeSpan.Zero),
+                    configurationSnapshot = new { },
+                }),
+            };
+            numericRepeat.Headers.Add("X-CSRF-TOKEN", csrf);
+            await AssertStandardizedErrorAsync(
+                await adminClient.SendAsync(numericRepeat),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+    }
+
+    [Fact]
     public async Task Successful_google_login_persists_a_daily_login_action_receipt()
     {
         const string subject = "google-subject-m01-daily-login";
@@ -3317,7 +3420,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var paths = document.GetProperty("paths");
         var collection = paths.GetProperty("/api/v1/admin/missions");
         var create = collection.GetProperty("post");
-        foreach (var status in new[] { "201", "400", "401", "403", "409" })
+        foreach (var status in new[] { "201", "400", "401", "403", "409", "429" })
         {
             Assert.True(create.GetProperty("responses").TryGetProperty(status, out _));
         }
@@ -3362,6 +3465,25 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                  })
         {
             Assert.True(paths.TryGetProperty(path, out _));
+        }
+
+        foreach (var operation in new[]
+                 {
+                     revision,
+                     paths.GetProperty("/api/v1/admin/missions/{missionId}/activate")
+                         .GetProperty("post"),
+                     paths.GetProperty("/api/v1/admin/missions/{missionId}/deactivate")
+                         .GetProperty("post"),
+                 })
+        {
+            Assert.True(operation.GetProperty("responses").TryGetProperty("429", out _));
+            var rateLimitError = ResolveResponseSchema(document, operation, "429");
+            foreach (var property in new[] { "errorCode", "message", "traceId" })
+            {
+                Assert.True(rateLimitError.GetProperty("properties").TryGetProperty(
+                    property,
+                    out _));
+            }
         }
 
         var errorSchema = ResolveResponseSchema(document, create, "400");
@@ -4581,6 +4703,53 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             BaseAddress = new Uri("https://localhost"),
             HandleCookies = true,
         });
+
+    private async Task<(HttpClient Client, string Csrf)> CreateAdminClientAsync(string subject)
+    {
+        _factory.TokenEndpoint.SetProfile(subject, "Mission Admin", null, null);
+        using (var userClient = CreateClient())
+        {
+            await CompleteLoginAsync(
+                userClient,
+                await BeginLoginAsync(userClient, "/admin/missions"));
+        }
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await context.Users
+                .Where(user => context.GoogleIdentities.Any(identity =>
+                    identity.UserId == user.Id && identity.GoogleSubject == subject))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(user => user.Role, IdentityRoles.Admin)
+                    .SetProperty(user => user.UpdatedAt, DateTimeOffset.UtcNow)
+                    .SetProperty(user => user.Version, user => user.Version + 1));
+        }
+
+        var adminClient = CreateClient();
+        await CompleteLoginAsync(
+            adminClient,
+            await BeginLoginAsync(adminClient, "/admin/missions"));
+        var profile = await adminClient.GetAsync("/api/v1/me");
+        return (adminClient, Assert.Single(profile.Headers.GetValues("X-CSRF-TOKEN")));
+    }
+
+    private static HttpRequestMessage CreateMissionRequest(string code, string csrf)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/missions")
+        {
+            Content = JsonContent.Create(new
+            {
+                code,
+                name = code,
+                description = string.Empty,
+                actionType = "ChapterReadQualified",
+                cycleType = "Daily",
+            }),
+        };
+        request.Headers.Add("X-CSRF-TOKEN", csrf);
+        return request;
+    }
 
     private static HttpClient CreateClient(AuthenticationApplicationFactory factory) =>
         factory.CreateClient(new WebApplicationFactoryClientOptions

@@ -19,7 +19,7 @@ public sealed class GoogleSignInHandler(
 
         var normalizedProfile = Normalize(profile);
         var loginId = Guid.NewGuid();
-        var loggedInAt = ToPostgreSqlPrecision(clock.UtcNow);
+        var loggedInAt = PostgreSqlTimestamp.Normalize(clock.UtcNow);
 
         for (var attempt = 0; attempt < MaximumSaveAttempts; attempt++)
         {
@@ -151,6 +151,4 @@ public sealed class GoogleSignInHandler(
         user.Status,
         user.Version);
 
-    private static DateTimeOffset ToPostgreSqlPrecision(DateTimeOffset value) =>
-        new(value.Ticks - value.Ticks % 10, value.Offset);
 }

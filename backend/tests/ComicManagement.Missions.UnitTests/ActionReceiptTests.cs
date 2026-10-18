@@ -16,6 +16,7 @@ public sealed class ActionReceiptTests
             "Identity.UserLoggedIn.v1",
             Guid.NewGuid(),
             null,
+            new string('a', ActionReceipt.PayloadFingerprintLength),
             occurredAt,
             occurredAt.AddMinutes(5));
 

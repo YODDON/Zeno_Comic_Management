@@ -3,6 +3,7 @@ using System.Text.Json;
 using ComicManagement.Billing.Events;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Shared.Messaging;
+using ComicManagement.Shared.Time;
 using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Subscriptions;
 using ComicManagement.Wallet.Accounts;
@@ -280,7 +281,8 @@ internal sealed class SePayWebhookStore(
             transaction.ProviderTransactionId,
             order.Id,
             cancellationToken);
-        var authoritativeNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
+        var authoritativeNow = PostgreSqlTimestamp.Normalize(
+            await GetAuthoritativeServerTimeAsync(cancellationToken));
 
         var authoritativeProviderTransaction = existing ?? ProviderTransaction.CreateSePay(
             Guid.NewGuid(),
@@ -464,7 +466,8 @@ internal sealed class SePayWebhookStore(
             transaction.ProviderTransactionId,
             order.Id,
             cancellationToken);
-        var authoritativeNow = await GetAuthoritativeServerTimeAsync(cancellationToken);
+        var authoritativeNow = PostgreSqlTimestamp.Normalize(
+            await GetAuthoritativeServerTimeAsync(cancellationToken));
 
         var providerTransaction = existing ?? ProviderTransaction.CreateSePay(
             Guid.NewGuid(),

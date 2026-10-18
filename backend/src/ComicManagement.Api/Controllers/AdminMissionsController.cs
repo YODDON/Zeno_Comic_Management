@@ -4,10 +4,13 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Authorization;
+using ComicManagement.Api.Missions;
+using ComicManagement.Api.Serialization;
 using ComicManagement.Missions.Administration;
 using ComicManagement.Missions.Definitions;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace ComicManagement.Api.Controllers;
 
@@ -56,6 +59,8 @@ public sealed class AdminMissionsController(MissionAdministrationHandler handler
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
+    [EnableRateLimiting(MissionRateLimitConstants.AdminMutationPolicy)]
     public async Task<ActionResult<MissionDefinitionState>> Create(
         CreateMissionRequest request,
         CancellationToken cancellationToken)
@@ -96,6 +101,8 @@ public sealed class AdminMissionsController(MissionAdministrationHandler handler
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
+    [EnableRateLimiting(MissionRateLimitConstants.AdminMutationPolicy)]
     public async Task<ActionResult<MissionRevisionState>> AddRevision(
         Guid missionId,
         AddMissionRevisionRequest request,
@@ -137,6 +144,8 @@ public sealed class AdminMissionsController(MissionAdministrationHandler handler
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
+    [EnableRateLimiting(MissionRateLimitConstants.AdminMutationPolicy)]
     public async Task<ActionResult<MissionDefinitionState>> Activate(
         Guid missionId,
         ActivateMissionRevisionRequest request,
@@ -155,6 +164,8 @@ public sealed class AdminMissionsController(MissionAdministrationHandler handler
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
+    [EnableRateLimiting(MissionRateLimitConstants.AdminMutationPolicy)]
     public async Task<ActionResult<MissionDefinitionState>> Deactivate(
         Guid missionId,
         DeactivateMissionRequest request,
@@ -259,7 +270,7 @@ public sealed class DeactivateMissionRequest
     public long ExpectedVersion { get; init; }
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter<MissionActionTypeContract>))]
+[JsonConverter(typeof(StringOnlyEnumConverter<MissionActionTypeContract>))]
 public enum MissionActionTypeContract
 {
     DailyLogin = 1,
@@ -269,7 +280,7 @@ public enum MissionActionTypeContract
     WalletTopUpCompleted = 5,
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter<MissionCycleTypeContract>))]
+[JsonConverter(typeof(StringOnlyEnumConverter<MissionCycleTypeContract>))]
 public enum MissionCycleTypeContract
 {
     Fixed = 1,
@@ -278,7 +289,7 @@ public enum MissionCycleTypeContract
     Event = 4,
 }
 
-[JsonConverter(typeof(JsonStringEnumConverter<MissionRepeatPolicyContract>))]
+[JsonConverter(typeof(StringOnlyEnumConverter<MissionRepeatPolicyContract>))]
 public enum MissionRepeatPolicyContract
 {
     OncePerVietnamDate = 1,

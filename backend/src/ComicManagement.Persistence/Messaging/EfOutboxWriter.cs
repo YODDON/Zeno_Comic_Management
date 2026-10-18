@@ -24,27 +24,18 @@ internal sealed class EfOutboxWriter(AppDbContext dbContext, IClock clock) : IOu
                 "Event type cannot exceed 200 characters.");
         }
 
-        EnsureUtc(occurredAt, nameof(occurredAt));
-
-        var availableAt = clock.UtcNow;
-        EnsureUtc(availableAt, nameof(clock));
+        var canonicalOccurredAt = PostgreSqlTimestamp.Normalize(occurredAt);
+        var availableAt = PostgreSqlTimestamp.Normalize(clock.UtcNow);
 
         var message = OutboxMessage.Create(
             Guid.NewGuid(),
             eventType,
             JsonSerializer.Serialize(payload, SerializerOptions),
-            occurredAt,
+            canonicalOccurredAt,
             availableAt);
 
         dbContext.OutboxMessages.Add(message);
         return message.Id;
     }
 
-    private static void EnsureUtc(DateTimeOffset value, string parameterName)
-    {
-        if (value.Offset != TimeSpan.Zero)
-        {
-            throw new ArgumentException("Timestamp must use the UTC offset.", parameterName);
-        }
-    }
 }

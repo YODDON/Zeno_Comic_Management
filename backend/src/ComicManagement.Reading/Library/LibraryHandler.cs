@@ -116,11 +116,8 @@ public sealed class LibraryHandler(ILibraryStore store, IClock clock)
             return Task.FromResult(new FollowCommandResult(LibraryOutcome.ValidationFailed));
         }
 
-        var utcNow = clock.UtcNow.ToUniversalTime();
-        var postgresTimestamp = new DateTimeOffset(
-            utcNow.Ticks - (utcNow.Ticks % 10),
-            TimeSpan.Zero);
-        return store.FollowAsync(userId, comicId, postgresTimestamp, cancellationToken);
+        var followedAt = PostgreSqlTimestamp.Normalize(clock.UtcNow);
+        return store.FollowAsync(userId, comicId, followedAt, cancellationToken);
     }
 
     public async Task<LibraryOutcome> UnfollowAsync(

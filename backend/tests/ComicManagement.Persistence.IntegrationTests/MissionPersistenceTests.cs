@@ -99,13 +99,70 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
         Assert.Equal(occurredAt, receipt.OccurredAt);
         Assert.Equal(new DateOnly(2026, 10, 18), receipt.OccurredLocalDate);
         Assert.Equal(ActionReceiptStatuses.Pending, receipt.ProcessingStatus);
+        Assert.Matches("^[0-9a-f]{64}$", receipt.PayloadFingerprint);
         Assert.Equal(2, await assertionContext.ProcessedMessages.CountAsync());
+    }
+
+    [Fact]
+    public void Canonical_fingerprint_binds_every_authoritative_event_field()
+    {
+        var at = new DateTimeOffset(2026, 10, 18, 16, 59, 59, TimeSpan.Zero);
+        var read = new ChapterReadQualified(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), at,
+            "r02-v1", 9_000, 15_000, new string('a', 64));
+        AssertFingerprintChanges(read,
+            read with { SessionId = Guid.NewGuid() },
+            read with { UserId = Guid.NewGuid() },
+            read with { ComicId = Guid.NewGuid() },
+            read with { ChapterId = Guid.NewGuid() },
+            read with { QualifiedAt = at.AddTicks(10) },
+            read with { PolicyRevision = "r02-v2" },
+            read with { MinimumProgressBasisPoints = 9_001 },
+            read with { MinimumActiveDurationMs = 15_001 },
+            read with { ManifestRevision = new string('b', 64) });
+
+        var unlock = new ChapterUnlocked(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            100, 60, 40, at);
+        AssertFingerprintChanges(unlock,
+            unlock with { UnlockId = Guid.NewGuid() },
+            unlock with { UserId = Guid.NewGuid() },
+            unlock with { ChapterId = Guid.NewGuid() },
+            unlock with { QuoteId = Guid.NewGuid() },
+            unlock with { WalletOperationId = Guid.NewGuid() },
+            unlock with { PricePaidCoins = 101 },
+            unlock with { BonusSpentCoins = 59 },
+            unlock with { PaidSpentCoins = 41 },
+            unlock with { UnlockedAt = at.AddTicks(10) });
+
+        var topUp = new WalletTopUpCompletedEvent(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), 100_000, 10_000, at);
+        AssertFingerprintChanges(topUp,
+            topUp with { PaymentOrderId = Guid.NewGuid() },
+            topUp with { ProviderTransactionId = Guid.NewGuid() },
+            topUp with { UserId = Guid.NewGuid() },
+            topUp with { AmountVnd = 101_000 },
+            topUp with { PaidCoins = 10_100 },
+            topUp with { FulfilledAt = at.AddTicks(10) });
+
+        var login = new UserLoggedIn(Guid.NewGuid(), Guid.NewGuid(), at);
+        AssertFingerprintChanges(login,
+            login with { LoginId = Guid.NewGuid() },
+            login with { UserId = Guid.NewGuid() },
+            login with { LoggedInAt = at.AddTicks(10) });
+
+        var follow = new ComicFollowed(Guid.NewGuid(), Guid.NewGuid(), at);
+        AssertFingerprintChanges(follow,
+            follow with { UserId = Guid.NewGuid() },
+            follow with { ComicId = Guid.NewGuid() },
+            follow with { FollowedAt = at.AddTicks(10) });
     }
 
     [Fact]
     public async Task Mission_constraints_and_revision_ownership_fail_closed()
     {
         var now = _clock.UtcNow;
+        var receiptUserId = Guid.NewGuid();
         var firstDefinition = MissionDefinition.Create(
             Guid.NewGuid(),
             $"mission-{Guid.NewGuid():N}",
@@ -135,6 +192,8 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
 
         await using var scope = Services.CreateAsyncScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        context.Users.Add(User.CreateFromGoogle(
+            receiptUserId, "Mission Constraint User", null, null, now));
         context.MissionDefinitions.AddRange(firstDefinition, secondDefinition);
         context.MissionRevisions.Add(firstRevision);
         await context.SaveChangesAsync();
@@ -204,6 +263,19 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
                     ({Guid.NewGuid()}, {firstDefinition.Id}, {2}, {1}, {301L},
                      {MissionRepeatPolicies.OncePerVietnamDate}, {now}, NULL,
                      {emptyConfiguration}::jsonb);
+                """));
+
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO missions.action_receipts
+                    (id, source_event_id, source_event_type, user_id, subject_id,
+                     payload_fingerprint, occurred_at, occurred_local_date,
+                     received_at, processing_status)
+                VALUES
+                    ({Guid.NewGuid()}, {Guid.NewGuid()}, {IdentityEventTypes.UserLoggedIn},
+                     {receiptUserId}, NULL, {"not-a-sha256-fingerprint"}, {now},
+                     {DateOnly.FromDateTime(now.UtcDateTime)}, {now},
+                     {ActionReceiptStatuses.Pending});
                 """));
     }
 
@@ -325,9 +397,10 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
                          """
                          INSERT INTO missions.action_receipts
                              (id, source_event_id, source_event_type, user_id, subject_id,
+                              payload_fingerprint,
                               occurred_at, occurred_local_date, received_at, processing_status)
                          VALUES
-                             (@id, @event_id, @event_type, @user_id, NULL,
+                             (@id, @event_id, @event_type, @user_id, NULL, @payload_fingerprint,
                               @occurred_at, @local_date, @received_at, 'Pending');
                          """,
                          blockerConnection,
@@ -337,6 +410,9 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
             insert.Parameters.AddWithValue("event_id", eventId);
             insert.Parameters.AddWithValue("event_type", IdentityEventTypes.UserLoggedIn);
             insert.Parameters.AddWithValue("user_id", userId);
+            insert.Parameters.AddWithValue(
+                "payload_fingerprint",
+                new string('a', ActionReceipt.PayloadFingerprintLength));
             insert.Parameters.AddWithValue("occurred_at", occurredAt);
             insert.Parameters.AddWithValue("local_date", new DateOnly(2026, 10, 20));
             insert.Parameters.AddWithValue("received_at", occurredAt);
@@ -356,6 +432,7 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
                 IdentityEventTypes.UserLoggedIn,
                 userId,
                 null,
+                new string('a', ActionReceipt.PayloadFingerprintLength),
                 occurredAt,
                 occurredAt,
                 CancellationToken.None);
@@ -387,6 +464,7 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
             IdentityEventTypes.UserLoggedIn,
             userId,
             null,
+            new string('b', ActionReceipt.PayloadFingerprintLength),
             occurredAt,
             occurredAt,
             CancellationToken.None);
@@ -395,7 +473,8 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
             eventId,
             IdentityEventTypes.UserLoggedIn,
             userId,
-            Guid.NewGuid(),
+            null,
+            new string('c', ActionReceipt.PayloadFingerprintLength),
             occurredAt,
             occurredAt,
             CancellationToken.None));
@@ -451,6 +530,48 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
                 processed.Consumer == "Missions.UserLoggedIn.v1"));
     }
 
+    [Fact]
+    public async Task Same_topup_identity_with_different_amount_is_not_processed_as_replay()
+    {
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var providerTransactionId = Guid.NewGuid();
+        await SeedUser(userId, "TopUp payload conflict");
+
+        await using (var scope = Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var writer = scope.ServiceProvider.GetRequiredService<IOutboxWriter>();
+            writer.Enqueue(
+                BillingEventTypes.WalletTopUpCompleted,
+                new WalletTopUpCompletedEvent(
+                    orderId, providerTransactionId, userId, 100_000, 10_000, _clock.UtcNow),
+                _clock.UtcNow);
+            writer.Enqueue(
+                BillingEventTypes.WalletTopUpCompleted,
+                new WalletTopUpCompletedEvent(
+                    orderId, providerTransactionId, userId, 101_000, 10_000, _clock.UtcNow),
+                _clock.UtcNow);
+            await context.SaveChangesAsync();
+        }
+
+        await using (var scope = Services.CreateAsyncScope())
+        {
+            var result = await scope.ServiceProvider
+                .GetRequiredService<OutboxBatchProcessor>()
+                .ProcessBatchAsync(CancellationToken.None);
+            Assert.Equal(1, result.CompletedCount);
+            Assert.Equal(1, result.FailedCount);
+        }
+
+        await using var assertionScope = Services.CreateAsyncScope();
+        var contextForAssertion = assertionScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(1, await contextForAssertion.ActionReceipts.CountAsync(candidate =>
+            candidate.SourceEventId == orderId));
+        Assert.Equal(1, await contextForAssertion.ProcessedMessages.CountAsync(processed =>
+            processed.Consumer == "Missions.WalletTopUpCompleted.v1"));
+    }
+
     private async Task ProcessBatch()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -458,6 +579,18 @@ public sealed class MissionPersistenceTests : IAsyncLifetime
         var result = await processor.ProcessBatchAsync(CancellationToken.None);
         Assert.Equal(2, result.CompletedCount);
         Assert.Equal(0, result.FailedCount);
+    }
+
+    private static void AssertFingerprintChanges<TPayload>(
+        TPayload baseline,
+        params TPayload[] variations)
+        where TPayload : class
+    {
+        var fingerprint = MissionPayloadFingerprint.Create(baseline);
+        Assert.Matches("^[0-9a-f]{64}$", fingerprint);
+        Assert.All(variations, variation => Assert.NotEqual(
+            fingerprint,
+            MissionPayloadFingerprint.Create(variation)));
     }
 
     private async Task SeedUser(Guid userId, string displayName)

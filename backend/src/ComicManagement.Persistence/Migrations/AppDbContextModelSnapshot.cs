@@ -1195,6 +1195,13 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("date")
                         .HasColumnName("occurred_local_date");
 
+                    b.Property<string>("PayloadFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("payload_fingerprint")
+                        .IsFixedLength();
+
                     b.Property<string>("ProcessingStatus")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -1235,8 +1242,9 @@ namespace ComicManagement.Persistence.Migrations
 
                     b.ToTable("action_receipts", "missions", t =>
                         {
-                            t.HasCheckConstraint("ck_action_receipts_processing_status", "processing_status IN ('Pending','Processed')");
+                            t.HasCheckConstraint("ck_action_receipts_payload_fingerprint", "payload_fingerprint ~ '^[0-9a-f]{64}$'");
 
+                            t.HasCheckConstraint("ck_action_receipts_processing_status", "processing_status IN ('Pending','Processed')");
                         });
                 });
 

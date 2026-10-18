@@ -13,6 +13,44 @@ public partial class HardenMissionActivationConsistency : Migration
     {
         migrationBuilder.Sql(
             """
+            DO $migration$
+            BEGIN
+                IF EXISTS
+                (
+                    SELECT 1
+                    FROM missions.mission_definitions definition
+                    LEFT JOIN missions.mission_revisions revision
+                        ON revision.id = definition.active_revision_id
+                    WHERE
+                        (definition.status = 'Active') IS DISTINCT FROM
+                            (definition.active_revision_id IS NOT NULL)
+                        OR
+                        (
+                            definition.active_revision_id IS NOT NULL
+                            AND
+                            (
+                                revision.id IS NULL
+                                OR revision.mission_id <> definition.id
+                                OR
+                                (
+                                    definition.action_type = 'DailyLogin'
+                                    AND revision.repeat_policy <> 'OncePerVietnamDate'
+                                )
+                                OR
+                                (
+                                    definition.action_type <> 'DailyLogin'
+                                    AND revision.repeat_policy <> 'UniqueSubjectPerPeriod'
+                                )
+                            )
+                        )
+                ) THEN
+                    RAISE EXCEPTION
+                        'Mission activation hardening precondition failed: existing active revision state is inconsistent.'
+                        USING ERRCODE = '23514';
+                END IF;
+            END;
+            $migration$;
+
             DROP TRIGGER IF EXISTS trg_mission_definition_active_revision_ownership
                 ON missions.mission_definitions;
 

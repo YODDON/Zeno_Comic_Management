@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using ComicManagement.Billing.Events;
 using ComicManagement.Identity.Events;
@@ -18,39 +19,46 @@ internal sealed class MissionActionReceiptRecorder(
         string sourceEventType,
         Guid userId,
         Guid? subjectId,
+        string payloadFingerprint,
         DateTimeOffset occurredAt,
         DateTimeOffset envelopeOccurredAt,
         CancellationToken cancellationToken)
     {
-        if (occurredAt != envelopeOccurredAt)
+        var canonicalOccurredAt = PostgreSqlTimestamp.Normalize(occurredAt);
+        var canonicalEnvelopeOccurredAt = PostgreSqlTimestamp.Normalize(envelopeOccurredAt);
+        if (canonicalOccurredAt != canonicalEnvelopeOccurredAt)
         {
             throw new InvalidDataException(
                 "Mission event payload timestamp does not match its outbox envelope.");
         }
 
-        var receivedAt = clock.UtcNow;
+        var receivedAt = PostgreSqlTimestamp.Normalize(clock.UtcNow);
         var receipt = ActionReceipt.Create(
             Guid.NewGuid(),
             sourceEventId,
             sourceEventType,
             userId,
             subjectId,
-            occurredAt,
+            payloadFingerprint,
+            canonicalOccurredAt,
             receivedAt);
 
         var affectedRows = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO missions.action_receipts
                 (id, source_event_id, source_event_type, user_id, subject_id,
+                 payload_fingerprint,
                  occurred_at, occurred_local_date, received_at, processing_status)
             VALUES
                 ({receipt.Id}, {receipt.SourceEventId}, {receipt.SourceEventType},
-                 {receipt.UserId}, {receipt.SubjectId}, {receipt.OccurredAt},
+                 {receipt.UserId}, {receipt.SubjectId}, {receipt.PayloadFingerprint},
+                 {receipt.OccurredAt},
                  {receipt.OccurredLocalDate}, {receipt.ReceivedAt},
                  {receipt.ProcessingStatus})
             ON CONFLICT (source_event_id, source_event_type) DO UPDATE
             SET source_event_id = missions.action_receipts.source_event_id
             WHERE missions.action_receipts.user_id = EXCLUDED.user_id
               AND missions.action_receipts.subject_id IS NOT DISTINCT FROM EXCLUDED.subject_id
+              AND missions.action_receipts.payload_fingerprint = EXCLUDED.payload_fingerprint
               AND missions.action_receipts.occurred_at = EXCLUDED.occurred_at
               AND missions.action_receipts.occurred_local_date = EXCLUDED.occurred_local_date;
             """, cancellationToken);
@@ -89,11 +97,13 @@ internal abstract class MissionActionReceiptHandler<TPayload>(
             SerializerOptions) ?? throw new InvalidDataException(
                 $"The {message.EventType} payload is invalid.");
         var action = Map(message, payload);
+        var payloadFingerprint = MissionPayloadFingerprint.Create(payload);
         await recorder.RecordAsync(
             action.SourceEventId,
             message.EventType,
             action.UserId,
             action.SubjectId,
+            payloadFingerprint,
             action.OccurredAt,
             message.OccurredAt,
             cancellationToken);
@@ -102,6 +112,23 @@ internal abstract class MissionActionReceiptHandler<TPayload>(
     protected abstract MissionReceiptInput Map(
         OutboxMessageEnvelope envelope,
         TPayload payload);
+}
+
+internal static class MissionPayloadFingerprint
+{
+    private static readonly JsonSerializerOptions SerializerOptions =
+        new(JsonSerializerDefaults.Web);
+
+    internal static string Create<TPayload>(TPayload payload)
+        where TPayload : class
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return Convert.ToHexString(
+                SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
+                    payload,
+                    SerializerOptions)))
+            .ToLowerInvariant();
+    }
 }
 
 internal sealed record MissionReceiptInput(

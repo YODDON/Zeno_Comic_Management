@@ -26,6 +26,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261018042934_AddMissionDefinitionsAndActionReceipts";
     private const string M01HardeningMigration =
         "20261018124500_HardenMissionActivationConsistency";
+    private const string M01ReceiptFingerprintMigration =
+        "20261018155821_AddMissionReceiptPayloadFingerprint";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -54,6 +56,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         U02HardeningMigration,
         M01Migration,
         M01HardeningMigration,
+        M01ReceiptFingerprintMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")

@@ -3,6 +3,7 @@ using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Events;
 using ComicManagement.Reading.Sessions;
 using ComicManagement.Shared.Messaging;
+using ComicManagement.Shared.Time;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -151,6 +152,7 @@ internal sealed class ReadingSessionStore(
         DateTimeOffset qualifiedAt,
         CancellationToken cancellationToken = default)
     {
+        qualifiedAt = PostgreSqlTimestamp.Normalize(qualifiedAt);
         await using var transaction = await dbContext.Database.BeginTransactionAsync(
             IsolationLevel.ReadCommitted,
             cancellationToken);

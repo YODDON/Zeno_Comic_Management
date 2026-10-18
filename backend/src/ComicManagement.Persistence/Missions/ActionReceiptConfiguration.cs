@@ -14,6 +14,9 @@ internal sealed class ActionReceiptConfiguration : IEntityTypeConfiguration<Acti
             table.HasCheckConstraint(
                 "ck_action_receipts_processing_status",
                 "processing_status IN ('Pending','Processed')");
+            table.HasCheckConstraint(
+                "ck_action_receipts_payload_fingerprint",
+                "payload_fingerprint ~ '^[0-9a-f]{64}$'");
         });
 
         builder.HasKey(receipt => receipt.Id)
@@ -42,6 +45,11 @@ internal sealed class ActionReceiptConfiguration : IEntityTypeConfiguration<Acti
             .HasColumnName("user_id");
         builder.Property(receipt => receipt.SubjectId)
             .HasColumnName("subject_id");
+        builder.Property(receipt => receipt.PayloadFingerprint)
+            .HasColumnName("payload_fingerprint")
+            .HasMaxLength(ActionReceipt.PayloadFingerprintLength)
+            .IsFixedLength()
+            .IsRequired();
         builder.Property(receipt => receipt.OccurredAt)
             .HasColumnName("occurred_at")
             .HasColumnType("timestamp with time zone");

@@ -29,7 +29,7 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 422 | REFUND_RECOVERY_INSUFFICIENT | Exact original lot not fully unspent/unreserved |
 | 422 | REFUND_TRANSFER_NOT_VERIFIED | Cannot complete refund absent evidence |
 | 422 | PUBLICATION_PRECONDITION_FAILED | Must have valid chapter/pages |
-| 429 | RATE_LIMITED | Honor Retry-After |
+| 429 | RATE_LIMITED | Honor Retry-After; includes the 20/minute/Admin Mission mutation policy |
 | 503 | PROVIDER_UNAVAILABLE | Do not assume money failed/paid |
 
 Reading session creation/update may return `404 READING_SESSION_UNAVAILABLE` without exposing unpublished content, `403 FORBIDDEN` for a known but unauthorized Chapter, or `409 READING_SESSION_EXPIRED`. A successful non-qualifying `/qualify` response uses `qualified:false` with `reasonCode` equal to `SESSION_EXPIRED`, `PROGRESS_THRESHOLD_NOT_MET`, or `ACTIVE_DURATION_THRESHOLD_NOT_MET`; these are result reasons, not ProblemDetails errors.
