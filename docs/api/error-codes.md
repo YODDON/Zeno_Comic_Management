@@ -9,10 +9,13 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 403 | FORBIDDEN | No authorization |
 | 404 | RESOURCE_NOT_FOUND / CHAPTER_UNAVAILABLE | Not found or hidden; do not expose private metadata |
 | 404 | READING_SESSION_UNAVAILABLE | Session or its unpublished resource is unavailable without leaking private metadata |
+| 404 | MISSION_NOT_FOUND | Admin Mission identifier does not exist |
 | 409 | CONCURRENCY_CONFLICT | Reload version; retry consciously |
 | 409 | READING_SEQUENCE_CONFLICT | Heartbeat sequence is stale, has a gap, or reuses a sequence with another payload |
 | 409 | READING_SESSION_EXPIRED | Absolute 30-minute session expiry has been reached |
 | 409 | SLUG_CONFLICT | Choose another unique comic slug |
+| 409 | MISSION_CODE_CONFLICT | Mission code already exists |
+| 409 | MISSION_STATE_CONFLICT | Selected revision ownership or action/repeat policy is inconsistent |
 | 409 | IDEMPOTENCY_CONFLICT | Reused User + operation + key with a different canonical request; expiry never releases the key |
 | 409 | OPERATION_IN_PROGRESS | Poll/retry with same key after Retry-After |
 | 409 | QUOTE_EXPIRED | Get fresh five-minute quote |
@@ -26,7 +29,7 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 422 | REFUND_RECOVERY_INSUFFICIENT | Exact original lot not fully unspent/unreserved |
 | 422 | REFUND_TRANSFER_NOT_VERIFIED | Cannot complete refund absent evidence |
 | 422 | PUBLICATION_PRECONDITION_FAILED | Must have valid chapter/pages |
-| 429 | RATE_LIMITED | Honor Retry-After |
+| 429 | RATE_LIMITED | Honor Retry-After; includes the 20/minute/Admin Mission mutation policy |
 | 503 | PROVIDER_UNAVAILABLE | Do not assume money failed/paid |
 
 Reading session creation/update may return `404 READING_SESSION_UNAVAILABLE` without exposing unpublished content, `403 FORBIDDEN` for a known but unauthorized Chapter, or `409 READING_SESSION_EXPIRED`. A successful non-qualifying `/qualify` response uses `qualified:false` with `reasonCode` equal to `SESSION_EXPIRED`, `PROGRESS_THRESHOLD_NOT_MET`, or `ACTIVE_DURATION_THRESHOLD_NOT_MET`; these are result reasons, not ProblemDetails errors.

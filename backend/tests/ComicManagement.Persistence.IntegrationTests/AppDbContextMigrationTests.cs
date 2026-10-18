@@ -22,6 +22,12 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
     private const string U02Migration = "20261017130827_AddAtomicChapterUnlocks";
     private const string U02HardeningMigration =
         "20261017191312_HardenChapterUnlockIntegrity";
+    private const string M01Migration =
+        "20261018042934_AddMissionDefinitionsAndActionReceipts";
+    private const string M01HardeningMigration =
+        "20261018124500_HardenMissionActivationConsistency";
+    private const string M01ReceiptFingerprintMigration =
+        "20261018155821_AddMissionReceiptPayloadFingerprint";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -48,6 +54,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         U01Migration,
         U02Migration,
         U02HardeningMigration,
+        M01Migration,
+        M01HardeningMigration,
+        M01ReceiptFingerprintMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -109,6 +118,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "membership.vip_plans"));
         Assert.True(await TableExists(context, "membership.vip_subscriptions"));
         Assert.True(await TableExists(context, "membership.vip_transactions"));
+        Assert.True(await TableExists(context, "missions.mission_definitions"));
+        Assert.True(await TableExists(context, "missions.mission_revisions"));
+        Assert.True(await TableExists(context, "missions.action_receipts"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(

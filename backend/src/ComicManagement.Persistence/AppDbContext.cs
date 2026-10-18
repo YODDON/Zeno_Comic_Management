@@ -13,6 +13,8 @@ using ComicManagement.Reading.Library;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Membership.Subscriptions;
+using ComicManagement.Missions.Definitions;
+using ComicManagement.Missions.Receipts;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -79,6 +81,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<VipTransaction> VipTransactions => Set<VipTransaction>();
 
+    internal DbSet<MissionDefinition> MissionDefinitions => Set<MissionDefinition>();
+
+    internal DbSet<MissionRevision> MissionRevisions => Set<MissionRevision>();
+
+    internal DbSet<ActionReceipt> ActionReceipts => Set<ActionReceipt>();
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnsureAppendOnlyRecords();
@@ -135,6 +143,12 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 entry.State == EntityState.Modified))
         {
             throw new InvalidOperationException("Chapter unlock quotes are immutable.");
+        }
+
+        if (ChangeTracker.Entries<MissionRevision>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException("Mission revisions are append-only.");
         }
     }
 

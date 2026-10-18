@@ -88,7 +88,7 @@ public sealed class ReadingSessionHandler(
             userId,
             chapterId,
             ReadingQualificationPolicy.R02V1,
-            clock.UtcNow,
+            PostgreSqlTimestamp.Normalize(clock.UtcNow),
             cancellationToken);
     }
 
@@ -116,7 +116,7 @@ public sealed class ReadingSessionHandler(
             currentPageOffsetRatio,
             sequenceNumber,
             CreateFingerprint(currentPageOrder, currentPageOffsetRatio, sequenceNumber),
-            clock.UtcNow,
+            PostgreSqlTimestamp.Normalize(clock.UtcNow),
             cancellationToken);
     }
 
@@ -130,7 +130,11 @@ public sealed class ReadingSessionHandler(
             return ValidationFailed();
         }
 
-        return store.QualifyAsync(sessionId, userId, clock.UtcNow, cancellationToken);
+        return store.QualifyAsync(
+            sessionId,
+            userId,
+            PostgreSqlTimestamp.Normalize(clock.UtcNow),
+            cancellationToken);
     }
 
     private static string CreateFingerprint(

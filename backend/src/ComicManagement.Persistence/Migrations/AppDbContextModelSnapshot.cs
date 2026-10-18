@@ -1036,6 +1036,218 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionDefinition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActionType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("action_type");
+
+                    b.Property<Guid?>("ActiveRevisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("active_revision_id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("code");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CycleType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("cycle_type");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mission_definitions");
+
+                    b.HasIndex("ActiveRevisionId");
+
+                    b.HasIndex("Code")
+                        .IsUnique()
+                        .HasDatabaseName("ux_mission_definitions_code");
+
+                    b.ToTable("mission_definitions", "missions", t =>
+                        {
+                            t.HasCheckConstraint("ck_mission_definitions_action_type", "action_type IN ('DailyLogin','ChapterReadQualified','ComicFollowed','ChapterUnlocked','WalletTopUpCompleted')");
+
+                            t.HasCheckConstraint("ck_mission_definitions_active_revision", "(status = 'Draft' AND active_revision_id IS NULL) OR (status = 'Active' AND active_revision_id IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_mission_definitions_cycle_type", "cycle_type IN ('Fixed','Daily','Weekly','Event')");
+
+                            t.HasCheckConstraint("ck_mission_definitions_status", "status IN ('Draft','Active')");
+
+                            t.HasCheckConstraint("ck_mission_definitions_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionRevision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ConfigurationSnapshot")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("configuration_snapshot");
+
+                    b.Property<DateTimeOffset>("EffectiveFrom")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("effective_from");
+
+                    b.Property<DateTimeOffset?>("EffectiveUntil")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("effective_until");
+
+                    b.Property<Guid>("MissionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mission_id");
+
+                    b.Property<string>("RepeatPolicy")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("repeat_policy");
+
+                    b.Property<int>("RevisionNumber")
+                        .HasColumnType("integer")
+                        .HasColumnName("revision_number");
+
+                    b.Property<long>("RewardBonusCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("reward_bonus_coins");
+
+                    b.Property<int>("TargetCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("target_count");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mission_revisions");
+
+                    b.HasIndex("MissionId", "RevisionNumber")
+                        .IsUnique()
+                        .HasDatabaseName("ux_mission_revisions_mission_number");
+
+                    b.HasIndex("MissionId", "EffectiveFrom", "EffectiveUntil")
+                        .HasDatabaseName("ix_mission_revisions_effective_window");
+
+                    b.ToTable("mission_revisions", "missions", t =>
+                        {
+                            t.HasCheckConstraint("ck_mission_revisions_configuration_object", "jsonb_typeof(configuration_snapshot) = 'object'");
+
+                            t.HasCheckConstraint("ck_mission_revisions_effective_window", "effective_until IS NULL OR effective_until > effective_from");
+
+                            t.HasCheckConstraint("ck_mission_revisions_repeat_policy", "repeat_policy IN ('OncePerVietnamDate','UniqueSubjectPerPeriod')");
+
+                            t.HasCheckConstraint("ck_mission_revisions_revision_number", "revision_number > 0");
+
+                            t.HasCheckConstraint("ck_mission_revisions_reward", "reward_bonus_coins BETWEEN 1 AND 300");
+
+                            t.HasCheckConstraint("ck_mission_revisions_target_count", "target_count > 0");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Receipts.ActionReceipt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<DateOnly>("OccurredLocalDate")
+                        .HasColumnType("date")
+                        .HasColumnName("occurred_local_date");
+
+                    b.Property<string>("PayloadFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character(64)")
+                        .HasColumnName("payload_fingerprint")
+                        .IsFixedLength();
+
+                    b.Property<string>("ProcessingStatus")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("processing_status");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("received_at");
+
+                    b.Property<Guid>("SourceEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_event_id");
+
+                    b.Property<string>("SourceEventType")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("source_event_type");
+
+                    b.Property<Guid?>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_action_receipts");
+
+                    b.HasIndex("SourceEventId", "SourceEventType")
+                        .IsUnique()
+                        .HasDatabaseName("ux_action_receipts_source_event");
+
+                    b.HasIndex("UserId", "OccurredLocalDate", "ProcessingStatus")
+                        .HasDatabaseName("ix_action_receipts_user_local_date_status");
+
+                    b.ToTable("action_receipts", "missions", t =>
+                        {
+                            t.HasCheckConstraint("ck_action_receipts_payload_fingerprint", "payload_fingerprint ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_action_receipts_processing_status", "processing_status IN ('Pending','Processed')");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Persistence.OutboxMessage", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1955,6 +2167,35 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_vip_transactions_payment_order_owner_type");
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionDefinition", b =>
+                {
+                    b.HasOne("ComicManagement.Missions.Definitions.MissionRevision", null)
+                        .WithMany()
+                        .HasForeignKey("ActiveRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_mission_definitions_active_revision");
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionRevision", b =>
+                {
+                    b.HasOne("ComicManagement.Missions.Definitions.MissionDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("MissionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_mission_revisions_definition");
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Receipts.ActionReceipt", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_action_receipts_user");
                 });
 
             modelBuilder.Entity("ComicManagement.Reading.Library.ComicFollow", b =>

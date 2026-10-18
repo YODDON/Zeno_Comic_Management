@@ -15,6 +15,8 @@ using ComicManagement.Shared.Time;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Missions.Periods;
+using ComicManagement.Missions.Administration;
 
 namespace ComicManagement.Persistence;
 
@@ -67,6 +69,20 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddSingleton<IVipCheckoutCriticalSectionObserver,
             NoOpVipCheckoutCriticalSectionObserver>();
         services.TryAddScoped<VipMembershipHandler>();
+        services.TryAddSingleton<MissionPeriodResolver>();
+        services.TryAddScoped<IMissionAdministrationStore, MissionAdministrationStore>();
+        services.TryAddScoped<MissionAdministrationHandler>();
+        services.TryAddScoped<MissionActionReceiptRecorder>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
+            UserLoggedInMissionReceiptHandler>());
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
+            ChapterReadQualifiedMissionReceiptHandler>());
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
+            ComicFollowedMissionReceiptHandler>());
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
+            ChapterUnlockedMissionReceiptHandler>());
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
+            WalletTopUpCompletedMissionReceiptHandler>());
         services.TryAddScoped<IOutboxWriter, EfOutboxWriter>();
         services.TryAddScoped<OutboxMessageDispatcher>();
         services.TryAddScoped<OutboxBatchProcessor>();

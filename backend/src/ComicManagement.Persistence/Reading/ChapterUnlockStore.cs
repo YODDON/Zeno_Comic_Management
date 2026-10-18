@@ -5,6 +5,7 @@ using ComicManagement.Membership.Plans;
 using ComicManagement.Reading.Events;
 using ComicManagement.Reading.Unlocks;
 using ComicManagement.Shared.Messaging;
+using ComicManagement.Shared.Time;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Spending;
 using Microsoft.EntityFrameworkCore;
@@ -147,7 +148,8 @@ internal sealed class ChapterUnlockStore(
             // per-user VIP advisory lock -> Quote -> Chapter -> Comic -> Pages.
             // PostgreSQL time and every mutable invariant are evaluated only after
             // all decision-bearing rows/keys are held.
-            var serverNow = await GetServerTimeAsync(cancellationToken);
+            var serverNow = PostgreSqlTimestamp.Normalize(
+                await GetServerTimeAsync(cancellationToken));
 
             walletLock = await spendEngine.ValidateReconciliationAsync(
                 walletLock,

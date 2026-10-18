@@ -75,7 +75,18 @@ POST `/api/v1/refunds`, `Idempotency-Key`, `{paymentOrderId,reason,recipient:{ba
 `POST /complete` `{expectedVersion,transferRecordId,confirmationNote}` -> Completed only after verified/reviewed bank evidence; consumes reserved to refunded, immutable ledger. `POST /release` after **confirmed failed** transfer -> release to Paid available; ambiguous `NeedsReconciliation` holds reservation. Never automatically retry bank payout.
 
 ## Missions (User/Admin)
-GET `/api/v1/missions` -> active definitions/revisions plus per-period progress/rewardStatus; GET `/daily-limit` -> `{localDate,limitCoins:300,grantedCoins,remainingCoins}`; GET `/rewards` -> cursor history. Admin create/revise/activate Missions with target, reward (<=300), action type, Fixed/Daily/Weekly/Event, repeat policy and effective window. **No User API to grant own reward**. Backend event -> dedup -> period/revision at event time -> reward decision + Wallet Bonus+ledger+counter transaction; `DeniedDailyCap` is processed result, not HTTP failure.
+GET `/api/v1/missions` -> active definitions/revisions plus per-period progress/rewardStatus; GET `/daily-limit` -> `{localDate,limitCoins:300,grantedCoins,remainingCoins}`; GET `/rewards` -> cursor history. These user/progress routes belong to M02 and are not implemented by M01. **No User API grants its own reward**.
+
+M01 Admin routes all require Admin authorization. Unsafe requests require the authenticated antiforgery header/cookie pair and share a fixed-window limit of 20 mutation requests/minute/Admin, partitioned by authenticated Admin user ID. GET routes do not consume that policy. A rejected mutation returns standardized 429 `RATE_LIMITED`. Responses use the standard error schema `{errorCode,message,traceId}` in addition to Problem Details fields. Request enums accept only the documented string literals; numeric enum values return 400 `VALIDATION_FAILED`.
+
+- GET `/api/v1/admin/missions` -> 200 array of Mission definitions with their append-only revisions; 401/403.
+- GET `/api/v1/admin/missions/{missionId}` -> 200 definition or 404 `MISSION_NOT_FOUND`; 401/403.
+- POST `/api/v1/admin/missions` body `{code,name,description,actionType,cycleType}` -> 201 definition; 400 `VALIDATION_FAILED`, 409 `MISSION_CODE_CONFLICT`, 401/403, 429. `actionType` is `DailyLogin|ChapterReadQualified|ComicFollowed|ChapterUnlocked|WalletTopUpCompleted`; `cycleType` is `Fixed|Daily|Weekly|Event`.
+- POST `/api/v1/admin/missions/{missionId}/revisions` body `{targetCount,rewardBonusCoins,repeatPolicy,effectiveFrom,effectiveUntil?,configurationSnapshot}` -> 201 revision; 400/404/409 `MISSION_STATE_CONFLICT`, 401/403, 429. Reward is 1..300, dates are authoritative UTC inputs with a half-open window, configuration is a JSON object, and repeat policy is `OncePerVietnamDate|UniqueSubjectPerPeriod` consistent with the action.
+- POST `/api/v1/admin/missions/{missionId}/activate` body `{revisionId,expectedVersion}` -> 200 definition; 400/404/409 `CONCURRENCY_CONFLICT|MISSION_STATE_CONFLICT`, 401/403, 429.
+- POST `/api/v1/admin/missions/{missionId}/deactivate` body `{expectedVersion}` -> 200 definition; 400/404/409 `CONCURRENCY_CONFLICT`, 401/403, 429.
+
+`ActiveRevisionId` is the sole runtime authority. An out-of-window active revision produces no eligible Mission and does not fall back. Backend event -> deduplicated ActionReceipt is M01; progress/reward decision, Bonus Wallet ledger and daily cap are M02.
 
 ## Error conventions
 Errors expose normalized `{errorCode,message,traceId}` fields in addition to standard Problem Details fields. Use `docs/api/error-codes.md` for HTTP mapping and domain guard. Financial request idempotency stores request fingerprint, prior result and in-progress state. For same-key operation executing, default `409 OPERATION_IN_PROGRESS` + Retry-After unless durable status resource introduced by approved ADR.

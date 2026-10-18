@@ -1,5 +1,6 @@
 using System.Text;
 using ComicManagement.Identity.Users;
+using ComicManagement.Identity.Events;
 using ComicManagement.Shared.Time;
 
 namespace ComicManagement.Identity.Authentication;
@@ -17,6 +18,8 @@ public sealed class GoogleSignInHandler(
         ArgumentNullException.ThrowIfNull(profile);
 
         var normalizedProfile = Normalize(profile);
+        var loginId = Guid.NewGuid();
+        var loggedInAt = PostgreSqlTimestamp.Normalize(clock.UtcNow);
 
         for (var attempt = 0; attempt < MaximumSaveAttempts; attempt++)
         {
@@ -34,7 +37,12 @@ public sealed class GoogleSignInHandler(
                 existingUser.RefreshProviderAttributes(
                     normalizedProfile.Email,
                     normalizedProfile.AvatarUrl,
-                    clock.UtcNow);
+                    loggedInAt);
+
+                identityStore.AddLoginEvent(new UserLoggedIn(
+                    loginId,
+                    existingUser.Id,
+                    loggedInAt));
 
                 var updateOutcome = await identityStore.SaveChangesAsync(cancellationToken);
                 if (updateOutcome == IdentityStoreSaveOutcome.Succeeded)
@@ -45,19 +53,22 @@ public sealed class GoogleSignInHandler(
                 continue;
             }
 
-            var now = clock.UtcNow;
             var user = User.CreateFromGoogle(
                 Guid.NewGuid(),
                 normalizedProfile.DisplayName,
                 normalizedProfile.Email,
                 normalizedProfile.AvatarUrl,
-                now);
+                loggedInAt);
             var googleIdentity = GoogleIdentity.Create(
                 user.Id,
                 normalizedProfile.Subject,
-                now);
+                loggedInAt);
 
             identityStore.Add(user, googleIdentity);
+            identityStore.AddLoginEvent(new UserLoggedIn(
+                loginId,
+                user.Id,
+                loggedInAt));
             var createOutcome = await identityStore.SaveChangesAsync(cancellationToken);
 
             if (createOutcome == IdentityStoreSaveOutcome.Succeeded)
@@ -139,4 +150,5 @@ public sealed class GoogleSignInHandler(
         user.Role,
         user.Status,
         user.Version);
+
 }

@@ -1,6 +1,7 @@
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Identity.Users;
+using ComicManagement.Missions.Receipts;
 using ComicManagement.Persistence;
 using ComicManagement.Reading.Events;
 using ComicManagement.Reading.Sessions;
@@ -224,6 +225,47 @@ public sealed class ReadingSessionPersistenceTests : IAsyncLifetime
             .Select(message => message.Payload)
             .SingleAsync();
         Assert.Contains(result.State.ManifestRevision, payload, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Qualification_with_sub_microsecond_time_dispatches_mission_receipt_once()
+    {
+        var seed = await SeedPublicChapterAsync(pageOrders: [1]);
+        var session = await CreateSessionAsync(seed);
+        await UpdateAsync(
+            session.SessionId, seed.UserId, 1, 0.95m, 1, 'a', StartedAt.AddSeconds(1));
+        await UpdateAsync(
+            session.SessionId, seed.UserId, 1, 0.95m, 2, 'b', StartedAt.AddSeconds(16));
+        var rawQualifiedAt = StartedAt.AddSeconds(17).AddTicks(7);
+
+        var result = await QualifyInNewScopeAsync(
+            session.SessionId,
+            seed.UserId,
+            rawQualifiedAt);
+        Assert.Equal(ReadingSessionCommandOutcome.Succeeded, result.Outcome);
+
+        await using (var processingScope = _services.CreateAsyncScope())
+        {
+            var batch = await processingScope.ServiceProvider
+                .GetRequiredService<OutboxBatchProcessor>()
+                .ProcessBatchAsync(CancellationToken.None);
+            Assert.Equal(1, batch.CompletedCount);
+            Assert.Equal(0, batch.FailedCount);
+        }
+
+        await using var assertionScope = _services.CreateAsyncScope();
+        var context = assertionScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var receipt = await context.ActionReceipts.AsNoTracking().SingleAsync(candidate =>
+            candidate.SourceEventId == session.SessionId &&
+            candidate.SourceEventType == ReadingEventTypes.ChapterReadQualified);
+        Assert.Equal(rawQualifiedAt.AddTicks(-7), receipt.OccurredAt);
+        Assert.Matches("^[0-9a-f]{64}$", receipt.PayloadFingerprint);
+
+        var message = await context.OutboxMessages.AsNoTracking().SingleAsync(candidate =>
+            candidate.EventType == ReadingEventTypes.ChapterReadQualified);
+        Assert.Equal("Completed", message.Status);
+        Assert.Equal(1, message.AttemptCount);
+        Assert.Null(message.LastErrorRedacted);
     }
 
     [Fact]
