@@ -1,3 +1,5 @@
+using ComicManagement.Missions.Periods;
+
 namespace ComicManagement.Missions.Receipts;
 
 public static class ActionReceiptStatuses
@@ -39,7 +41,6 @@ public sealed class ActionReceipt
         Guid userId,
         Guid? subjectId,
         DateTimeOffset occurredAt,
-        DateOnly occurredLocalDate,
         DateTimeOffset receivedAt)
     {
         if (id == Guid.Empty ||
@@ -62,7 +63,7 @@ public sealed class ActionReceipt
             UserId = userId,
             SubjectId = subjectId,
             OccurredAt = occurredAt,
-            OccurredLocalDate = occurredLocalDate,
+            OccurredLocalDate = MissionPeriodResolver.GetVietnamLocalDate(occurredAt),
             ReceivedAt = receivedAt,
             ProcessingStatus = ActionReceiptStatuses.Pending,
         };

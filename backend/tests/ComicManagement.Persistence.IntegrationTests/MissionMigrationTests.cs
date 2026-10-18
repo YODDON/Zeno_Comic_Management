@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
 using Xunit;
+using ComicManagement.Missions.Definitions;
 
 namespace ComicManagement.Persistence.IntegrationTests;
 
@@ -13,6 +14,8 @@ public sealed class MissionMigrationTests : IAsyncLifetime
         "20261017191312_HardenChapterUnlockIntegrity";
     private const string MissionMigration =
         "20261018042934_AddMissionDefinitionsAndActionReceipts";
+    private const string MissionHardeningMigration =
+        "20261018124500_HardenMissionActivationConsistency";
 
     private readonly PostgreSqlContainer _postgres =
         new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -48,11 +51,63 @@ public sealed class MissionMigrationTests : IAsyncLifetime
         await context.Database.ExecuteSqlRawAsync(
             "DROP TABLE missions.action_receipts;");
         await migrator.MigrateAsync(MissionMigration);
+        await migrator.MigrateAsync(MissionHardeningMigration);
 
         Assert.True(await RelationExists(context, "missions.mission_definitions"));
         Assert.True(await RelationExists(context, "missions.mission_revisions"));
         Assert.True(await RelationExists(context, "missions.action_receipts"));
         Assert.True(await MigrationApplied(context, MissionMigration));
+        Assert.True(await MigrationApplied(context, MissionHardeningMigration));
+    }
+
+    [Fact]
+    public async Task Hardening_migration_preserves_active_mission_and_closes_action_type_drift()
+    {
+        await using var services = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(MissionMigration);
+
+        var now = new DateTimeOffset(2026, 10, 18, 0, 0, 0, TimeSpan.Zero);
+        var definition = MissionDefinition.Create(
+            Guid.NewGuid(),
+            "daily-login-upgrade",
+            "Daily login upgrade",
+            string.Empty,
+            MissionActionTypes.DailyLogin,
+            MissionCycleTypes.Daily,
+            now);
+        var revision = MissionRevision.Create(
+            Guid.NewGuid(),
+            definition.Id,
+            1,
+            1,
+            10,
+            MissionRepeatPolicies.OncePerVietnamDate,
+            now,
+            null,
+            "{}");
+        context.MissionDefinitions.Add(definition);
+        context.MissionRevisions.Add(revision);
+        await context.SaveChangesAsync();
+        definition.Activate(revision, 1);
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(MissionHardeningMigration);
+        context.ChangeTracker.Clear();
+
+        Assert.Equal(
+            revision.Id,
+            (await context.MissionDefinitions.AsNoTracking().SingleAsync()).ActiveRevisionId);
+        await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            context.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE missions.mission_definitions
+                SET action_type = {MissionActionTypes.ComicFollowed}
+                WHERE id = {definition.Id};
+                """));
     }
 
     private static async Task<bool> RelationExists(

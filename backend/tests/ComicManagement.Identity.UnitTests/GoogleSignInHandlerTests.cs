@@ -1,6 +1,7 @@
 using System.Text;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Users;
+using ComicManagement.Identity.Events;
 using ComicManagement.Shared.Time;
 using Xunit;
 
@@ -33,6 +34,10 @@ public sealed class GoogleSignInHandlerTests
         Assert.Equal(UserStatuses.Active, result.User.Status);
         Assert.Equal("google-subject-01", store.GoogleSubject);
         Assert.Equal(1, store.User!.Version);
+        var loginEvent = Assert.Single(store.LoginEvents);
+        Assert.Equal(store.User.Id, loginEvent.UserId);
+        Assert.Equal(Now, loginEvent.LoggedInAt);
+        Assert.NotEqual(Guid.Empty, loginEvent.LoginId);
     }
 
     [Fact]
@@ -60,6 +65,22 @@ public sealed class GoogleSignInHandlerTests
         Assert.Equal("new@example.com", result.User.Email);
         Assert.Equal("https://example.com/new.png", result.User.AvatarUrl);
         Assert.Equal(2, result.User.Version);
+        Assert.Equal(existing.Id, Assert.Single(store.LoginEvents).UserId);
+    }
+
+    [Fact]
+    public async Task Login_event_time_is_canonicalized_to_postgresql_precision()
+    {
+        var sourceTime = Now.AddTicks(7);
+        var store = new StubIdentityStore();
+        var handler = new GoogleSignInHandler(store, new StubClock(sourceTime));
+
+        await handler.HandleAsync(
+            new GoogleUserProfile("precision-subject", "Precision", null, null),
+            CancellationToken.None);
+
+        Assert.Equal(Now, Assert.Single(store.LoginEvents).LoggedInAt);
+        Assert.Equal(Now, store.User!.CreatedAt);
     }
 
     [Theory]
@@ -173,6 +194,10 @@ public sealed class GoogleSignInHandlerTests
 
         internal int SaveAttempts { get; private set; }
 
+        internal List<UserLoggedIn> LoginEvents { get; } = [];
+
+        private UserLoggedIn? PendingLoginEvent { get; set; }
+
         public Task<User?> FindByGoogleSubjectAsync(
             string googleSubject,
             CancellationToken cancellationToken)
@@ -201,6 +226,9 @@ public sealed class GoogleSignInHandlerTests
             GoogleSubject = googleIdentity.GoogleSubject;
         }
 
+        public void AddLoginEvent(UserLoggedIn loginEvent) =>
+            PendingLoginEvent = loginEvent;
+
         public Task<IdentityStoreSaveOutcome> SaveChangesAsync(
             CancellationToken cancellationToken)
         {
@@ -211,6 +239,7 @@ public sealed class GoogleSignInHandlerTests
             {
                 User = null;
                 GoogleSubject = null;
+                PendingLoginEvent = null;
                 return Task.FromResult(IdentityStoreSaveOutcome.ConcurrencyConflict);
             }
 
@@ -222,6 +251,13 @@ public sealed class GoogleSignInHandlerTests
             {
                 User = ConflictWinner;
             }
+
+            if (outcome == IdentityStoreSaveOutcome.Succeeded && PendingLoginEvent is not null)
+            {
+                LoginEvents.Add(PendingLoginEvent);
+            }
+
+            PendingLoginEvent = null;
 
             return Task.FromResult(outcome);
         }

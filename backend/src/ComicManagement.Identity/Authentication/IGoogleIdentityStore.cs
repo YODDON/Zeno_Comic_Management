@@ -1,4 +1,5 @@
 using ComicManagement.Identity.Users;
+using ComicManagement.Identity.Events;
 
 namespace ComicManagement.Identity.Authentication;
 
@@ -13,6 +14,8 @@ public interface IGoogleIdentityStore
         CancellationToken cancellationToken);
 
     void Add(User user, GoogleIdentity googleIdentity);
+
+    void AddLoginEvent(UserLoggedIn loginEvent);
 
     Task<IdentityStoreSaveOutcome> SaveChangesAsync(CancellationToken cancellationToken);
 }

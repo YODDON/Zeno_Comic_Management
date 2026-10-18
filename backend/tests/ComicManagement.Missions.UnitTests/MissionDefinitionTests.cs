@@ -58,7 +58,7 @@ public sealed class MissionDefinitionTests
     }
 
     [Fact]
-    public void Selector_uses_occurred_at_and_not_processing_order()
+    public void Selector_uses_only_the_authoritative_active_revision()
     {
         var missionId = Guid.NewGuid();
         var boundary = new DateTimeOffset(2026, 10, 19, 17, 0, 0, TimeSpan.Zero);
@@ -71,28 +71,74 @@ public sealed class MissionDefinitionTests
             MissionRepeatPolicies.OncePerVietnamDate,
             boundary, null, "{}");
 
+        var definition = MissionDefinition.Create(
+            missionId, "active-selector", "Active selector", string.Empty,
+            MissionActionTypes.DailyLogin, MissionCycleTypes.Daily, boundary.AddDays(-8));
+        definition.Activate(first, 1);
+
         Assert.Same(first, MissionRevisionSelector.Select(
-            [second, first], boundary.AddTicks(-1)));
+            definition, [second, first], boundary.AddTicks(-1)));
+        Assert.Null(MissionRevisionSelector.Select(
+            definition, [first, second], boundary));
+
+        definition.Activate(second, 2);
         Assert.Same(second, MissionRevisionSelector.Select(
-            [first, second], boundary));
+            definition, [first, second], boundary));
     }
 
     [Fact]
-    public void Selector_fails_closed_for_overlapping_effective_windows()
+    public void Selector_ignores_overlapping_unactivated_revisions()
     {
         var missionId = Guid.NewGuid();
         var now = new DateTimeOffset(2026, 10, 18, 0, 0, 0, TimeSpan.Zero);
-        var revisions = new[]
-        {
-            MissionRevision.Create(
-                Guid.NewGuid(), missionId, 1, 1, 20,
-                MissionRepeatPolicies.OncePerVietnamDate, now.AddDays(-1), null, "{}"),
-            MissionRevision.Create(
-                Guid.NewGuid(), missionId, 2, 1, 20,
-                MissionRepeatPolicies.OncePerVietnamDate, now.AddHours(-1), null, "{}"),
-        };
+        var first = MissionRevision.Create(
+            Guid.NewGuid(), missionId, 1, 1, 20,
+            MissionRepeatPolicies.OncePerVietnamDate, now.AddDays(-1), null, "{}");
+        var draft = MissionRevision.Create(
+            Guid.NewGuid(), missionId, 2, 1, 20,
+            MissionRepeatPolicies.OncePerVietnamDate, now.AddHours(-1), null, "{}");
+        var definition = MissionDefinition.Create(
+            missionId, "overlap-selector", "Overlap selector", string.Empty,
+            MissionActionTypes.DailyLogin, MissionCycleTypes.Daily, now.AddDays(-2));
+        definition.Activate(first, 1);
 
-        Assert.Throws<InvalidOperationException>(() =>
-            MissionRevisionSelector.Select(revisions, now));
+        Assert.Same(first, MissionRevisionSelector.Select(definition, [first, draft], now));
+    }
+
+    [Fact]
+    public void Selector_does_not_fallback_when_active_revision_is_outside_its_window()
+    {
+        var missionId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 10, 18, 0, 0, 0, TimeSpan.Zero);
+        var expired = MissionRevision.Create(
+            Guid.NewGuid(), missionId, 1, 1, 20,
+            MissionRepeatPolicies.OncePerVietnamDate,
+            now.AddDays(-2), now.AddDays(-1), "{}");
+        var fallbackCandidate = MissionRevision.Create(
+            Guid.NewGuid(), missionId, 2, 1, 20,
+            MissionRepeatPolicies.OncePerVietnamDate,
+            now.AddDays(-2), null, "{}");
+        var definition = MissionDefinition.Create(
+            missionId, "no-fallback", "No fallback", string.Empty,
+            MissionActionTypes.DailyLogin, MissionCycleTypes.Daily, now.AddDays(-3));
+        definition.Activate(expired, 1);
+
+        Assert.Null(MissionRevisionSelector.Select(
+            definition,
+            [expired, fallbackCandidate],
+            now));
+    }
+
+    [Fact]
+    public void Definition_rejects_null_description_as_validation_error()
+    {
+        Assert.Throws<ArgumentException>(() => MissionDefinition.Create(
+            Guid.NewGuid(),
+            "null-description",
+            "Null description",
+            null!,
+            MissionActionTypes.DailyLogin,
+            MissionCycleTypes.Daily,
+            DateTimeOffset.UtcNow));
     }
 }

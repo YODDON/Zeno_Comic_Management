@@ -30,7 +30,7 @@
 | Admin | CRUD (proposed) | `/api/v1/admin/comics`, `/api/v1/admin/chapters`, `/api/v1/admin/genres`, etc. | Catalog |
 | Admin | GET/PUT | `/api/v1/admin/featured-comics` | Catalog |
 | Admin | GET/PATCH | `/api/v1/admin/vip-plan` | Membership (V01 implemented) |
-| Admin | CRUD/revisions/activate | `/api/v1/admin/missions` | Missions |
+| Admin | GET/POST | `/api/v1/admin/missions`, `/api/v1/admin/missions/{id}`, `/api/v1/admin/missions/{id}/revisions`, `/api/v1/admin/missions/{id}/activate`, `/api/v1/admin/missions/{id}/deactivate` | Missions (M01 implemented) |
 | Admin | review/approve/reject/transfer-attempts/complete/release | `/api/v1/admin/refunds/{id}/...` | Billing/Wallet workflow |
 | Admin | GET | `/api/v1/admin/payments`, `/api/v1/admin/ledger`, `/api/v1/admin/audit-logs`, `/api/v1/admin/dashboard` | Billing/Wallet/Admin |
 

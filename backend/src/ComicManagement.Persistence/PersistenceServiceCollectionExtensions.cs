@@ -16,6 +16,7 @@ using ComicManagement.Wallet.Queries;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Missions.Periods;
+using ComicManagement.Missions.Administration;
 
 namespace ComicManagement.Persistence;
 
@@ -69,7 +70,11 @@ public static class PersistenceServiceCollectionExtensions
             NoOpVipCheckoutCriticalSectionObserver>();
         services.TryAddScoped<VipMembershipHandler>();
         services.TryAddSingleton<MissionPeriodResolver>();
+        services.TryAddScoped<IMissionAdministrationStore, MissionAdministrationStore>();
+        services.TryAddScoped<MissionAdministrationHandler>();
         services.TryAddScoped<MissionActionReceiptRecorder>();
+        services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
+            UserLoggedInMissionReceiptHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
             ChapterReadQualifiedMissionReceiptHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,

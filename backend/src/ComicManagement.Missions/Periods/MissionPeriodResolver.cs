@@ -27,7 +27,13 @@ public sealed class MissionPeriodResolver
     public DateOnly GetLocalDate(DateTimeOffset occurredAt)
     {
         EnsureUtc(occurredAt);
-        return DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(occurredAt, _timeZone).DateTime);
+        return GetLocalDate(occurredAt, _timeZone);
+    }
+
+    public static DateOnly GetVietnamLocalDate(DateTimeOffset occurredAt)
+    {
+        EnsureUtc(occurredAt);
+        return GetLocalDate(occurredAt, FindVietnamTimeZone());
     }
 
     public MissionPeriod Resolve(
@@ -122,4 +128,7 @@ public sealed class MissionPeriodResolver
             throw new ArgumentException("Mission timestamps must use the UTC offset.");
         }
     }
+
+    private static DateOnly GetLocalDate(DateTimeOffset occurredAt, TimeZoneInfo timeZone) =>
+        DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(occurredAt, timeZone).DateTime);
 }

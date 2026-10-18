@@ -14,6 +14,9 @@ using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Identity.Users;
+using ComicManagement.Identity.Events;
+using ComicManagement.Missions.Administration;
+using ComicManagement.Missions.Receipts;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Library;
 using ComicManagement.Reading.Sessions;
@@ -540,6 +543,208 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             29_000,
             (await verify.PaymentOrders.FindAsync(oldOrder.GetProperty("orderId").GetGuid()))!
             .AmountVnd);
+    }
+
+    [Fact]
+    public async Task Admin_mission_workflow_requires_admin_csrf_and_supports_revision_lifecycle()
+    {
+        using var anonymousClient = CreateClient();
+        await AssertStandardizedErrorAsync(
+            await anonymousClient.GetAsync("/api/v1/admin/missions"),
+            HttpStatusCode.Unauthorized,
+            "AUTH_REQUIRED");
+
+        const string subject = "google-subject-m01-admin";
+        _factory.TokenEndpoint.SetProfile(subject, "Mission Admin", null, null);
+        using var userClient = CreateClient();
+        await CompleteLoginAsync(userClient, await BeginLoginAsync(userClient, "/admin/missions"));
+        var userProfile = await userClient.GetAsync("/api/v1/me");
+        var userCsrf = Assert.Single(userProfile.Headers.GetValues("X-CSRF-TOKEN"));
+        using var forbiddenCreate = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/missions")
+        {
+            Content = JsonContent.Create(new
+            {
+                code = "read-one-chapter",
+                name = "Read one chapter",
+                description = string.Empty,
+                actionType = "ChapterReadQualified",
+                cycleType = "Daily",
+            }),
+        };
+        forbiddenCreate.Headers.Add("X-CSRF-TOKEN", userCsrf);
+        await AssertStandardizedErrorAsync(
+            await userClient.SendAsync(forbiddenCreate),
+            HttpStatusCode.Forbidden,
+            "FORBIDDEN");
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await context.Users
+                .Where(user => context.GoogleIdentities.Any(identity =>
+                    identity.UserId == user.Id && identity.GoogleSubject == subject))
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(user => user.Role, IdentityRoles.Admin)
+                    .SetProperty(user => user.UpdatedAt, DateTimeOffset.UtcNow)
+                    .SetProperty(user => user.Version, user => user.Version + 1));
+        }
+
+        using var adminClient = CreateClient();
+        await CompleteLoginAsync(adminClient, await BeginLoginAsync(adminClient, "/admin/missions"));
+        var adminProfile = await adminClient.GetAsync("/api/v1/me");
+        var csrf = Assert.Single(adminProfile.Headers.GetValues("X-CSRF-TOKEN"));
+
+        var missingCsrf = await adminClient.PostAsJsonAsync(
+            "/api/v1/admin/missions",
+            new
+            {
+                code = "read-one-chapter",
+                name = "Read one chapter",
+                description = string.Empty,
+                actionType = "ChapterReadQualified",
+                cycleType = "Daily",
+            });
+        await AssertStandardizedErrorAsync(
+            missingCsrf,
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var createRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/missions")
+        {
+            Content = JsonContent.Create(new
+            {
+                code = "read-one-chapter",
+                name = "Read one chapter",
+                description = string.Empty,
+                actionType = "ChapterReadQualified",
+                cycleType = "Daily",
+            }),
+        };
+        createRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+        var createdResponse = await adminClient.SendAsync(createRequest);
+        Assert.Equal(HttpStatusCode.Created, createdResponse.StatusCode);
+        var created = await createdResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var missionId = created.GetProperty("id").GetGuid();
+        Assert.Equal("Draft", created.GetProperty("status").GetString());
+        Assert.Equal(1, created.GetProperty("version").GetInt64());
+
+        using var revisionRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/admin/missions/{missionId:D}/revisions")
+        {
+            Content = JsonContent.Create(new
+            {
+                targetCount = 1,
+                rewardBonusCoins = 25,
+                repeatPolicy = "UniqueSubjectPerPeriod",
+                effectiveFrom = new DateTimeOffset(2026, 10, 18, 0, 0, 0, TimeSpan.Zero),
+                effectiveUntil = (DateTimeOffset?)null,
+                configurationSnapshot = new { policy = "m01" },
+            }),
+        };
+        revisionRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+        var revisionResponse = await adminClient.SendAsync(revisionRequest);
+        Assert.Equal(HttpStatusCode.Created, revisionResponse.StatusCode);
+        var revision = await revisionResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var revisionId = revision.GetProperty("id").GetGuid();
+        Assert.Equal(1, revision.GetProperty("revisionNumber").GetInt32());
+
+        using var activateRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/admin/missions/{missionId:D}/activate")
+        {
+            Content = JsonContent.Create(new { revisionId, expectedVersion = 1 }),
+        };
+        activateRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+        var activateResponse = await adminClient.SendAsync(activateRequest);
+        Assert.Equal(HttpStatusCode.OK, activateResponse.StatusCode);
+        var active = await activateResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Active", active.GetProperty("status").GetString());
+        Assert.Equal(revisionId, active.GetProperty("activeRevisionId").GetGuid());
+        Assert.Equal(2, active.GetProperty("version").GetInt64());
+
+        var listed = await adminClient.GetFromJsonAsync<JsonElement>("/api/v1/admin/missions");
+        Assert.Contains(
+            listed.EnumerateArray(),
+            mission => mission.GetProperty("id").GetGuid() == missionId);
+
+        using var staleActivation = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/admin/missions/{missionId:D}/activate")
+        {
+            Content = JsonContent.Create(new { revisionId, expectedVersion = 1 }),
+        };
+        staleActivation.Headers.Add("X-CSRF-TOKEN", csrf);
+        await AssertStandardizedErrorAsync(
+            await adminClient.SendAsync(staleActivation),
+            HttpStatusCode.Conflict,
+            "CONCURRENCY_CONFLICT");
+
+        using var deactivateRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/v1/admin/missions/{missionId:D}/deactivate")
+        {
+            Content = JsonContent.Create(new { expectedVersion = 2 }),
+        };
+        deactivateRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+        var deactivateResponse = await adminClient.SendAsync(deactivateRequest);
+        Assert.Equal(HttpStatusCode.OK, deactivateResponse.StatusCode);
+        var inactive = await deactivateResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Draft", inactive.GetProperty("status").GetString());
+        Assert.Equal(JsonValueKind.Null, inactive.GetProperty("activeRevisionId").ValueKind);
+    }
+
+    [Fact]
+    public async Task Successful_google_login_persists_a_daily_login_action_receipt()
+    {
+        const string subject = "google-subject-m01-daily-login";
+        _factory.TokenEndpoint.SetProfile(subject, "Daily Login", null, null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/missions"));
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var userId = await context.GoogleIdentities
+            .Where(identity => identity.GoogleSubject == subject)
+            .Select(identity => identity.UserId)
+            .SingleAsync();
+        var processor = scope.ServiceProvider.GetRequiredService<OutboxBatchProcessor>();
+        for (var attempt = 0; attempt < 50 && !await context.ActionReceipts.AnyAsync(candidate =>
+                 candidate.SourceEventType == IdentityEventTypes.UserLoggedIn &&
+                 candidate.UserId == userId); attempt++)
+        {
+            await processor.ProcessBatchAsync(CancellationToken.None);
+            context.ChangeTracker.Clear();
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
+
+        var receipt = await context.ActionReceipts
+            .AsNoTracking()
+            .Where(candidate =>
+                candidate.SourceEventType == IdentityEventTypes.UserLoggedIn &&
+                candidate.UserId == userId)
+            .SingleOrDefaultAsync();
+
+        var loginMessages = await context.OutboxMessages
+            .AsNoTracking()
+            .Where(message => message.EventType == IdentityEventTypes.UserLoggedIn)
+            .OrderByDescending(message => message.OccurredAt)
+            .Take(10)
+            .Select(message => new
+            {
+                message.Status,
+                message.AttemptCount,
+                message.LastErrorRedacted,
+                message.Payload,
+            })
+            .ToArrayAsync();
+        Assert.True(
+            receipt is not null,
+            $"DailyLogin receipt missing. Outbox: {JsonSerializer.Serialize(loginMessages)}");
+
+        Assert.Null(receipt!.SubjectId);
+        Assert.Equal(ActionReceiptStatuses.Pending, receipt.ProcessingStatus);
+        Assert.NotEqual(Guid.Empty, receipt.SourceEventId);
     }
 
     [Fact]
@@ -3103,6 +3308,70 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task OpenApi_document_contains_admin_mission_contracts()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+        var collection = paths.GetProperty("/api/v1/admin/missions");
+        var create = collection.GetProperty("post");
+        foreach (var status in new[] { "201", "400", "401", "403", "409" })
+        {
+            Assert.True(create.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var createSchema = ResolveOpenApiSchema(
+            document,
+            create.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        var required = createSchema.GetProperty("required")
+            .EnumerateArray()
+            .Select(value => value.GetString())
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.True(required.IsSupersetOf(["code", "name", "actionType", "cycleType"]));
+        Assert.Equal(
+            ["DailyLogin", "ChapterReadQualified", "ComicFollowed", "ChapterUnlocked", "WalletTopUpCompleted"],
+            GetOpenApiEnumValues(
+                document,
+                createSchema.GetProperty("properties").GetProperty("actionType")));
+
+        var revision = paths
+            .GetProperty("/api/v1/admin/missions/{missionId}/revisions")
+            .GetProperty("post");
+        var revisionSchema = ResolveOpenApiSchema(
+            document,
+            revision.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        Assert.Equal(
+            ["OncePerVietnamDate", "UniqueSubjectPerPeriod"],
+            GetOpenApiEnumValues(
+                document,
+                revisionSchema.GetProperty("properties").GetProperty("repeatPolicy")));
+
+        foreach (var path in new[]
+                 {
+                     "/api/v1/admin/missions/{missionId}",
+                     "/api/v1/admin/missions/{missionId}/activate",
+                     "/api/v1/admin/missions/{missionId}/deactivate",
+                 })
+        {
+            Assert.True(paths.TryGetProperty(path, out _));
+        }
+
+        var errorSchema = ResolveResponseSchema(document, create, "400");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+    }
+
+    [Fact]
     public async Task OpenApi_document_contains_sepay_raw_body_headers_and_ack_contract()
     {
         using var client = CreateClient();
@@ -4173,6 +4442,43 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .GetProperty(value[prefix.Length..]);
     }
 
+    private static IReadOnlyList<string?> GetOpenApiEnumValues(
+        JsonElement document,
+        JsonElement schema)
+    {
+        var resolved = ResolveOpenApiSchema(document, schema);
+        if (resolved.TryGetProperty("enum", out var values))
+        {
+            return values.EnumerateArray()
+                .Where(value => value.ValueKind != JsonValueKind.Null)
+                .Select(value => value.GetString())
+                .ToArray();
+        }
+
+        foreach (var composition in new[] { "anyOf", "oneOf", "allOf" })
+        {
+            if (!resolved.TryGetProperty(composition, out var options))
+            {
+                continue;
+            }
+
+            foreach (var option in options.EnumerateArray())
+            {
+                var candidate = ResolveOpenApiSchema(document, option);
+                if (candidate.TryGetProperty("enum", out var candidateValues))
+                {
+                    return candidateValues.EnumerateArray()
+                        .Where(value => value.ValueKind != JsonValueKind.Null)
+                        .Select(value => value.GetString())
+                        .ToArray();
+                }
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"OpenAPI schema does not declare enum values: {resolved.GetRawText()}");
+    }
+
     private static JsonElement FindOpenApiParameter(JsonElement operation, string name) =>
         operation.GetProperty("parameters")
             .EnumerateArray()
@@ -4729,6 +5035,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         public void Add(
             ComicManagement.Identity.Users.User user,
             ComicManagement.Identity.Users.GoogleIdentity googleIdentity)
+        {
+        }
+
+        public void AddLoginEvent(UserLoggedIn loginEvent)
         {
         }
 

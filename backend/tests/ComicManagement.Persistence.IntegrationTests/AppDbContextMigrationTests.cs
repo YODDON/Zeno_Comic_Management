@@ -24,6 +24,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261017191312_HardenChapterUnlockIntegrity";
     private const string M01Migration =
         "20261018042934_AddMissionDefinitionsAndActionReceipts";
+    private const string M01HardeningMigration =
+        "20261018124500_HardenMissionActivationConsistency";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -51,6 +53,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         U02Migration,
         U02HardeningMigration,
         M01Migration,
+        M01HardeningMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")

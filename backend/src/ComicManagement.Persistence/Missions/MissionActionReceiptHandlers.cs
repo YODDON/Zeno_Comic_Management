@@ -1,6 +1,6 @@
 using System.Text.Json;
 using ComicManagement.Billing.Events;
-using ComicManagement.Missions.Periods;
+using ComicManagement.Identity.Events;
 using ComicManagement.Missions.Receipts;
 using ComicManagement.Reading.Events;
 using ComicManagement.Shared.Messaging;
@@ -11,7 +11,6 @@ namespace ComicManagement.Persistence;
 
 internal sealed class MissionActionReceiptRecorder(
     AppDbContext dbContext,
-    MissionPeriodResolver periodResolver,
     IClock clock)
 {
     internal async Task RecordAsync(
@@ -30,7 +29,6 @@ internal sealed class MissionActionReceiptRecorder(
         }
 
         var receivedAt = clock.UtcNow;
-        var localDate = periodResolver.GetLocalDate(occurredAt);
         var receipt = ActionReceipt.Create(
             Guid.NewGuid(),
             sourceEventId,
@@ -38,10 +36,9 @@ internal sealed class MissionActionReceiptRecorder(
             userId,
             subjectId,
             occurredAt,
-            localDate,
             receivedAt);
 
-        await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+        var affectedRows = await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO missions.action_receipts
                 (id, source_event_id, source_event_type, user_id, subject_id,
                  occurred_at, occurred_local_date, received_at, processing_status)
@@ -50,8 +47,25 @@ internal sealed class MissionActionReceiptRecorder(
                  {receipt.UserId}, {receipt.SubjectId}, {receipt.OccurredAt},
                  {receipt.OccurredLocalDate}, {receipt.ReceivedAt},
                  {receipt.ProcessingStatus})
-            ON CONFLICT (source_event_id, source_event_type) DO NOTHING;
+            ON CONFLICT (source_event_id, source_event_type) DO UPDATE
+            SET source_event_id = missions.action_receipts.source_event_id
+            WHERE missions.action_receipts.user_id = EXCLUDED.user_id
+              AND missions.action_receipts.subject_id IS NOT DISTINCT FROM EXCLUDED.subject_id
+              AND missions.action_receipts.occurred_at = EXCLUDED.occurred_at
+              AND missions.action_receipts.occurred_local_date = EXCLUDED.occurred_local_date;
             """, cancellationToken);
+        if (affectedRows == 0)
+        {
+            throw new MissionActionReceiptConflictException();
+        }
+    }
+}
+
+internal sealed class MissionActionReceiptConflictException : InvalidOperationException
+{
+    internal MissionActionReceiptConflictException()
+        : base("A mission action receipt identity was reused with different authoritative data.")
+    {
     }
 }
 
@@ -95,6 +109,23 @@ internal sealed record MissionReceiptInput(
     Guid UserId,
     Guid? SubjectId,
     DateTimeOffset OccurredAt);
+
+internal sealed class UserLoggedInMissionReceiptHandler(
+    MissionActionReceiptRecorder recorder) :
+    MissionActionReceiptHandler<UserLoggedIn>(recorder)
+{
+    public override string ConsumerName => "Missions.UserLoggedIn.v1";
+
+    public override string EventType => IdentityEventTypes.UserLoggedIn;
+
+    protected override MissionReceiptInput Map(
+        OutboxMessageEnvelope envelope,
+        UserLoggedIn payload) => new(
+            payload.LoginId,
+            payload.UserId,
+            null,
+            payload.LoggedInAt);
+}
 
 internal sealed class ChapterReadQualifiedMissionReceiptHandler(
     MissionActionReceiptRecorder recorder) :

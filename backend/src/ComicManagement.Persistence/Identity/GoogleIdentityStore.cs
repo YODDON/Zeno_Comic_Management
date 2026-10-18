@@ -1,11 +1,15 @@
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Users;
+using ComicManagement.Identity.Events;
+using ComicManagement.Shared.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
 namespace ComicManagement.Persistence;
 
-internal sealed class GoogleIdentityStore(AppDbContext dbContext) : IGoogleIdentityStore
+internal sealed class GoogleIdentityStore(
+    AppDbContext dbContext,
+    IOutboxWriter outboxWriter) : IGoogleIdentityStore
 {
     private const string GoogleSubjectConstraint = "uq_google_identities_google_subject";
 
@@ -28,6 +32,15 @@ internal sealed class GoogleIdentityStore(AppDbContext dbContext) : IGoogleIdent
 
         dbContext.Users.Add(user);
         dbContext.GoogleIdentities.Add(googleIdentity);
+    }
+
+    public void AddLoginEvent(UserLoggedIn loginEvent)
+    {
+        ArgumentNullException.ThrowIfNull(loginEvent);
+        outboxWriter.Enqueue(
+            IdentityEventTypes.UserLoggedIn,
+            loginEvent,
+            loginEvent.LoggedInAt);
     }
 
     public async Task<IdentityStoreSaveOutcome> SaveChangesAsync(

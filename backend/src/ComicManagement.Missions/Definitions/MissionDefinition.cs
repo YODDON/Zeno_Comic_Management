@@ -87,6 +87,7 @@ public sealed class MissionDefinition
             string.IsNullOrWhiteSpace(name) ||
             name.Length > MaximumNameLength ||
             !string.Equals(name, name.Trim(), StringComparison.Ordinal) ||
+            description is null ||
             description.Length > MaximumDescriptionLength ||
             !MissionActionTypes.All.Contains(actionType) ||
             !MissionCycleTypes.All.Contains(cycleType) ||
@@ -140,6 +141,18 @@ public sealed class MissionDefinition
 
         ActiveRevisionId = revision.Id;
         Status = MissionDefinitionStatuses.Active;
+        Version++;
+    }
+
+    public void Deactivate(long expectedVersion)
+    {
+        if (Version != expectedVersion)
+        {
+            throw new MissionDefinitionConcurrencyException();
+        }
+
+        ActiveRevisionId = null;
+        Status = MissionDefinitionStatuses.Draft;
         Version++;
     }
 }
