@@ -177,8 +177,8 @@ public sealed class OutboxProcessingTests : IAsyncLifetime
             var writer = scope.ServiceProvider.GetRequiredService<IOutboxWriter>();
             var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             messageId = writer.Enqueue(
-                "Billing.WalletTopUpCompleted.v1",
-                new { paymentOrderId = Guid.NewGuid() },
+                "Tests.ConsumerNotRegistered.v1",
+                new { sourceId = Guid.NewGuid() },
                 _clock.UtcNow);
             await context.SaveChangesAsync();
         }
