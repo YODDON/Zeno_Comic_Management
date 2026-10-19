@@ -21,7 +21,7 @@
 | SePay | POST | `/api/v1/webhooks/sepay/ipn` | Billing adapter (B02 ingestion; B03 TopUp and V01 VIP fulfillment implemented) |
 | User | GET | `/api/v1/membership/plan`, `/api/v1/membership/me` | Membership (V01 implemented) |
 | User | POST | `/api/v1/membership/checkout` | Membership/Billing (V01 implemented) |
-| User | GET | `/api/v1/missions`, `/api/v1/missions/daily-limit`, `/api/v1/missions/rewards` | Missions |
+| User | GET | `/api/v1/missions`, `/api/v1/missions/daily-limit`, `/api/v1/missions/rewards` | Missions (M02 implemented) |
 | User | GET/POST | `/api/v1/refunds`, `/api/v1/refunds/eligibility` | Billing |
 | User | GET | `/api/v1/refunds/{id}` | Billing |
 | User | GET/POST/PATCH | Ratings/comments endpoints defined in Interaction vertical slice | Interaction |

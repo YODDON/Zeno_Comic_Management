@@ -7,6 +7,8 @@ using Testcontainers.PostgreSql;
 using Xunit;
 using ComicManagement.Missions.Definitions;
 using ComicManagement.Identity.Users;
+using ComicManagement.Administration.Auditing;
+using System.Text.Json;
 
 namespace ComicManagement.Persistence.IntegrationTests;
 
@@ -20,6 +22,8 @@ public sealed class MissionMigrationTests : IAsyncLifetime
         "20261018124500_HardenMissionActivationConsistency";
     private const string MissionFingerprintMigration =
         "20261018155821_AddMissionReceiptPayloadFingerprint";
+    private const string MissionProgressMigration =
+        "20261018164734_AddMissionProgressAndRewards";
 
     private readonly PostgreSqlContainer _postgres =
         new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -225,6 +229,88 @@ public sealed class MissionMigrationTests : IAsyncLifetime
                     "FROM missions.action_receipts WHERE id = {0}",
                     receiptId)
                 .SingleAsync());
+    }
+
+    [Fact]
+    public async Task M02_migration_backfills_compatible_activation_audit_history()
+    {
+        await using var services = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(MissionFingerprintMigration);
+
+        var now = new DateTimeOffset(2026, 10, 18, 8, 0, 0, TimeSpan.Zero);
+        var actorId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(actorId, "M02 Migrator", null, null, now));
+        var definition = MissionDefinition.Create(
+            Guid.NewGuid(), "m02-compatible", "M02 compatible", string.Empty,
+            MissionActionTypes.DailyLogin, MissionCycleTypes.Daily, now.AddDays(-1));
+        var revision = MissionRevision.Create(
+            Guid.NewGuid(), definition.Id, 1, 1, 10,
+            MissionRepeatPolicies.OncePerVietnamDate, now.AddDays(-1), null, "{}");
+        context.MissionDefinitions.Add(definition);
+        context.MissionRevisions.Add(revision);
+        await context.SaveChangesAsync();
+        definition.Activate(revision, 1);
+        context.AuditLogs.Add(AuditLog.Create(
+            Guid.NewGuid(), actorId, "Missions.RevisionActivated",
+            "MissionDefinition", definition.Id, "m02-backfill", now,
+            JsonSerializer.Serialize(new
+            {
+                definition.Status,
+                definition.ActiveRevisionId,
+                definition.Version,
+            })));
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(MissionProgressMigration);
+
+        var activation = await context.MissionActivations.AsNoTracking().SingleAsync();
+        Assert.Equal(definition.Id, activation.MissionDefinitionId);
+        Assert.Equal(revision.Id, activation.MissionRevisionId);
+        Assert.Equal(1, activation.ActivationSequence);
+        Assert.Equal(now, activation.ActivatedAt);
+        Assert.Null(activation.DeactivatedAt);
+        Assert.True(await MigrationApplied(context, MissionProgressMigration));
+    }
+
+    [Fact]
+    public async Task M02_migration_rejects_active_mission_without_audit_and_rolls_back()
+    {
+        await using var services = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(MissionFingerprintMigration);
+
+        var now = new DateTimeOffset(2026, 10, 18, 8, 0, 0, TimeSpan.Zero);
+        var definition = MissionDefinition.Create(
+            Guid.NewGuid(), "m02-drift", "M02 drift", string.Empty,
+            MissionActionTypes.DailyLogin, MissionCycleTypes.Daily, now.AddDays(-1));
+        var revision = MissionRevision.Create(
+            Guid.NewGuid(), definition.Id, 1, 1, 10,
+            MissionRepeatPolicies.OncePerVietnamDate, now.AddDays(-1), null, "{}");
+        context.MissionDefinitions.Add(definition);
+        context.MissionRevisions.Add(revision);
+        await context.SaveChangesAsync();
+        definition.Activate(revision, 1);
+        await context.SaveChangesAsync();
+
+        var exception = await Assert.ThrowsAsync<Npgsql.PostgresException>(() =>
+            migrator.MigrateAsync(MissionProgressMigration));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+        Assert.Contains("activation-history precondition failed", exception.MessageText);
+        Assert.False(await MigrationApplied(context, MissionProgressMigration));
+        Assert.False(await RelationExists(context, "missions.mission_activations"));
+        Assert.Equal(revision.Id, await context.MissionDefinitions.AsNoTracking()
+            .Where(item => item.Id == definition.Id)
+            .Select(item => item.ActiveRevisionId)
+            .SingleAsync());
     }
 
     private static async Task<bool> RelationExists(

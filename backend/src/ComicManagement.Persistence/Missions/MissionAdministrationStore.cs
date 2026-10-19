@@ -8,7 +8,9 @@ using Npgsql;
 
 namespace ComicManagement.Persistence;
 
-internal sealed class MissionAdministrationStore(AppDbContext dbContext) :
+internal sealed class MissionAdministrationStore(
+    AppDbContext dbContext,
+    IMissionActivationCriticalSectionObserver criticalSectionObserver) :
     IMissionAdministrationStore
 {
     private const string DefinitionCodeConstraint = "ux_mission_definitions_code";
@@ -184,6 +186,10 @@ internal sealed class MissionAdministrationStore(AppDbContext dbContext) :
             return NotFound();
         }
 
+        var previouslyActiveRevisionId = definition.ActiveRevisionId;
+        await criticalSectionObserver.DefinitionLockedAsync(
+            definition.Id,
+            cancellationToken);
         MissionRevision? revision = null;
         try
         {
@@ -215,6 +221,44 @@ internal sealed class MissionAdministrationStore(AppDbContext dbContext) :
         }
 
         var serverNow = await GetServerTimeAsync(cancellationToken);
+        var openActivation = await dbContext.MissionActivations
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM missions.mission_activations
+                WHERE mission_definition_id = {definition.Id}
+                  AND deactivated_at IS NULL
+                FOR UPDATE
+                """)
+            .SingleOrDefaultAsync(cancellationToken);
+        if ((previouslyActiveRevisionId is null) != (openActivation is null) ||
+            openActivation is not null &&
+            openActivation.MissionRevisionId != previouslyActiveRevisionId)
+        {
+            throw new InvalidOperationException(
+                "Mission activation history does not match the current definition state.");
+        }
+
+        openActivation?.Close(serverNow);
+        if (openActivation is not null && revision is not null)
+        {
+            // Release the unique open-activation slot before inserting its successor.
+            // Both saves remain inside this transaction and are therefore atomic.
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        if (revision is not null)
+        {
+            var nextSequence = (await dbContext.MissionActivations
+                .Where(item => item.MissionDefinitionId == definition.Id)
+                .MaxAsync(item => (long?)item.ActivationSequence, cancellationToken) ?? 0) + 1;
+            dbContext.MissionActivations.Add(MissionActivation.Create(
+                Guid.NewGuid(),
+                definition.Id,
+                revision.Id,
+                nextSequence,
+                serverNow));
+        }
+
         AddAudit(
             request.ActorId,
             request.RevisionId is null

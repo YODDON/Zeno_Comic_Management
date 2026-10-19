@@ -14,7 +14,9 @@ using ComicManagement.Billing.Payments;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Membership.Subscriptions;
 using ComicManagement.Missions.Definitions;
+using ComicManagement.Missions.Progress;
 using ComicManagement.Missions.Receipts;
+using ComicManagement.Missions.Rewards;
 using Microsoft.EntityFrameworkCore;
 
 namespace ComicManagement.Persistence;
@@ -87,6 +89,16 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<ActionReceipt> ActionReceipts => Set<ActionReceipt>();
 
+    internal DbSet<MissionActivation> MissionActivations => Set<MissionActivation>();
+
+    internal DbSet<MissionProgress> MissionProgress => Set<MissionProgress>();
+
+    internal DbSet<ProgressAction> ProgressActions => Set<ProgressAction>();
+
+    internal DbSet<MissionRewardGrant> MissionRewardGrants => Set<MissionRewardGrant>();
+
+    internal DbSet<MissionDailyCounter> MissionDailyCounters => Set<MissionDailyCounter>();
+
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         EnsureAppendOnlyRecords();
@@ -149,6 +161,30 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
             throw new InvalidOperationException("Mission revisions are append-only.");
+        }
+
+        if (ChangeTracker.Entries<MissionActivation>().Any(entry =>
+                entry.State == EntityState.Deleted ||
+                entry.State == EntityState.Modified &&
+                (entry.Property(item => item.Id).IsModified ||
+                 entry.Property(item => item.MissionDefinitionId).IsModified ||
+                 entry.Property(item => item.MissionRevisionId).IsModified ||
+                 entry.Property(item => item.ActivationSequence).IsModified ||
+                 entry.Property(item => item.ActivatedAt).IsModified ||
+                 entry.Property(item => item.DeactivatedAt).OriginalValue is not null ||
+                 entry.Property(item => item.DeactivatedAt).CurrentValue is null)))
+        {
+            throw new InvalidOperationException(
+                "Mission activations are immutable after their interval is closed.");
+        }
+
+        if (ChangeTracker.Entries<ProgressAction>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted) ||
+            ChangeTracker.Entries<MissionRewardGrant>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException(
+                "Mission actions and reward grants are append-only.");
         }
     }
 
