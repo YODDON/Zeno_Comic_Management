@@ -24,7 +24,7 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 409 | REFUND_ALREADY_EXISTS | One refund request per TopUp even if Rejected |
 | 409 | TRANSFER_REFERENCE_CONFLICT | Reconcile transfer, never silently overwrite |
 | 422 | INSUFFICIENT_COINS | Offer TopUp; no debit |
-| 422 | REFUND_ORDER_NOT_ELIGIBLE | TopUp condition not met |
+| 404/422 | REFUND_ORDER_NOT_ELIGIBLE | Missing/non-owned orders are hidden as 404; a known order that is not a fulfilled TopUp with its authoritative original lot is 422 |
 | 422 | REFUND_WINDOW_EXPIRED | >7 days after paidAt |
 | 422 | REFUND_RECOVERY_INSUFFICIENT | Exact original lot not fully unspent/unreserved |
 | 422 | REFUND_TRANSFER_NOT_VERIFIED | Cannot complete refund absent evidence |

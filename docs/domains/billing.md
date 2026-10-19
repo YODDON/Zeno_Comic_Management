@@ -24,6 +24,8 @@ The documented adapter and fulfillment behavior is covered by fixtures and Postg
 ## Refund rules
 User requests only full original TopUp ≤7 days after verified paidAt, fee 5%, one request per TopUp even if Rejected. Collect bank recipient on request; no reservation until Admin approve. At approve atomically validate full original PaidCoinLot is available (`spent=refunded=reserved=0`), then reserve all. No Bonus/other lot substitution. Admin performs bank transfer externally, records reference/evidence. `NeedsReconciliation` retains reserve; confirmed successful transfer -> Completed and Wallet refund debit; confirmed failed -> Released. No automatic bank payout.
 
+RF01 uses PostgreSQL `clock_timestamp()` after its idempotency/order/lot locks. The exact fulfilled TopUp and original PaidCoinLot must still be fully recoverable when the request is accepted; this is a request-time snapshot only and RF02 must recheck under Wallet locks before reserving. Refund creation is persistently idempotent per User/key/canonical recipient request, fixed-window limited to 10/minute/User, and never mutates Wallet, lot counters, ledger or outbox. One-request-per-order remains permanent independently of idempotency keys. List/detail responses expose only protected masks; account number and holder are encrypted with versioned application data protection before database persistence.
+
 ## Privacy
 Encrypt recipient account number/holder, track key versions, mask in list/log/audit; restrict Admin visibility. Legal/privacy/retention validation before production.
 

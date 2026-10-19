@@ -11,6 +11,8 @@
 ## Idempotency
 Require `Idempotency-Key` for TopUp/VIP checkout, unlock and sensitive Admin financial commands. Scope keys to principal+operation and hash payload. Same key/same request returns prior result, same key/different request 409; expiry never releases a key. Business unique keys remain mandatory. Prefer `409 OPERATION_IN_PROGRESS` plus `Retry-After` until a durable operation-status resource exists; do not switch arbitrarily to 202. SePay uses provider transaction identity, not browser key. TopUp create, VIP checkout and ChapterUnlockQuote create are each fixed-window limited to 10 requests/minute/authenticated User, partitioned by server-authenticated user ID after authentication; rejection is standardized `429 RATE_LIMITED` with `Retry-After` when supplied by the limiter.
 
+Refund request creation is fixed-window limited to 10 requests/minute/authenticated User and partitioned by authenticated User ID. Eligibility/list/detail reads do not consume the mutation policy.
+
 Admin Mission mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. The limit covers definition creation, revision append, activation and deactivation; read-only Mission routes do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
 ## Pagination

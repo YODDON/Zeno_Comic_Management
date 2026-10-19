@@ -3,6 +3,8 @@ using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Persistence;
+using ComicManagement.Identity.Users;
+using ComicManagement.Wallet.Lots;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -32,6 +34,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261018164734_AddMissionProgressAndRewards";
     private const string M02WorkerIndexMigration =
         "20261018164955_AddMissionReceiptWorkerIndex";
+    private const string RF01Migration =
+        "20261019082250_AddRefundRequests";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -63,6 +67,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         M01ReceiptFingerprintMigration,
         M02Migration,
         M02WorkerIndexMigration,
+        RF01Migration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -121,6 +126,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "billing.payment_orders"));
         Assert.True(await TableExists(context, "billing.provider_transactions"));
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
+        Assert.True(await TableExists(context, "billing.refund_requests"));
+        Assert.True(await TableExists(context, "billing.refund_recipients"));
         Assert.True(await TableExists(context, "membership.vip_plans"));
         Assert.True(await TableExists(context, "membership.vip_subscriptions"));
         Assert.True(await TableExists(context, "membership.vip_transactions"));
@@ -182,6 +189,14 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             context,
             "billing",
             "ux_payment_orders_user_operation_idempotency"));
+        Assert.True(await IndexExists(
+            context,
+            "billing",
+            "ux_refund_requests_payment_order_id"));
+        Assert.True(await IndexExists(
+            context,
+            "billing",
+            "ux_refund_requests_user_idempotency"));
         Assert.True(await IndexExists(context, "wallet", "ux_wallet_allocations_operation_lot"));
         Assert.True(await TriggerExists(
             context,
@@ -320,6 +335,47 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
 
         Assert.Equal(DatabaseSchemas.All.Order(), await GetApplicationSchemas(context));
         Assert.Equal(ExpectedMigrations, await context.Database.GetAppliedMigrationsAsync());
+    }
+
+    [Fact]
+    public async Task RF01_incremental_migration_preserves_existing_fulfilled_topup_and_paid_lot()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(M02WorkerIndexMigration);
+
+        var paidAt = DateTimeOffset.UtcNow.AddDays(-1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(
+            userId, "RF01 Upgrade User", null, null, paidAt.AddDays(-1)));
+        var order = PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            $"ZENO-{orderId:N}",
+            100_000,
+            10_000,
+            $"rf01-upgrade-{orderId:N}",
+            new string('a', 64),
+            paidAt.AddMinutes(-10),
+            paidAt.AddMinutes(10));
+        order.FulfillTopUp(paidAt);
+        context.PaymentOrders.Add(order);
+        context.PaidCoinLots.Add(PaidCoinLot.Create(
+            Guid.NewGuid(), userId, orderId, 10_000, paidAt));
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(RF01Migration);
+
+        Assert.True(await TableExists(context, "billing.refund_requests"));
+        Assert.True(await TableExists(context, "billing.refund_recipients"));
+        Assert.Equal(1, await context.PaymentOrders.CountAsync(item => item.Id == orderId));
+        Assert.Equal(1, await context.PaidCoinLots.CountAsync(item => item.TopUpOrderId == orderId));
+        Assert.Empty(await context.RefundRequests.ToListAsync());
     }
 
     [Fact]

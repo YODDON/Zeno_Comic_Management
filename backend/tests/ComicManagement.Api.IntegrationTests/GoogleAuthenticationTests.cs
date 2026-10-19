@@ -30,6 +30,7 @@ using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Events;
+using ComicManagement.Billing.Refunds;
 using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Membership.Plans;
@@ -1252,6 +1253,200 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             await client.SendAsync(request),
             HttpStatusCode.Forbidden,
             "FORBIDDEN");
+    }
+
+    [Fact]
+    public async Task Refund_request_flow_enforces_auth_csrf_eligibility_idempotency_and_masking()
+    {
+        const string subject = "rf01-http-user";
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
+        factory.TokenEndpoint.SetProfile(subject, "RF01 User", null, null);
+        using var anonymous = CreateClient(factory);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymous.GetAsync($"/api/v1/refunds/eligibility?paymentOrderId={Guid.NewGuid()}"))
+            .StatusCode);
+
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/refunds", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrf = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        Guid userId;
+        Guid orderId;
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            userId = await context.GoogleIdentities
+                .Where(identity => identity.GoogleSubject == subject)
+                .Select(identity => identity.UserId)
+                .SingleAsync();
+            var paidAt = DateTimeOffset.UtcNow.AddDays(-1);
+            orderId = Guid.NewGuid();
+            var order = PaymentOrder.CreateTopUp(
+                orderId,
+                userId,
+                $"ZENO-{orderId:N}",
+                100_000,
+                10_000,
+                "rf01-seed",
+                new string('a', 64),
+                paidAt.AddMinutes(-10),
+                paidAt.AddMinutes(10));
+            order.FulfillTopUp(paidAt);
+            context.PaymentOrders.Add(order);
+            context.PaidCoinLots.Add(PaidCoinLot.Create(
+                Guid.NewGuid(), userId, orderId, 10_000, paidAt));
+            await context.SaveChangesAsync();
+        }
+
+        var eligibilityResponse = await client.GetAsync(
+            $"/api/v1/refunds/eligibility?paymentOrderId={orderId}");
+        Assert.Equal(HttpStatusCode.OK, eligibilityResponse.StatusCode);
+        var eligibility = await eligibilityResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(eligibility.GetProperty("eligible").GetBoolean());
+        Assert.Equal(5_000, eligibility.GetProperty("feeVnd").GetInt64());
+        Assert.Equal(95_000, eligibility.GetProperty("netRefundVnd").GetInt64());
+
+        using var missingCsrf = RefundRequestMessage(orderId, "rf01-http");
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(missingCsrf),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        using var createRequest = RefundRequestMessage(orderId, "rf01-http", csrf);
+        var createdResponse = await client.SendAsync(createRequest);
+        Assert.Equal(HttpStatusCode.Created, createdResponse.StatusCode);
+        var created = await createdResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var refundId = created.GetProperty("refundId").GetGuid();
+        Assert.Equal("Requested", created.GetProperty("status").GetString());
+
+        using var replayRequest = RefundRequestMessage(orderId, "rf01-http", csrf);
+        var replayResponse = await client.SendAsync(replayRequest);
+        Assert.Equal(HttpStatusCode.Created, replayResponse.StatusCode);
+        var replay = await replayResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(refundId, replay.GetProperty("refundId").GetGuid());
+
+        using var secondKeyRequest = RefundRequestMessage(orderId, "rf01-other-key", csrf);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(secondKeyRequest),
+            HttpStatusCode.Conflict,
+            "REFUND_ALREADY_EXISTS");
+
+        var detailResponse = await client.GetAsync($"/api/v1/refunds/{refundId}");
+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+        var detail = await detailResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var recipient = detail.GetProperty("recipient");
+        Assert.Equal("******6789", recipient.GetProperty("accountNumberMasked").GetString());
+        Assert.Equal("N*** V*** A***", recipient.GetProperty("accountHolderMasked").GetString());
+        Assert.DoesNotContain("\"accountNumber\"", detail.GetRawText(), StringComparison.Ordinal);
+
+        var listResponse = await client.GetAsync("/api/v1/refunds");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var list = await listResponse.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Single(list.EnumerateArray());
+
+        await using var verificationScope = factory.Services.CreateAsyncScope();
+        var verification = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var persistedRecipient = await verification.RefundRecipients.AsNoTracking().SingleAsync();
+        Assert.StartsWith("aspnet-dp:", persistedRecipient.EncryptionKeyVersion,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "0123456789",
+            Encoding.UTF8.GetString(persistedRecipient.AccountNumberEncrypted),
+            StringComparison.Ordinal);
+        Assert.Empty(await verification.WalletEntries.ToListAsync());
+    }
+
+    [Fact]
+    public async Task Refund_create_is_limited_to_ten_requests_per_minute_per_user()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory);
+        factory.TokenEndpoint.SetProfile("rf01-rate-user", "RF01 Rate User", null, null);
+        using var client = CreateClient(factory);
+        await CompleteLoginAsync(
+            client,
+            await BeginLoginAsync(client, "/refunds", factory.TokenEndpoint));
+        var me = await client.GetAsync("/api/v1/me");
+        var csrf = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        for (var attempt = 1; attempt <= 10; attempt++)
+        {
+            using var request = RefundRequestMessage(
+                Guid.NewGuid(), $"rf01-rate-{attempt}", csrf);
+            Assert.Equal(HttpStatusCode.NotFound, (await client.SendAsync(request)).StatusCode);
+        }
+
+        using var rejected = RefundRequestMessage(Guid.NewGuid(), "rf01-rate-11", csrf);
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(rejected),
+            HttpStatusCode.TooManyRequests,
+            "RATE_LIMITED");
+    }
+
+    [Fact]
+    public async Task Refund_create_returns_forbidden_for_authenticated_principal_without_user_role()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            useInsufficientRoleTestAuthentication: true);
+        using var client = CreateClient(factory);
+        using var request = RefundRequestMessage(Guid.NewGuid(), "rf01-forbidden");
+
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(request),
+            HttpStatusCode.Forbidden,
+            "FORBIDDEN");
+    }
+
+    [Fact]
+    public async Task Refund_openapi_publishes_contract_and_standardized_errors()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+        var create = paths.GetProperty("/api/v1/refunds").GetProperty("post");
+        foreach (var status in new[] { "201", "400", "401", "403", "404", "409", "422", "429" })
+        {
+            Assert.True(create.GetProperty("responses").TryGetProperty(status, out _), status);
+        }
+
+        var createSchema = ResolveResponseSchema(document, create, "201");
+        foreach (var property in new[]
+                 {
+                     "refundId", "status", "originalAmountVnd", "feeVnd",
+                     "netRefundVnd", "requestedAt",
+                 })
+        {
+            Assert.True(createSchema.GetProperty("properties").TryGetProperty(property, out _), property);
+        }
+        Assert.Equal(
+            ["Requested"],
+            GetOpenApiEnumValues(
+                document,
+                createSchema.GetProperty("properties").GetProperty("status")));
+
+        var errorSchema = ResolveResponseSchema(document, create, "409");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _), property);
+        }
+
+        var eligibility = paths.GetProperty("/api/v1/refunds/eligibility").GetProperty("get");
+        Assert.Equal(
+            "paymentOrderId",
+            FindOpenApiParameter(eligibility, "paymentOrderId")
+                .GetProperty("name")
+                .GetString());
+        Assert.True(paths.TryGetProperty("/api/v1/refunds/{refundId}", out _));
     }
 
     [Fact]
@@ -5031,6 +5226,34 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/billing/topups")
         {
             Content = JsonContent.Create(new { amountVnd }),
+        };
+        request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
+        if (csrfToken is not null)
+        {
+            request.Headers.Add("X-CSRF-TOKEN", csrfToken);
+        }
+
+        return request;
+    }
+
+    private static HttpRequestMessage RefundRequestMessage(
+        Guid paymentOrderId,
+        string idempotencyKey,
+        string? csrfToken = null)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/refunds")
+        {
+            Content = JsonContent.Create(new
+            {
+                paymentOrderId,
+                reason = "duplicate transfer",
+                recipient = new
+                {
+                    bankCode = "VCB",
+                    accountNumber = "0123456789",
+                    accountHolder = "NGUYEN VAN A",
+                },
+            }),
         };
         request.Headers.TryAddWithoutValidation("Idempotency-Key", idempotencyKey);
         if (csrfToken is not null)

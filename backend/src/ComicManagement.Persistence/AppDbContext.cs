@@ -11,6 +11,7 @@ using ComicManagement.Wallet.Spending;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using ComicManagement.Reading.Library;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Billing.Refunds;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Membership.Subscriptions;
 using ComicManagement.Missions.Definitions;
@@ -76,6 +77,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<ProviderTransaction> ProviderTransactions => Set<ProviderTransaction>();
 
     internal DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
+
+    internal DbSet<RefundRequest> RefundRequests => Set<RefundRequest>();
+
+    internal DbSet<RefundRecipient> RefundRecipients => Set<RefundRecipient>();
 
     internal DbSet<VipPlan> VipPlans => Set<VipPlan>();
 

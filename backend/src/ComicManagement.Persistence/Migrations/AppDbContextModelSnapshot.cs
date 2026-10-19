@@ -393,6 +393,210 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Billing.Refunds.RefundRecipient", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<byte[]>("AccountHolderEncrypted")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("account_holder_encrypted");
+
+                    b.Property<string>("AccountHolderMasked")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("account_holder_masked");
+
+                    b.Property<byte[]>("AccountNumberEncrypted")
+                        .IsRequired()
+                        .HasColumnType("bytea")
+                        .HasColumnName("account_number_encrypted");
+
+                    b.Property<string>("AccountNumberLast4")
+                        .IsRequired()
+                        .HasMaxLength(4)
+                        .HasColumnType("character varying(4)")
+                        .HasColumnName("account_number_last4");
+
+                    b.Property<string>("AccountNumberMasked")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("account_number_masked");
+
+                    b.Property<string>("BankCode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("bank_code");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EncryptionKeyVersion")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("encryption_key_version");
+
+                    b.Property<Guid>("RefundRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("refund_request_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_refund_recipients");
+
+                    b.HasIndex("RefundRequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_recipients_refund_request_id");
+
+                    b.ToTable("refund_recipients", "billing", t =>
+                        {
+                            t.HasCheckConstraint("ck_refund_recipients_ciphertext", "octet_length(account_number_encrypted) > 0 AND octet_length(account_holder_encrypted) > 0");
+
+                            t.HasCheckConstraint("ck_refund_recipients_last4", "account_number_last4 ~ '^[0-9]{4}$'");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Refunds.RefundRequest", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("ApprovedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approved_at");
+
+                    b.Property<Guid?>("ApprovedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approved_by");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<Guid?>("CompletedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("completed_by");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("decision_reason");
+
+                    b.Property<long>("FeeAmountVnd")
+                        .HasColumnType("bigint")
+                        .HasColumnName("fee_amount_vnd");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<long>("NetRefundVnd")
+                        .HasColumnType("bigint")
+                        .HasColumnName("net_refund_vnd");
+
+                    b.Property<long>("OriginalAmountVnd")
+                        .HasColumnType("bigint")
+                        .HasColumnName("original_amount_vnd");
+
+                    b.Property<Guid>("PaymentOrderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("payment_order_id");
+
+                    b.Property<string>("PaymentOrderType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("payment_order_type");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("reason");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_fingerprint");
+
+                    b.Property<DateTimeOffset>("RequestedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("requested_at");
+
+                    b.Property<long>("RequiredRecoveryCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("required_recovery_coins");
+
+                    b.Property<DateTimeOffset?>("ReviewedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reviewed_at");
+
+                    b.Property<Guid?>("ReviewedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewed_by");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_refund_requests");
+
+                    b.HasAlternateKey("Id", "UserId")
+                        .HasName("ak_refund_requests_id_user_id");
+
+                    b.HasIndex("PaymentOrderId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_requests_payment_order_id");
+
+                    b.HasIndex("UserId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_requests_user_idempotency");
+
+                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType")
+                        .IsUnique();
+
+                    b.HasIndex("UserId", "RequestedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_refund_requests_user_requested_id");
+
+                    b.ToTable("refund_requests", "billing", t =>
+                        {
+                            t.HasCheckConstraint("ck_refund_requests_amounts", "original_amount_vnd > 0 AND fee_amount_vnd = original_amount_vnd * 5 / 100 AND net_refund_vnd = original_amount_vnd - fee_amount_vnd");
+
+                            t.HasCheckConstraint("ck_refund_requests_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_refund_requests_order_type", "payment_order_type = 'TopUp'");
+
+                            t.HasCheckConstraint("ck_refund_requests_recovery", "required_recovery_coins > 0");
+
+                            t.HasCheckConstraint("ck_refund_requests_status", "status IN ('Requested', 'UnderReview', 'RecoveryReserved', 'TransferPending', 'Completed', 'Rejected', 'NeedsReconciliation', 'TransferConfirmedFailed', 'ReservationReleased')");
+
+                            t.HasCheckConstraint("ck_refund_requests_version", "version >= 1");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2312,6 +2516,34 @@ namespace ComicManagement.Persistence.Migrations
                         .HasForeignKey("ProviderTransactionId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_webhook_deliveries_provider_transactions");
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Refunds.RefundRecipient", b =>
+                {
+                    b.HasOne("ComicManagement.Billing.Refunds.RefundRequest", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Billing.Refunds.RefundRecipient", "RefundRequestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refund_recipients_refund_requests");
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Refunds.RefundRequest", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refund_requests_users");
+
+                    b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Billing.Refunds.RefundRequest", "PaymentOrderId", "UserId", "PaymentOrderType")
+                        .HasPrincipalKey("ComicManagement.Billing.Payments.PaymentOrder", "Id", "UserId", "OrderType")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refund_requests_topup_payment_orders");
                 });
 
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>
