@@ -28,6 +28,10 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261018124500_HardenMissionActivationConsistency";
     private const string M01ReceiptFingerprintMigration =
         "20261018155821_AddMissionReceiptPayloadFingerprint";
+    private const string M02Migration =
+        "20261018164734_AddMissionProgressAndRewards";
+    private const string M02WorkerIndexMigration =
+        "20261018164955_AddMissionReceiptWorkerIndex";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -57,6 +61,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         M01Migration,
         M01HardeningMigration,
         M01ReceiptFingerprintMigration,
+        M02Migration,
+        M02WorkerIndexMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -121,6 +127,41 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "missions.mission_definitions"));
         Assert.True(await TableExists(context, "missions.mission_revisions"));
         Assert.True(await TableExists(context, "missions.action_receipts"));
+        Assert.True(await TableExists(context, "missions.mission_activations"));
+        Assert.True(await TableExists(context, "missions.mission_progress"));
+        Assert.True(await TableExists(context, "missions.progress_actions"));
+        Assert.True(await TableExists(context, "missions.reward_grants"));
+        Assert.True(await TableExists(context, "missions.daily_counters"));
+        Assert.True(await IndexExists(
+            context,
+            "missions",
+            "ux_mission_activations_mission_sequence"));
+        Assert.True(await IndexExists(
+            context,
+            "missions",
+            "ux_mission_activations_open"));
+        Assert.True(await IndexExists(
+            context,
+            "missions",
+            "ix_action_receipts_pending_worker"));
+        Assert.True(await IndexExists(
+            context,
+            "missions",
+            "ux_mission_progress_user_revision_period"));
+        Assert.True(await IndexExists(
+            context,
+            "missions",
+            "ux_reward_grants_wallet_operation"));
+        Assert.True(await TriggerExists(
+            context,
+            "missions",
+            "mission_activations",
+            "mission_activations_history_guard"));
+        Assert.True(await TriggerExists(
+            context,
+            "missions",
+            "reward_grants",
+            "reward_grants_financial_integrity"));
         Assert.True(await IndexExists(context, "catalog", "ix_comics_publication_updated_id"));
         Assert.True(await IndexExists(context, "catalog", "ix_chapters_public_comic_sort_id"));
         Assert.True(await IndexExists(

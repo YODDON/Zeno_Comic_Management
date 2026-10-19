@@ -120,6 +120,9 @@ builder.Services.AddMissionRateLimiting();
 builder.Services.Configure<OutboxOptions>(
     builder.Configuration.GetSection(OutboxOptions.SectionName));
 builder.Services.AddOutboxWorker();
+builder.Services.Configure<MissionReceiptOptions>(
+    builder.Configuration.GetSection(MissionReceiptOptions.SectionName));
+builder.Services.AddMissionReceiptWorker();
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders =

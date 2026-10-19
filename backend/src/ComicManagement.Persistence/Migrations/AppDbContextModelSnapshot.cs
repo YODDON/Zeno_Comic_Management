@@ -1036,6 +1036,58 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionActivation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("ActivatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("activated_at");
+
+                    b.Property<long>("ActivationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("activation_sequence");
+
+                    b.Property<DateTimeOffset?>("DeactivatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("deactivated_at");
+
+                    b.Property<Guid>("MissionDefinitionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mission_definition_id");
+
+                    b.Property<Guid>("MissionRevisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mission_revision_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mission_activations");
+
+                    b.HasIndex("MissionDefinitionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_mission_activations_open")
+                        .HasFilter("deactivated_at IS NULL");
+
+                    b.HasIndex("MissionDefinitionId", "ActivatedAt")
+                        .HasDatabaseName("ix_mission_activations_history");
+
+                    b.HasIndex("MissionDefinitionId", "ActivationSequence")
+                        .IsUnique()
+                        .HasDatabaseName("ux_mission_activations_mission_sequence");
+
+                    b.HasIndex("MissionRevisionId", "MissionDefinitionId")
+                        .HasDatabaseName("ix_mission_activations_revision_owner");
+
+                    b.ToTable("mission_activations", "missions", t =>
+                        {
+                            t.HasCheckConstraint("ck_mission_activations_sequence", "activation_sequence >= 1");
+
+                            t.HasCheckConstraint("ck_mission_activations_window", "deactivated_at IS NULL OR deactivated_at >= activated_at");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionDefinition", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1158,6 +1210,9 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_mission_revisions");
 
+                    b.HasAlternateKey("Id", "MissionId")
+                        .HasName("ak_mission_revisions_id_mission_id");
+
                     b.HasIndex("MissionId", "RevisionNumber")
                         .IsUnique()
                         .HasDatabaseName("ux_mission_revisions_mission_number");
@@ -1179,6 +1234,105 @@ namespace ComicManagement.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_mission_revisions_target_count", "target_count > 0");
                         });
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Progress.MissionProgress", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("CompletedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_at");
+
+                    b.Property<Guid>("MissionRevisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mission_revision_id");
+
+                    b.Property<string>("PeriodKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)")
+                        .HasColumnName("period_key");
+
+                    b.Property<int>("ProgressCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("progress_count");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_mission_progress");
+
+                    b.HasAlternateKey("Id", "UserId")
+                        .HasName("ak_mission_progress_id_user_id");
+
+                    b.HasIndex("MissionRevisionId")
+                        .HasDatabaseName("ix_mission_progress_revision");
+
+                    b.HasIndex("UserId", "Status")
+                        .HasDatabaseName("ix_mission_progress_user_status");
+
+                    b.HasIndex("UserId", "MissionRevisionId", "PeriodKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_mission_progress_user_revision_period");
+
+                    b.ToTable("mission_progress", "missions", t =>
+                        {
+                            t.HasCheckConstraint("ck_mission_progress_completion", "(status = 'InProgress' AND completed_at IS NULL) OR (status = 'Completed' AND completed_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_mission_progress_count", "progress_count >= 0");
+
+                            t.HasCheckConstraint("ck_mission_progress_status", "status IN ('InProgress','Completed')");
+
+                            t.HasCheckConstraint("ck_mission_progress_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Progress.ProgressAction", b =>
+                {
+                    b.Property<Guid>("MissionProgressId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("mission_progress_id");
+
+                    b.Property<string>("DedupKey")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)")
+                        .HasColumnName("dedup_key");
+
+                    b.Property<DateTimeOffset>("OccurredAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("occurred_at");
+
+                    b.Property<Guid>("SourceEventId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("source_event_id");
+
+                    b.Property<Guid?>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.HasKey("MissionProgressId", "DedupKey")
+                        .HasName("pk_progress_actions");
+
+                    b.HasIndex("SourceEventId")
+                        .HasDatabaseName("ix_progress_actions_source_event");
+
+                    b.ToTable("progress_actions", "missions");
                 });
 
             modelBuilder.Entity("ComicManagement.Missions.Receipts.ActionReceipt", b =>
@@ -1237,6 +1391,10 @@ namespace ComicManagement.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_action_receipts_source_event");
 
+                    b.HasIndex("ProcessingStatus", "ReceivedAt", "Id")
+                        .HasDatabaseName("ix_action_receipts_pending_worker")
+                        .HasFilter("processing_status = 'Pending'");
+
                     b.HasIndex("UserId", "OccurredLocalDate", "ProcessingStatus")
                         .HasDatabaseName("ix_action_receipts_user_local_date_status");
 
@@ -1245,6 +1403,104 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_action_receipts_payload_fingerprint", "payload_fingerprint ~ '^[0-9a-f]{64}$'");
 
                             t.HasCheckConstraint("ck_action_receipts_processing_status", "processing_status IN ('Pending','Processed')");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Rewards.MissionDailyCounter", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<DateOnly>("LocalDate")
+                        .HasColumnType("date")
+                        .HasColumnName("local_date");
+
+                    b.Property<long>("GrantedTotal")
+                        .HasColumnType("bigint")
+                        .HasColumnName("granted_total");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("UserId", "LocalDate")
+                        .HasName("pk_daily_counters");
+
+                    b.ToTable("daily_counters", "missions", t =>
+                        {
+                            t.HasCheckConstraint("ck_daily_counters_granted_total", "granted_total BETWEEN 0 AND 300");
+
+                            t.HasCheckConstraint("ck_daily_counters_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Rewards.MissionRewardGrant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("BonusCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("bonus_coins");
+
+                    b.Property<DateTimeOffset>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<DateOnly>("LocalDate")
+                        .HasColumnType("date")
+                        .HasColumnName("local_date");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("character varying(24)")
+                        .HasColumnName("outcome");
+
+                    b.Property<Guid>("ProgressId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("progress_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid?>("WalletOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("wallet_operation_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_reward_grants");
+
+                    b.HasIndex("ProgressId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_reward_grants_progress");
+
+                    b.HasIndex("WalletOperationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_reward_grants_wallet_operation")
+                        .HasFilter("wallet_operation_id IS NOT NULL");
+
+                    b.HasIndex("ProgressId", "UserId")
+                        .HasDatabaseName("ix_reward_grants_progress_owner");
+
+                    b.HasIndex("WalletOperationId", "UserId")
+                        .HasDatabaseName("ix_reward_grants_wallet_operation_owner");
+
+                    b.HasIndex("UserId", "DecidedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_reward_grants_user_decided_id");
+
+                    b.ToTable("reward_grants", "missions", t =>
+                        {
+                            t.HasCheckConstraint("ck_reward_grants_bonus", "bonus_coins BETWEEN 1 AND 300");
+
+                            t.HasCheckConstraint("ck_reward_grants_outcome", "outcome IN ('Granted','DeniedDailyCap')");
+
+                            t.HasCheckConstraint("ck_reward_grants_wallet_operation", "(outcome = 'Granted' AND wallet_operation_id IS NOT NULL) OR (outcome = 'DeniedDailyCap' AND wallet_operation_id IS NULL)");
                         });
                 });
 
@@ -2169,6 +2425,17 @@ namespace ComicManagement.Persistence.Migrations
                         .HasConstraintName("fk_vip_transactions_payment_order_owner_type");
                 });
 
+            modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionActivation", b =>
+                {
+                    b.HasOne("ComicManagement.Missions.Definitions.MissionRevision", null)
+                        .WithMany()
+                        .HasForeignKey("MissionRevisionId", "MissionDefinitionId")
+                        .HasPrincipalKey("Id", "MissionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_mission_activations_revision_owner");
+                });
+
             modelBuilder.Entity("ComicManagement.Missions.Definitions.MissionDefinition", b =>
                 {
                     b.HasOne("ComicManagement.Missions.Definitions.MissionRevision", null)
@@ -2188,6 +2455,33 @@ namespace ComicManagement.Persistence.Migrations
                         .HasConstraintName("fk_mission_revisions_definition");
                 });
 
+            modelBuilder.Entity("ComicManagement.Missions.Progress.MissionProgress", b =>
+                {
+                    b.HasOne("ComicManagement.Missions.Definitions.MissionRevision", null)
+                        .WithMany()
+                        .HasForeignKey("MissionRevisionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_mission_progress_revision");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_mission_progress_user");
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Progress.ProgressAction", b =>
+                {
+                    b.HasOne("ComicManagement.Missions.Progress.MissionProgress", null)
+                        .WithMany()
+                        .HasForeignKey("MissionProgressId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_progress_actions_progress");
+                });
+
             modelBuilder.Entity("ComicManagement.Missions.Receipts.ActionReceipt", b =>
                 {
                     b.HasOne("ComicManagement.Identity.Users.User", null)
@@ -2196,6 +2490,41 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_action_receipts_user");
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Rewards.MissionDailyCounter", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_daily_counters_user");
+                });
+
+            modelBuilder.Entity("ComicManagement.Missions.Rewards.MissionRewardGrant", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reward_grants_user");
+
+                    b.HasOne("ComicManagement.Missions.Progress.MissionProgress", null)
+                        .WithMany()
+                        .HasForeignKey("ProgressId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_reward_grants_progress_owner");
+
+                    b.HasOne("ComicManagement.Wallet.Ledger.WalletOperation", null)
+                        .WithMany()
+                        .HasForeignKey("WalletOperationId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_reward_grants_wallet_operation_owner");
                 });
 
             modelBuilder.Entity("ComicManagement.Reading.Library.ComicFollow", b =>

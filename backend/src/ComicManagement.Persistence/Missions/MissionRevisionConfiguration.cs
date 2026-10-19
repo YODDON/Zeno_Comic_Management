@@ -33,6 +33,8 @@ internal sealed class MissionRevisionConfiguration :
 
         builder.HasKey(revision => revision.Id)
             .HasName("pk_mission_revisions");
+        builder.HasAlternateKey(revision => new { revision.Id, revision.MissionId })
+            .HasName("ak_mission_revisions_id_mission_id");
         builder.HasIndex(revision => new { revision.MissionId, revision.RevisionNumber })
             .IsUnique()
             .HasDatabaseName("ux_mission_revisions_mission_number");

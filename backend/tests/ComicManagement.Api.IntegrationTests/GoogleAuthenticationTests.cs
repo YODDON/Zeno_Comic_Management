@@ -16,7 +16,10 @@ using ComicManagement.Identity.Profiles;
 using ComicManagement.Identity.Users;
 using ComicManagement.Identity.Events;
 using ComicManagement.Missions.Administration;
+using ComicManagement.Missions.Definitions;
+using ComicManagement.Missions.Processing;
 using ComicManagement.Missions.Receipts;
+using ComicManagement.Missions.Rewards;
 using ComicManagement.Reading.Access;
 using ComicManagement.Reading.Library;
 using ComicManagement.Reading.Sessions;
@@ -798,7 +801,7 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Successful_google_login_persists_a_daily_login_action_receipt()
+    public async Task Successful_google_login_persists_and_processes_a_daily_login_action_receipt()
     {
         const string subject = "google-subject-m01-daily-login";
         _factory.TokenEndpoint.SetProfile(subject, "Daily Login", null, null);
@@ -821,12 +824,32 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             await Task.Delay(TimeSpan.FromMilliseconds(100));
         }
 
-        var receipt = await context.ActionReceipts
-            .AsNoTracking()
-            .Where(candidate =>
-                candidate.SourceEventType == IdentityEventTypes.UserLoggedIn &&
-                candidate.UserId == userId)
-            .SingleOrDefaultAsync();
+        ActionReceipt? receipt = null;
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            context.ChangeTracker.Clear();
+            receipt = await context.ActionReceipts
+                .AsNoTracking()
+                .Where(candidate =>
+                    candidate.SourceEventType == IdentityEventTypes.UserLoggedIn &&
+                    candidate.UserId == userId)
+                .SingleOrDefaultAsync();
+            if (receipt?.ProcessingStatus == ActionReceiptStatuses.Processed)
+            {
+                break;
+            }
+
+            if (receipt is not null)
+            {
+                await scope.ServiceProvider.GetRequiredService<MissionReceiptProcessor>()
+                    .ProcessAsync(receipt.Id);
+            }
+            else
+            {
+                await processor.ProcessBatchAsync(CancellationToken.None);
+            }
+            await Task.Delay(TimeSpan.FromMilliseconds(100));
+        }
 
         var loginMessages = await context.OutboxMessages
             .AsNoTracking()
@@ -846,8 +869,148 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             $"DailyLogin receipt missing. Outbox: {JsonSerializer.Serialize(loginMessages)}");
 
         Assert.Null(receipt!.SubjectId);
-        Assert.Equal(ActionReceiptStatuses.Pending, receipt.ProcessingStatus);
+        Assert.Equal(ActionReceiptStatuses.Processed, receipt.ProcessingStatus);
         Assert.NotEqual(Guid.Empty, receipt.SourceEventId);
+    }
+
+    [Fact]
+    public async Task Daily_login_reward_pipeline_persists_bonus_and_exposes_user_mission_queries()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var definition = MissionDefinition.Create(
+            Guid.NewGuid(),
+            $"daily-login-{Guid.NewGuid():N}",
+            "Daily login",
+            "Login once today",
+            MissionActionTypes.DailyLogin,
+            MissionCycleTypes.Daily,
+            now.AddMinutes(-5));
+        var revision = MissionRevision.Create(
+            Guid.NewGuid(),
+            definition.Id,
+            1,
+            1,
+            25,
+            MissionRepeatPolicies.OncePerVietnamDate,
+            now.AddMinutes(-5),
+            null,
+            "{}");
+        await using (var seedScope = _factory.Services.CreateAsyncScope())
+        {
+            var context = seedScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.MissionDefinitions.Add(definition);
+            context.MissionRevisions.Add(revision);
+            await context.SaveChangesAsync();
+            definition.Activate(revision, 1);
+            context.MissionActivations.Add(MissionActivation.Create(
+                Guid.NewGuid(), definition.Id, revision.Id, 1, now.AddMinutes(-5)));
+            await context.SaveChangesAsync();
+        }
+
+        const string subject = "google-subject-m02-daily-reward";
+        _factory.TokenEndpoint.SetProfile(subject, "M02 User", null, null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/missions"));
+
+        Guid userId;
+        await using (var identityScope = _factory.Services.CreateAsyncScope())
+        {
+            var context = identityScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            userId = await context.GoogleIdentities
+                .Where(identity => identity.GoogleSubject == subject)
+                .Select(identity => identity.UserId)
+                .SingleAsync();
+        }
+
+        MissionRewardGrant? grant = null;
+        for (var attempt = 0; attempt < 100 && grant is null; attempt++)
+        {
+            await using var processingScope = _factory.Services.CreateAsyncScope();
+            var services = processingScope.ServiceProvider;
+            await services.GetRequiredService<OutboxBatchProcessor>()
+                .ProcessBatchAsync(CancellationToken.None);
+            await services.GetRequiredService<MissionReceiptProcessor>()
+                .ProcessNextAsync(CancellationToken.None);
+            var context = services.GetRequiredService<AppDbContext>();
+            context.ChangeTracker.Clear();
+            grant = await context.MissionRewardGrants.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.UserId == userId);
+            if (grant is null)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50));
+            }
+        }
+
+        Assert.NotNull(grant);
+        Assert.Equal(MissionRewardOutcomes.Granted, grant.Outcome);
+        Assert.Equal(25, grant.BonusCoins);
+
+        var missionsResponse = await client.GetAsync("/api/v1/missions");
+        Assert.Equal(HttpStatusCode.OK, missionsResponse.StatusCode);
+        Assert.Equal("no-store", missionsResponse.Headers.CacheControl?.ToString());
+        var missions = await missionsResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var mission = Assert.Single(missions.EnumerateArray(), item =>
+            item.GetProperty("missionId").GetGuid() == definition.Id);
+        Assert.Equal(revision.Id, mission.GetProperty("revisionId").GetGuid());
+        Assert.Equal(1, mission.GetProperty("progressCount").GetInt32());
+        Assert.Equal("Completed", mission.GetProperty("progressStatus").GetString());
+        Assert.Equal("Granted", mission.GetProperty("rewardStatus").GetString());
+
+        var dailyLimit = await client.GetFromJsonAsync<JsonElement>(
+            "/api/v1/missions/daily-limit");
+        Assert.Equal(300, dailyLimit.GetProperty("limitCoins").GetInt64());
+        Assert.Equal(25, dailyLimit.GetProperty("grantedCoins").GetInt64());
+        Assert.Equal(275, dailyLimit.GetProperty("remainingCoins").GetInt64());
+
+        var rewards = await client.GetFromJsonAsync<JsonElement>(
+            "/api/v1/missions/rewards?limit=1");
+        var reward = Assert.Single(rewards.GetProperty("items").EnumerateArray());
+        Assert.Equal(grant.Id, reward.GetProperty("rewardGrantId").GetGuid());
+        Assert.Equal(25, reward.GetProperty("grantedBonusCoins").GetInt64());
+        Assert.Equal(JsonValueKind.Null, rewards.GetProperty("nextCursor").ValueKind);
+
+        await using var verifyScope = _factory.Services.CreateAsyncScope();
+        var verify = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(25, await verify.Wallets
+            .Where(item => item.UserId == userId)
+            .Select(item => item.BonusAvailable)
+            .SingleAsync());
+        Assert.Single(await verify.WalletOperations.Where(item =>
+            item.UserId == userId &&
+            item.OperationType == WalletOperationTypes.MissionReward &&
+            item.SourceType == WalletOperationSourceTypes.RewardGrant)
+            .ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Mission_user_queries_require_authentication_and_validate_reward_pagination()
+    {
+        using var anonymous = CreateClient();
+        foreach (var path in new[]
+                 {
+                     "/api/v1/missions",
+                     "/api/v1/missions/daily-limit",
+                     "/api/v1/missions/rewards",
+                 })
+        {
+            await AssertStandardizedErrorAsync(
+                await anonymous.GetAsync(path),
+                HttpStatusCode.Unauthorized,
+                "AUTH_REQUIRED");
+        }
+
+        const string subject = "google-subject-m02-query-validation";
+        _factory.TokenEndpoint.SetProfile(subject, "M02 Query User", null, null);
+        using var client = CreateClient();
+        await CompleteLoginAsync(client, await BeginLoginAsync(client, "/missions"));
+        await AssertStandardizedErrorAsync(
+            await client.GetAsync("/api/v1/missions/rewards?limit=101"),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+        await AssertStandardizedErrorAsync(
+            await client.GetAsync("/api/v1/missions/rewards?cursor=invalid"),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
     }
 
     [Fact]
@@ -3491,6 +3654,95 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         {
             Assert.True(errorSchema.GetProperty("properties").TryGetProperty(property, out _));
         }
+    }
+
+    [Fact]
+    public async Task OpenApi_document_contains_mission_progress_reward_and_pagination_contracts()
+    {
+        using var client = CreateClient();
+        var response = await client.GetAsync("/openapi/v1.json");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var document = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var paths = document.GetProperty("paths");
+
+        var missions = paths.GetProperty("/api/v1/missions").GetProperty("get");
+        var dailyLimit = paths.GetProperty("/api/v1/missions/daily-limit")
+            .GetProperty("get");
+        var rewards = paths.GetProperty("/api/v1/missions/rewards").GetProperty("get");
+        foreach (var operation in new[] { missions, dailyLimit, rewards })
+        {
+            Assert.True(operation.GetProperty("responses").TryGetProperty("200", out _));
+            Assert.True(operation.GetProperty("responses").TryGetProperty("401", out _));
+            Assert.True(operation.GetProperty("responses").TryGetProperty("403", out _));
+            var unauthorized = ResolveResponseSchema(document, operation, "401");
+            foreach (var property in new[] { "errorCode", "message", "traceId" })
+            {
+                Assert.True(unauthorized.GetProperty("properties")
+                    .TryGetProperty(property, out _));
+            }
+        }
+
+        var missionArray = ResolveResponseSchema(document, missions, "200");
+        var missionItem = ResolveOpenApiSchema(document, missionArray.GetProperty("items"));
+        foreach (var property in new[]
+                 {
+                     "missionId", "revisionId", "periodKey", "targetCount",
+                     "progressCount", "rewardBonusCoins", "progressStatus", "rewardStatus",
+                 })
+        {
+            Assert.True(missionItem.GetProperty("properties").TryGetProperty(property, out _));
+        }
+        Assert.Equal(
+            ["InProgress", "Completed"],
+            GetOpenApiEnumValues(
+                document,
+                missionItem.GetProperty("properties").GetProperty("progressStatus")));
+        Assert.Equal(
+            ["Pending", "Granted", "DeniedDailyCap"],
+            GetOpenApiEnumValues(
+                document,
+                missionItem.GetProperty("properties").GetProperty("rewardStatus")));
+
+        var limitSchema = ResolveResponseSchema(document, dailyLimit, "200");
+        foreach (var property in new[]
+                 {
+                     "localDate", "limitCoins", "grantedCoins", "remainingCoins",
+                 })
+        {
+            Assert.True(limitSchema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        Assert.True(rewards.GetProperty("responses").TryGetProperty("400", out _));
+        var parameters = rewards.GetProperty("parameters").EnumerateArray().ToArray();
+        var cursor = Assert.Single(parameters, item =>
+            item.GetProperty("name").GetString() == "cursor").GetProperty("schema");
+        Assert.Equal(32, cursor.GetProperty("minLength").GetInt32());
+        Assert.Equal(32, cursor.GetProperty("maxLength").GetInt32());
+        var limit = Assert.Single(parameters, item =>
+            item.GetProperty("name").GetString() == "limit").GetProperty("schema");
+        Assert.Equal(1, limit.GetProperty("minimum").GetInt32());
+        Assert.Equal(100, limit.GetProperty("maximum").GetInt32());
+        Assert.Equal(30, limit.GetProperty("default").GetInt32());
+
+        var page = ResolveResponseSchema(document, rewards, "200");
+        Assert.True(page.GetProperty("properties").TryGetProperty("items", out var items));
+        Assert.True(page.GetProperty("properties").TryGetProperty("nextCursor", out _));
+        var rewardItem = ResolveOpenApiSchema(
+            document,
+            items.GetProperty("items"));
+        foreach (var property in new[]
+                 {
+                     "rewardGrantId", "missionId", "revisionId", "outcome",
+                     "rewardBonusCoins", "grantedBonusCoins", "localDate", "decidedAt",
+                 })
+        {
+            Assert.True(rewardItem.GetProperty("properties").TryGetProperty(property, out _));
+        }
+        Assert.Equal(
+            ["Granted", "DeniedDailyCap"],
+            GetOpenApiEnumValues(
+                document,
+                rewardItem.GetProperty("properties").GetProperty("outcome")));
     }
 
     [Fact]

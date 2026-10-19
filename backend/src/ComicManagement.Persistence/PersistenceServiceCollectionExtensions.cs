@@ -17,6 +17,8 @@ using ComicManagement.Membership.Memberships;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Missions.Periods;
 using ComicManagement.Missions.Administration;
+using ComicManagement.Missions.Processing;
+using ComicManagement.Missions.Queries;
 
 namespace ComicManagement.Persistence;
 
@@ -71,8 +73,16 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<VipMembershipHandler>();
         services.TryAddSingleton<MissionPeriodResolver>();
         services.TryAddScoped<IMissionAdministrationStore, MissionAdministrationStore>();
+        services.TryAddSingleton<IMissionActivationCriticalSectionObserver,
+            NoOpMissionActivationCriticalSectionObserver>();
         services.TryAddScoped<MissionAdministrationHandler>();
         services.TryAddScoped<MissionActionReceiptRecorder>();
+        services.TryAddScoped<IMissionReceiptProcessingStore, MissionReceiptProcessingStore>();
+        services.TryAddSingleton<IMissionReceiptCriticalSectionObserver,
+            NoOpMissionReceiptCriticalSectionObserver>();
+        services.TryAddScoped<MissionReceiptProcessor>();
+        services.TryAddScoped<IMissionQueryStore, MissionQueryStore>();
+        services.TryAddScoped<MissionQueryHandler>();
         services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
             UserLoggedInMissionReceiptHandler>());
         services.TryAddEnumerable(ServiceDescriptor.Scoped<IOutboxMessageHandler,
@@ -88,6 +98,27 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<OutboxBatchProcessor>();
         services.AddOptions<OutboxOptions>();
 
+        return services;
+    }
+
+    public static IServiceCollection AddMissionReceiptWorker(
+        this IServiceCollection services,
+        Action<MissionReceiptOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        var options = services.AddOptions<MissionReceiptOptions>()
+            .Validate(value => value.BatchSize is >= 1 and <= 100,
+                "Missions receipt BatchSize must be between 1 and 100.")
+            .Validate(value => value.PollInterval > TimeSpan.Zero,
+                "Missions receipt PollInterval must be positive.")
+            .ValidateOnStart();
+        if (configure is not null)
+        {
+            options.Configure(configure);
+        }
+
+        services.AddHostedService<MissionReceiptWorker>();
         return services;
     }
 

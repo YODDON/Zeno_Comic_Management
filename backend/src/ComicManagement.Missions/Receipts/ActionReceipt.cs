@@ -78,4 +78,19 @@ public sealed class ActionReceipt
             ProcessingStatus = ActionReceiptStatuses.Pending,
         };
     }
+
+    public void MarkProcessed()
+    {
+        if (ProcessingStatus == ActionReceiptStatuses.Processed)
+        {
+            return;
+        }
+
+        if (ProcessingStatus != ActionReceiptStatuses.Pending)
+        {
+            throw new InvalidOperationException("Mission action receipt state is invalid.");
+        }
+
+        ProcessingStatus = ActionReceiptStatuses.Processed;
+    }
 }

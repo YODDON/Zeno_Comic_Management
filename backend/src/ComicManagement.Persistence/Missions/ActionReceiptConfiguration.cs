@@ -31,6 +31,14 @@ internal sealed class ActionReceiptConfiguration : IEntityTypeConfiguration<Acti
                 receipt.ProcessingStatus,
             })
             .HasDatabaseName("ix_action_receipts_user_local_date_status");
+        builder.HasIndex(receipt => new
+            {
+                receipt.ProcessingStatus,
+                receipt.ReceivedAt,
+                receipt.Id,
+            })
+            .HasFilter("processing_status = 'Pending'")
+            .HasDatabaseName("ix_action_receipts_pending_worker");
 
         builder.Property(receipt => receipt.Id)
             .HasColumnName("id")
