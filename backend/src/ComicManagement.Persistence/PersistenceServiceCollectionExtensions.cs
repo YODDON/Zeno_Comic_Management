@@ -15,6 +15,7 @@ using ComicManagement.Shared.Time;
 using ComicManagement.Wallet.Queries;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Billing.Refunds;
 using ComicManagement.Missions.Periods;
 using ComicManagement.Missions.Administration;
 using ComicManagement.Missions.Processing;
@@ -59,6 +60,11 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddSingleton<ITopUpOrderCriticalSectionObserver,
             NoOpTopUpOrderCriticalSectionObserver>();
         services.TryAddScoped<TopUpOrderHandler>();
+        services.TryAddScoped<IRefundRequestStore, RefundRequestStore>();
+        services.TryAddScoped<IRefundFinancialProcessingLoader, RefundFinancialProcessingLoader>();
+        services.TryAddSingleton<IRefundRequestCriticalSectionObserver,
+            NoOpRefundRequestCriticalSectionObserver>();
+        services.TryAddScoped<RefundRequestHandler>();
         services.TryAddScoped<ISePayWebhookStore, SePayWebhookStore>();
         services.TryAddSingleton<ISePayWebhookCriticalSectionObserver,
             NoOpSePayWebhookCriticalSectionObserver>();

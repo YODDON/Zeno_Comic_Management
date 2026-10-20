@@ -10,6 +10,8 @@ internal static class BillingRateLimitConstants
 {
     internal const string TopUpCreatePolicy = "billing-topup-create";
 
+    internal const string RefundCreatePolicy = "billing-refund-create";
+
     internal const string SePayWebhookPolicy = "billing-sepay-webhook";
 }
 
@@ -24,6 +26,17 @@ internal static class BillingRateLimitServiceCollectionExtensions
         {
             options.AddPolicy(
                 BillingRateLimitConstants.TopUpCreatePolicy,
+                httpContext => RateLimitPartition.GetFixedWindowLimiter(
+                    GetPartitionKey(httpContext),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true,
+                    }));
+            options.AddPolicy(
+                BillingRateLimitConstants.RefundCreatePolicy,
                 httpContext => RateLimitPartition.GetFixedWindowLimiter(
                     GetPartitionKey(httpContext),
                     _ => new FixedWindowRateLimiterOptions

@@ -11,6 +11,7 @@ using ComicManagement.Wallet.Spending;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using ComicManagement.Reading.Library;
 using ComicManagement.Billing.Payments;
+using ComicManagement.Billing.Refunds;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Membership.Subscriptions;
 using ComicManagement.Missions.Definitions;
@@ -18,6 +19,9 @@ using ComicManagement.Missions.Progress;
 using ComicManagement.Missions.Receipts;
 using ComicManagement.Missions.Rewards;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions;
+using Microsoft.EntityFrameworkCore.Metadata.Conventions.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ComicManagement.Persistence;
 
@@ -77,6 +81,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<WebhookDelivery> WebhookDeliveries => Set<WebhookDelivery>();
 
+    internal DbSet<RefundRequest> RefundRequests => Set<RefundRequest>();
+
+    internal DbSet<RefundRecipient> RefundRecipients => Set<RefundRecipient>();
+
     internal DbSet<VipPlan> VipPlans => Set<VipPlan>();
 
     internal DbSet<VipSubscription> VipSubscriptions => Set<VipSubscription>();
@@ -119,6 +127,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     {
         base.OnModelCreating(modelBuilder);
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
+    }
+
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+        base.ConfigureConventions(configurationBuilder);
+        configurationBuilder.Conventions.Replace<ForeignKeyIndexConvention>(services =>
+            new RefundAwareForeignKeyIndexConvention(
+                services.GetRequiredService<ProviderConventionSetBuilderDependencies>()));
     }
 
     private void EnsureAppendOnlyRecords()
@@ -178,6 +194,19 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 "Mission activations are immutable after their interval is closed.");
         }
 
+        if (ChangeTracker.Entries<RefundRecipient>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException("Refund recipients are immutable.");
+        }
+
+        if (ChangeTracker.Entries<RefundRequest>().Any(entry =>
+                entry.State == EntityState.Deleted ||
+                entry.State == EntityState.Modified && RefundSnapshotIsModified(entry)))
+        {
+            throw new InvalidOperationException("Refund request snapshots are immutable.");
+        }
+
         if (ChangeTracker.Entries<ProgressAction>().Any(entry =>
                 entry.State is EntityState.Modified or EntityState.Deleted) ||
             ChangeTracker.Entries<MissionRewardGrant>().Any(entry =>
@@ -187,6 +216,22 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 "Mission actions and reward grants are append-only.");
         }
     }
+
+    private static bool RefundSnapshotIsModified(
+        Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<RefundRequest> entry) =>
+        entry.Property(request => request.Id).IsModified ||
+        entry.Property(request => request.PaymentOrderId).IsModified ||
+        entry.Property(request => request.UserId).IsModified ||
+        entry.Property(request => request.PaymentOrderType).IsModified ||
+        entry.Property(request => request.Reason).IsModified ||
+        entry.Property(request => request.OriginalAmountVnd).IsModified ||
+        entry.Property(request => request.FeeAmountVnd).IsModified ||
+        entry.Property(request => request.NetRefundVnd).IsModified ||
+        entry.Property(request => request.RequiredRecoveryCoins).IsModified ||
+        entry.Property(request => request.IdempotencyKey).IsModified ||
+        entry.Property(request => request.RequestFingerprint).IsModified ||
+        entry.Property(request => request.RequestFingerprintVersion).IsModified ||
+        entry.Property(request => request.RequestedAt).IsModified;
 
     private void EnsurePaidCoinLotsReferenceTopUpOrders()
     {

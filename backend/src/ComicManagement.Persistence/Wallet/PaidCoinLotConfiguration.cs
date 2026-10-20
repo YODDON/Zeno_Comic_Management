@@ -26,6 +26,14 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
         });
 
         builder.HasKey(lot => lot.Id).HasName("pk_paid_coin_lots");
+        builder.HasAlternateKey(lot => new
+            {
+                lot.TopUpOrderId,
+                lot.UserId,
+                lot.TopUpOrderType,
+                lot.GrantedCoins,
+            })
+            .HasName("ak_paid_coin_lots_refund_snapshot");
         builder.HasIndex(lot => lot.TopUpOrderId)
             .IsUnique()
             .HasDatabaseName("ux_paid_coin_lots_topup_order_id");
