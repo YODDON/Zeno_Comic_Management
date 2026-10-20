@@ -42,6 +42,7 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.AspNetCore.WebUtilities;
@@ -1294,42 +1295,118 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.NotEqual(first.CurrentFingerprint, rotated.CurrentFingerprint);
 
         var keyDirectory = Directory.CreateTempSubdirectory("rf01-protection-");
+        var keyBOnlyDirectory = Directory.CreateTempSubdirectory("rf01-protection-b-");
         try
         {
-            var firstProvider = DataProtectionProvider.Create(
-                keyDirectory,
-                options => options.SetApplicationName("ComicManagement.RF01.Tests"));
-            var firstProtector = new RefundRecipientProtector(firstProvider, v1Settings);
-            var protectedRecipient = firstProtector.Protect("0123456789", "NGUYEN VAN A");
+            var now = DateTimeOffset.UtcNow;
+            Guid masterKeyA;
+            ProtectedRefundRecipient protectedRecipient;
+            using (var firstServices = CreateRefundDataProtectionServices(keyDirectory))
+            {
+                masterKeyA = firstServices.GetRequiredService<IKeyManager>()
+                    .CreateNewKey(now.AddMinutes(-2), now.AddDays(90)).KeyId;
+                var firstProtector = new RefundRecipientProtector(
+                    firstServices.GetRequiredService<IDataProtectionProvider>(),
+                    v1Settings);
+                protectedRecipient = firstProtector.Protect(
+                    "0123456789",
+                    "NGUYEN VAN A");
+            }
+
             Assert.Equal("v1", protectedRecipient.EncryptionKeyVersion);
             Assert.DoesNotContain(
                 "0123456789",
                 Encoding.UTF8.GetString(protectedRecipient.AccountNumberCiphertext),
                 StringComparison.Ordinal);
 
-            var restartedProvider = DataProtectionProvider.Create(
-                keyDirectory,
-                options => options.SetApplicationName("ComicManagement.RF01.Tests"));
-            var rotatedProtector = new RefundRecipientProtector(restartedProvider, v2Settings);
-            var unprotected = rotatedProtector.Unprotect(
-                protectedRecipient.AccountNumberCiphertext,
-                protectedRecipient.AccountHolderCiphertext,
-                protectedRecipient.EncryptionKeyVersion);
-            Assert.Equal("0123456789", unprotected.AccountNumber);
-            Assert.Equal("NGUYEN VAN A", unprotected.AccountHolder);
-
-            var protectedAfterRotation = rotatedProtector.Protect("9988776655", "TRAN VAN B");
-            Assert.Equal("v2", protectedAfterRotation.EncryptionKeyVersion);
-            Assert.Equal(
-                "0123456789",
-                rotatedProtector.Unprotect(
+            using (var restartedServices = CreateRefundDataProtectionServices(keyDirectory))
+            {
+                var restartedProtector = new RefundRecipientProtector(
+                    restartedServices.GetRequiredService<IDataProtectionProvider>(),
+                    v1Settings);
+                var unprotected = restartedProtector.Unprotect(
                     protectedRecipient.AccountNumberCiphertext,
                     protectedRecipient.AccountHolderCiphertext,
-                    "v1").AccountNumber);
+                    protectedRecipient.EncryptionKeyVersion);
+                Assert.Equal("0123456789", unprotected.AccountNumber);
+                Assert.Equal("NGUYEN VAN A", unprotected.AccountHolder);
+            }
+
+            Guid masterKeyB;
+            using (var rotationServices = CreateRefundDataProtectionServices(keyDirectory))
+            {
+                masterKeyB = rotationServices.GetRequiredService<IKeyManager>()
+                    .CreateNewKey(now.AddMinutes(-1), now.AddDays(91)).KeyId;
+            }
+            Assert.NotEqual(masterKeyA, masterKeyB);
+
+            ProtectedRefundRecipient protectedAfterRotation;
+            using (var rotatedServices = CreateRefundDataProtectionServices(keyDirectory))
+            {
+                var rotatedProtector = new RefundRecipientProtector(
+                    rotatedServices.GetRequiredService<IDataProtectionProvider>(),
+                    v2Settings);
+                protectedAfterRotation = rotatedProtector.Protect(
+                    "9988776655",
+                    "TRAN VAN B");
+                Assert.Equal("v2", protectedAfterRotation.EncryptionKeyVersion);
+            }
+
+            var masterKeyBFile = Path.Combine(
+                keyDirectory.FullName,
+                $"key-{masterKeyB:D}.xml");
+            Assert.True(File.Exists(masterKeyBFile));
+            File.Copy(
+                masterKeyBFile,
+                Path.Combine(keyBOnlyDirectory.FullName, Path.GetFileName(masterKeyBFile)));
+            using (var activeKeyOnlyServices =
+                   CreateRefundDataProtectionServices(keyBOnlyDirectory))
+            {
+                var activeKeyOnlyProtector = new RefundRecipientProtector(
+                    activeKeyOnlyServices.GetRequiredService<IDataProtectionProvider>(),
+                    v2Settings);
+                Assert.Equal(
+                    "9988776655",
+                    activeKeyOnlyProtector.Unprotect(
+                        protectedAfterRotation.AccountNumberCiphertext,
+                        protectedAfterRotation.AccountHolderCiphertext,
+                        "v2").AccountNumber);
+                Assert.Throws<CryptographicException>(() =>
+                    new RefundRecipientProtector(
+                            activeKeyOnlyServices.GetRequiredService<IDataProtectionProvider>(),
+                            v1Settings)
+                        .Unprotect(
+                            protectedRecipient.AccountNumberCiphertext,
+                            protectedRecipient.AccountHolderCiphertext,
+                            "v1"));
+            }
+
+            using (var secondRestartServices = CreateRefundDataProtectionServices(keyDirectory))
+            {
+                var oldProtector = new RefundRecipientProtector(
+                    secondRestartServices.GetRequiredService<IDataProtectionProvider>(),
+                    v1Settings);
+                var newProtector = new RefundRecipientProtector(
+                    secondRestartServices.GetRequiredService<IDataProtectionProvider>(),
+                    v2Settings);
+                Assert.Equal(
+                    "0123456789",
+                    oldProtector.Unprotect(
+                        protectedRecipient.AccountNumberCiphertext,
+                        protectedRecipient.AccountHolderCiphertext,
+                        "v1").AccountNumber);
+                Assert.Equal(
+                    "9988776655",
+                    newProtector.Unprotect(
+                        protectedAfterRotation.AccountNumberCiphertext,
+                        protectedAfterRotation.AccountHolderCiphertext,
+                        "v2").AccountNumber);
+            }
         }
         finally
         {
             keyDirectory.Delete(recursive: true);
+            keyBOnlyDirectory.Delete(recursive: true);
         }
     }
 
@@ -1725,6 +1802,13 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.Contains("paymentOrderId", requiredRequestFields);
         Assert.Contains("reason", requiredRequestFields);
         Assert.Contains("recipient", requiredRequestFields);
+        var reasonSchema = ResolveOpenApiSchema(
+            document,
+            requestSchema.GetProperty("properties").GetProperty("reason"));
+        Assert.Equal(1, reasonSchema.GetProperty("minLength").GetInt32());
+        Assert.Equal(
+            RefundRequest.MaximumReasonLength,
+            reasonSchema.GetProperty("maxLength").GetInt32());
         var recipientSchema = ResolveOpenApiSchema(
             document,
             requestSchema.GetProperty("properties").GetProperty("recipient"));
@@ -1735,6 +1819,19 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .EnumerateArray().Select(item => item.GetString()).ToHashSet(StringComparer.Ordinal);
         Assert.True(requiredRecipientFields.SetEquals(
             ["bankCode", "accountNumber", "accountHolder"]));
+        var recipientProperties = recipientSchema.GetProperty("properties");
+        AssertStringLengthContract(
+            ResolveOpenApiSchema(document, recipientProperties.GetProperty("bankCode")),
+            2,
+            RefundRecipient.MaximumBankCodeLength);
+        AssertStringLengthContract(
+            ResolveOpenApiSchema(document, recipientProperties.GetProperty("accountNumber")),
+            4,
+            RefundRecipient.MaximumAccountNumberLength);
+        AssertStringLengthContract(
+            ResolveOpenApiSchema(document, recipientProperties.GetProperty("accountHolder")),
+            2,
+            RefundRecipient.MaximumAccountHolderLength);
 
         foreach (var status in new[] { "400", "401", "403", "404", "409", "422", "429" })
         {
@@ -5340,6 +5437,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             .GetProperty(value[prefix.Length..]);
     }
 
+    private static void AssertStringLengthContract(
+        JsonElement schema,
+        int minimum,
+        int maximum)
+    {
+        Assert.Equal(minimum, schema.GetProperty("minLength").GetInt32());
+        Assert.Equal(maximum, schema.GetProperty("maxLength").GetInt32());
+    }
+
     private static IReadOnlyList<string?> GetOpenApiEnumValues(
         JsonElement document,
         JsonElement schema)
@@ -5574,6 +5680,17 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             CurrentProtectionVersion = currentProtectionVersion,
             FingerprintKeys = keys,
         };
+
+    private static ServiceProvider CreateRefundDataProtectionServices(
+        DirectoryInfo keyDirectory)
+    {
+        var services = new ServiceCollection();
+        services.AddDataProtection()
+            .PersistKeysToFileSystem(keyDirectory)
+            .SetApplicationName("ComicManagement.RF01.Tests")
+            .DisableAutomaticKeyGeneration();
+        return services.BuildServiceProvider(validateScopes: true);
+    }
 
     private static HttpRequestMessage RefundRequestMessage(
         Guid paymentOrderId,

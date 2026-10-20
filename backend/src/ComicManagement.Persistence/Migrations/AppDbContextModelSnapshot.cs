@@ -587,13 +587,6 @@ namespace ComicManagement.Persistence.Migrations
                         .IsDescending(false, true, true)
                         .HasDatabaseName("ix_refund_requests_user_requested_id");
 
-                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType", "OriginalAmountVnd")
-                        .IsUnique();
-
-                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType", "RequiredRecoveryCoins")
-                        .IsUnique()
-                        .HasDatabaseName("IX_refund_requests_payment_order_id_user_id_payment_order_typ~1");
-
                     b.ToTable("refund_requests", "billing", t =>
                         {
                             t.HasCheckConstraint("ck_refund_requests_amounts", "original_amount_vnd > 0 AND fee_amount_vnd = original_amount_vnd * 5 / 100 AND net_refund_vnd = original_amount_vnd - fee_amount_vnd");

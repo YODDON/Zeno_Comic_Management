@@ -145,33 +145,5 @@ internal sealed class RefundRequestConfiguration : IEntityTypeConfiguration<Refu
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_refund_requests_users");
 
-        // payment_order_id is already unique, so it covers the left-prefix lookup used by
-        // both snapshot foreign keys. Remove EF's redundant convention indexes.
-        RemoveConventionIndex(
-            builder,
-            nameof(RefundRequest.PaymentOrderId),
-            nameof(RefundRequest.UserId),
-            nameof(RefundRequest.PaymentOrderType),
-            nameof(RefundRequest.OriginalAmountVnd));
-        RemoveConventionIndex(
-            builder,
-            nameof(RefundRequest.PaymentOrderId),
-            nameof(RefundRequest.UserId),
-            nameof(RefundRequest.PaymentOrderType),
-            nameof(RefundRequest.RequiredRecoveryCoins));
-    }
-
-    private static void RemoveConventionIndex(
-        EntityTypeBuilder<RefundRequest> builder,
-        params string[] propertyNames)
-    {
-        var properties = propertyNames
-            .Select(name => builder.Metadata.FindProperty(name)!)
-            .ToArray();
-        var index = builder.Metadata.FindIndex(properties);
-        if (index is not null)
-        {
-            builder.Metadata.RemoveIndex(index);
-        }
     }
 }

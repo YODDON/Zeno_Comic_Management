@@ -38,6 +38,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261019082250_AddRefundRequests";
     private const string RF01SecurityMigration =
         "20261019150424_HardenRefundRequestSecurity";
+    private const string RF01FinalIntegrityMigration =
+        "20261020080206_FinalizeRefundRequestIntegrity";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -71,6 +73,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         M02WorkerIndexMigration,
         RF01Migration,
         RF01SecurityMigration,
+        RF01FinalIntegrityMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -203,11 +206,22 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.False(await IndexExists(
             context,
             "billing",
-            "IX_refund_requests_payment_order_id_user_id_payment_order_type"));
+            "IX_refund_requests_payment_order_id_user_id_payment_order_type~"));
         Assert.False(await IndexExists(
             context,
             "billing",
-            "IX_refund_requests_payment_order_id_user_id_payment_order_type~"));
+            "IX_refund_requests_payment_order_id_user_id_payment_order_typ~1"));
+        Assert.True(await TriggerExists(
+            context,
+            "billing",
+            "refund_requests",
+            "trg_refund_requests_snapshot_immutable"));
+        Assert.True(await TriggerExists(
+            context,
+            "billing",
+            "refund_recipients",
+            "trg_refund_recipients_immutable"));
+        Assert.False(context.Database.HasPendingModelChanges());
         Assert.True(await IndexExists(context, "wallet", "ux_wallet_allocations_operation_lot"));
         Assert.True(await TriggerExists(
             context,

@@ -61,6 +61,7 @@ public static class PersistenceServiceCollectionExtensions
             NoOpTopUpOrderCriticalSectionObserver>();
         services.TryAddScoped<TopUpOrderHandler>();
         services.TryAddScoped<IRefundRequestStore, RefundRequestStore>();
+        services.TryAddScoped<IRefundFinancialProcessingLoader, RefundFinancialProcessingLoader>();
         services.TryAddSingleton<IRefundRequestCriticalSectionObserver,
             NoOpRefundRequestCriticalSectionObserver>();
         services.TryAddScoped<RefundRequestHandler>();

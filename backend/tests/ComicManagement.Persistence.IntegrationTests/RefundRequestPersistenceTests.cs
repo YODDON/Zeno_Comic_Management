@@ -104,9 +104,9 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
     [Fact]
     public async Task Request_waiting_on_order_lock_past_seven_day_boundary_fails_closed()
     {
-        var paidAt = DateTimeOffset.UtcNow
-            .AddDays(-RefundRequest.RequestWindowDays)
-            .AddSeconds(2);
+        var initialServerNow = await GetDatabaseTimeAsync();
+        var refundWindowBoundary = initialServerNow.AddSeconds(8);
+        var paidAt = refundWindowBoundary.AddDays(-RefundRequest.RequestWindowDays);
         var orderId = await SeedFulfilledTopUpAsync(paidAt);
         await using var blocker = new NpgsqlConnection(_postgres.GetConnectionString());
         await blocker.OpenAsync();
@@ -120,9 +120,15 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             await lockCommand.ExecuteScalarAsync();
         }
 
+        var beforeRequest = await GetDatabaseTimeAsync();
+        Assert.True(
+            beforeRequest < refundWindowBoundary,
+            $"Precondition failed: PostgreSQL time {beforeRequest:O} was not before " +
+            $"the refund boundary {refundWindowBoundary:O}.");
+
         var createTask = CreateAsync(orderId, "boundary-lock", "duplicate transfer");
         await WaitForDatabaseLockWaiterAsync();
-        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        await WaitUntilDatabaseTimeAsync(refundWindowBoundary);
         await transaction.CommitAsync();
 
         var result = await createTask;
@@ -225,27 +231,40 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task PostgreSql_rejects_invalid_fee_ciphertext_and_cross_user_order()
+    public async Task Application_and_PostgreSql_reject_refund_snapshot_mutation_and_deletion()
     {
         var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
-        var ownershipOrderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
         var created = await CreateAsync(orderId, "constraints", "duplicate transfer");
         var refundId = created.State!.RefundId;
 
-        await AssertCheckViolationAsync(
-            $"UPDATE billing.refund_requests SET fee_amount_vnd = 1 WHERE id = '{refundId:D}'");
-        await AssertCheckViolationAsync(
-            $"UPDATE billing.refund_recipients SET account_number_encrypted = ''::bytea WHERE refund_request_id = '{refundId:D}'");
-        await AssertForeignKeyViolationAsync(
-            $"""
-            UPDATE billing.refund_requests
-            SET original_amount_vnd = 200000,
-                fee_amount_vnd = 10000,
-                net_refund_vnd = 190000
-            WHERE id = '{refundId:D}'
-            """);
-        await AssertForeignKeyViolationAsync(
-            $"UPDATE billing.refund_requests SET required_recovery_coins = 9999 WHERE id = '{refundId:D}'");
+        await using (var scope = _services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var request = await context.RefundRequests.SingleAsync(item => item.Id == refundId);
+            context.Entry(request).Property(nameof(RefundRequest.Reason)).CurrentValue = "tampered";
+            await Assert.ThrowsAsync<InvalidOperationException>(() => context.SaveChangesAsync());
+
+            context.ChangeTracker.Clear();
+            var recipient = await context.RefundRecipients.SingleAsync(
+                item => item.RefundRequestId == refundId);
+            context.Entry(recipient).Property(nameof(RefundRecipient.BankCode)).CurrentValue = "ACB";
+            await Assert.ThrowsAsync<InvalidOperationException>(() => context.SaveChangesAsync());
+        }
+
+        await AssertImmutableViolationAsync(
+            $"UPDATE billing.refund_requests SET reason = 'tampered' WHERE id = '{refundId:D}'");
+        await AssertImmutableViolationAsync(
+            $"UPDATE billing.refund_recipients SET account_number_encrypted = '\\x01'::bytea WHERE refund_request_id = '{refundId:D}'");
+        await AssertImmutableViolationAsync(
+            $"DELETE FROM billing.refund_recipients WHERE refund_request_id = '{refundId:D}'");
+        await AssertImmutableViolationAsync(
+            $"DELETE FROM billing.refund_requests WHERE id = '{refundId:D}'");
+    }
+
+    [Fact]
+    public async Task PostgreSql_rejects_cross_user_refund_snapshot()
+    {
+        var ownershipOrderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
 
         var otherUserId = Guid.NewGuid();
         await using var scope = _services.CreateAsyncScope();
@@ -267,6 +286,89 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
                      {DateTimeOffset.UtcNow}, {1L})
                 """));
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, exception.SqlState);
+    }
+
+    [Fact]
+    public async Task Financial_processing_loader_returns_authoritative_protected_state()
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        var created = await CreateAsync(orderId, "financial-loader", "duplicate transfer");
+
+        await using var scope = _services.CreateAsyncScope();
+        var result = await scope.ServiceProvider
+            .GetRequiredService<IRefundFinancialProcessingLoader>()
+            .LoadForFinancialProcessingAsync(created.State!.RefundId);
+
+        Assert.Equal(RefundFinancialLoadOutcome.Succeeded, result.Outcome);
+        Assert.Equal(_userId, result.State!.UserId);
+        Assert.Equal(orderId, result.State.Request.PaymentOrderId);
+        Assert.Equal(PaymentOrderTypes.TopUp, result.State.OrderType);
+        Assert.Equal(100_000, result.State.OrderAmountVnd);
+        Assert.Equal(10_000, result.State.PaidCoinsSnapshot);
+        Assert.Equal(10_000, result.State.LotGrantedCoins);
+        Assert.True(result.State.IsFullyRecoverable);
+        Assert.Equal("test-v1", result.State.Recipient.EncryptionKeyVersion);
+    }
+
+    [Theory]
+    [InlineData("request-snapshot")]
+    [InlineData("payment-order")]
+    [InlineData("paid-lot")]
+    public async Task Financial_processing_loader_fails_closed_on_authoritative_drift(
+        string driftTarget)
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        var created = await CreateAsync(
+            orderId,
+            $"financial-drift-{driftTarget}",
+            "duplicate transfer");
+
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await using var transaction = await context.Database.BeginTransactionAsync();
+
+        if (driftTarget == "request-snapshot")
+        {
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                ALTER TABLE billing.refund_requests DISABLE TRIGGER ALL;
+                ALTER TABLE billing.refund_requests DROP CONSTRAINT
+                    fk_refund_requests_topup_payment_order_snapshot;
+                UPDATE billing.refund_requests
+                SET original_amount_vnd = 200000,
+                    fee_amount_vnd = 10000,
+                    net_refund_vnd = 190000
+                WHERE id = {created.State!.RefundId};
+                """);
+        }
+        else if (driftTarget == "payment-order")
+        {
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                ALTER TABLE billing.refund_requests DROP CONSTRAINT
+                    fk_refund_requests_topup_payment_order_snapshot;
+                ALTER TABLE billing.payment_orders DISABLE TRIGGER ALL;
+                UPDATE billing.payment_orders
+                SET amount_vnd = 200000, paid_coins_snapshot = 20000
+                WHERE id = {orderId};
+                """);
+        }
+        else
+        {
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                ALTER TABLE billing.refund_requests DROP CONSTRAINT
+                    fk_refund_requests_original_paid_coin_lot_snapshot;
+                ALTER TABLE wallet.paid_coin_lots DISABLE TRIGGER ALL;
+                UPDATE wallet.paid_coin_lots SET granted_coins = 9999
+                WHERE topup_order_id = {orderId};
+                """);
+        }
+
+        var result = await scope.ServiceProvider
+            .GetRequiredService<IRefundFinancialProcessingLoader>()
+            .LoadForFinancialProcessingAsync(created.State!.RefundId);
+
+        Assert.Equal(RefundFinancialLoadOutcome.IntegrityConflict, result.Outcome);
+        Assert.Null(result.State);
+        await transaction.RollbackAsync();
     }
 
     private async Task<Guid> SeedFulfilledTopUpAsync(DateTimeOffset paidAt)
@@ -357,6 +459,38 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         Assert.Fail("The refund request did not contend on the authoritative row lock.");
     }
 
+    private async Task<DateTimeOffset> GetDatabaseTimeAsync()
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT clock_timestamp()", connection);
+        var value = await command.ExecuteScalarAsync()
+            ?? throw new InvalidOperationException("PostgreSQL clock returned null.");
+        return value switch
+        {
+            DateTimeOffset instant => instant.ToUniversalTime(),
+            DateTime instant => new DateTimeOffset(DateTime.SpecifyKind(instant, DateTimeKind.Utc)),
+            _ => throw new InvalidOperationException(
+                $"Unexpected PostgreSQL clock type {value.GetType().FullName}."),
+        };
+    }
+
+    private async Task WaitUntilDatabaseTimeAsync(DateTimeOffset boundary)
+    {
+        var timeout = DateTimeOffset.UtcNow.AddSeconds(20);
+        while (DateTimeOffset.UtcNow < timeout)
+        {
+            if (await GetDatabaseTimeAsync() >= boundary)
+            {
+                return;
+            }
+
+            await Task.Delay(50);
+        }
+
+        Assert.Fail($"PostgreSQL clock did not reach refund boundary {boundary:O}.");
+    }
+
     private async Task AssertNoRefundStateAsync()
     {
         await using var scope = _services.CreateAsyncScope();
@@ -365,13 +499,13 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         Assert.Empty(await context.RefundRecipients.AsNoTracking().ToListAsync());
     }
 
-    private async Task AssertCheckViolationAsync(string sql)
+    private async Task AssertImmutableViolationAsync(string sql)
     {
         await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
         await connection.OpenAsync();
         await using var command = new NpgsqlCommand(sql, connection);
         var exception = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
-        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+        Assert.Equal(PostgresErrorCodes.RaiseException, exception.SqlState);
     }
 
     private async Task AssertForeignKeyViolationAsync(string sql)
