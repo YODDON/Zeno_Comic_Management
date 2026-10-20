@@ -1,4 +1,6 @@
 using ComicManagement.Billing.Refunds;
+using System.Security.Cryptography;
+using System.Text;
 using ComicManagement.Billing.Payments;
 using Xunit;
 
@@ -21,6 +23,7 @@ public sealed class RefundRequestTests
             10_000,
             "refund-key",
             new string('a', 64),
+            "v1",
             Now);
 
         Assert.Equal(5_000, request.FeeAmountVnd);
@@ -63,7 +66,7 @@ public sealed class RefundRequestTests
     {
         var store = new CapturingStore();
         var protector = new CapturingProtector();
-        var handler = new RefundRequestHandler(store, protector);
+        var handler = new RefundRequestHandler(store, protector, new TestFingerprintService());
         var userId = Guid.NewGuid();
         var orderId = Guid.NewGuid();
 
@@ -83,7 +86,8 @@ public sealed class RefundRequestTests
         Assert.Equal("N*** V*** A***", request.AccountHolderMasked);
         Assert.Equal("0123456789", protector.AccountNumber);
         Assert.Equal("NGUYEN VAN A", protector.AccountHolder);
-        Assert.Matches("^[0-9a-f]{64}$", request.RequestFingerprint);
+        Assert.Matches("^[0-9a-f]{64}$", request.Fingerprints.CurrentFingerprint);
+        Assert.Equal("v1", request.Fingerprints.CurrentVersion);
     }
 
     [Theory]
@@ -92,7 +96,10 @@ public sealed class RefundRequestTests
     public async Task Handler_rejects_invalid_idempotency_key(string key)
     {
         var store = new CapturingStore();
-        var handler = new RefundRequestHandler(store, new CapturingProtector());
+        var handler = new RefundRequestHandler(
+            store,
+            new CapturingProtector(),
+            new TestFingerprintService());
 
         var result = await handler.CreateAsync(
             Guid.NewGuid(),
@@ -117,6 +124,28 @@ public sealed class RefundRequestTests
             AccountHolder = accountHolder;
             return new ProtectedRefundRecipient([1], [2], "test-v1");
         }
+
+        public UnprotectedRefundRecipient Unprotect(
+            byte[] accountNumberCiphertext,
+            byte[] accountHolderCiphertext,
+            string protectionVersion) => throw new NotSupportedException();
+    }
+
+    private sealed class TestFingerprintService : IRefundRequestFingerprintService
+    {
+        public RefundRequestFingerprints CreateFingerprints(string canonicalRequest) => new(
+            "v1",
+            Fingerprint(canonicalRequest),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["v1"] = Fingerprint(canonicalRequest),
+            });
+
+        private static string Fingerprint(string canonicalRequest) => Convert.ToHexString(
+                HMACSHA256.HashData(
+                    Encoding.UTF8.GetBytes("rf01-unit-test-fingerprint-key"),
+                    Encoding.UTF8.GetBytes(canonicalRequest)))
+            .ToLowerInvariant();
     }
 
     private sealed class CapturingStore : IRefundRequestStore

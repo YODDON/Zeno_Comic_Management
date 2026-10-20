@@ -185,26 +185,29 @@ public sealed class RefundsController(RefundRequestHandler handler) : Controller
             .Create(HttpContext, status, code, title, detail);
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class CreateRefundRequest
 {
+    [Required, JsonRequired]
     public Guid PaymentOrderId { get; init; }
 
-    [Required, StringLength(RefundRequest.MaximumReasonLength, MinimumLength = 1)]
+    [Required, JsonRequired, StringLength(RefundRequest.MaximumReasonLength, MinimumLength = 1)]
     public string Reason { get; init; } = string.Empty;
 
-    [Required]
-    public RefundRecipientRequest? Recipient { get; init; }
+    [Required, JsonRequired]
+    public RefundRecipientRequest Recipient { get; init; } = null!;
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class RefundRecipientRequest
 {
-    [Required, StringLength(RefundRecipient.MaximumBankCodeLength, MinimumLength = 2)]
+    [Required, JsonRequired, StringLength(RefundRecipient.MaximumBankCodeLength, MinimumLength = 2)]
     public string BankCode { get; init; } = string.Empty;
 
-    [Required, StringLength(RefundRecipient.MaximumAccountNumberLength, MinimumLength = 4)]
+    [Required, JsonRequired, StringLength(RefundRecipient.MaximumAccountNumberLength, MinimumLength = 4)]
     public string AccountNumber { get; init; } = string.Empty;
 
-    [Required, StringLength(RefundRecipient.MaximumAccountHolderLength, MinimumLength = 2)]
+    [Required, JsonRequired, StringLength(RefundRecipient.MaximumAccountHolderLength, MinimumLength = 2)]
     public string AccountHolder { get; init; } = string.Empty;
 }
 

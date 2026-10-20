@@ -1,4 +1,5 @@
 using System.Data;
+using System.Security.Cryptography;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Refunds;
 using ComicManagement.Wallet.Lots;
@@ -82,7 +83,12 @@ internal sealed class RefundRequestStore(
                 .SingleAsync(item => item.RefundRequestId == existingByKey.Id,
                     cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return existingByKey.RequestFingerprint == request.RequestFingerprint
+            return request.Fingerprints.CandidatesByVersion.TryGetValue(
+                       existingByKey.RequestFingerprintVersion,
+                       out var candidateFingerprint) &&
+                   CryptographicOperations.FixedTimeEquals(
+                       Convert.FromHexString(existingByKey.RequestFingerprint),
+                       Convert.FromHexString(candidateFingerprint))
                 ? new RefundRequestResult(
                     RefundRequestOutcome.Succeeded,
                     MapState(existingByKey, replayRecipient))
@@ -135,7 +141,8 @@ internal sealed class RefundRequestStore(
             state.OriginalAmountVnd,
             state.LotGrantedCoins,
             request.IdempotencyKey,
-            request.RequestFingerprint,
+            request.Fingerprints.CurrentFingerprint,
+            request.Fingerprints.CurrentVersion,
             serverNow);
         var recipient = RefundRecipient.Create(
             request.RecipientId,

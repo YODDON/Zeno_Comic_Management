@@ -194,6 +194,9 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasAlternateKey("Id", "UserId", "OrderType")
                         .HasName("ak_payment_orders_id_user_id_order_type");
 
+                    b.HasAlternateKey("Id", "UserId", "OrderType", "AmountVnd")
+                        .HasName("ak_payment_orders_refund_snapshot");
+
                     b.HasIndex("OrderCode")
                         .IsUnique()
                         .HasDatabaseName("ux_payment_orders_order_code");
@@ -529,6 +532,12 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("request_fingerprint");
 
+                    b.Property<string>("RequestFingerprintVersion")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)")
+                        .HasColumnName("request_fingerprint_version");
+
                     b.Property<DateTimeOffset>("RequestedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("requested_at");
@@ -574,18 +583,22 @@ namespace ComicManagement.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_refund_requests_user_idempotency");
 
-                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType")
-                        .IsUnique();
-
                     b.HasIndex("UserId", "RequestedAt", "Id")
                         .IsDescending(false, true, true)
                         .HasDatabaseName("ix_refund_requests_user_requested_id");
+
+                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType", "OriginalAmountVnd")
+                        .IsUnique();
+
+                    b.HasIndex("PaymentOrderId", "UserId", "PaymentOrderType", "RequiredRecoveryCoins")
+                        .IsUnique()
+                        .HasDatabaseName("IX_refund_requests_payment_order_id_user_id_payment_order_typ~1");
 
                     b.ToTable("refund_requests", "billing", t =>
                         {
                             t.HasCheckConstraint("ck_refund_requests_amounts", "original_amount_vnd > 0 AND fee_amount_vnd = original_amount_vnd * 5 / 100 AND net_refund_vnd = original_amount_vnd - fee_amount_vnd");
 
-                            t.HasCheckConstraint("ck_refund_requests_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
+                            t.HasCheckConstraint("ck_refund_requests_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$' AND request_fingerprint_version ~ '^[A-Za-z0-9_-]{1,40}$'");
 
                             t.HasCheckConstraint("ck_refund_requests_order_type", "payment_order_type = 'TopUp'");
 
@@ -2413,6 +2426,9 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_paid_coin_lots");
 
+                    b.HasAlternateKey("TopUpOrderId", "UserId", "TopUpOrderType", "GrantedCoins")
+                        .HasName("ak_paid_coin_lots_refund_snapshot");
+
                     b.HasIndex("TopUpOrderId")
                         .IsUnique()
                         .HasDatabaseName("ux_paid_coin_lots_topup_order_id");
@@ -2539,11 +2555,19 @@ namespace ComicManagement.Persistence.Migrations
 
                     b.HasOne("ComicManagement.Billing.Payments.PaymentOrder", null)
                         .WithOne()
-                        .HasForeignKey("ComicManagement.Billing.Refunds.RefundRequest", "PaymentOrderId", "UserId", "PaymentOrderType")
-                        .HasPrincipalKey("ComicManagement.Billing.Payments.PaymentOrder", "Id", "UserId", "OrderType")
+                        .HasForeignKey("ComicManagement.Billing.Refunds.RefundRequest", "PaymentOrderId", "UserId", "PaymentOrderType", "OriginalAmountVnd")
+                        .HasPrincipalKey("ComicManagement.Billing.Payments.PaymentOrder", "Id", "UserId", "OrderType", "AmountVnd")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
-                        .HasConstraintName("fk_refund_requests_topup_payment_orders");
+                        .HasConstraintName("fk_refund_requests_topup_payment_order_snapshot");
+
+                    b.HasOne("ComicManagement.Wallet.Lots.PaidCoinLot", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Billing.Refunds.RefundRequest", "PaymentOrderId", "UserId", "PaymentOrderType", "RequiredRecoveryCoins")
+                        .HasPrincipalKey("ComicManagement.Wallet.Lots.PaidCoinLot", "TopUpOrderId", "UserId", "TopUpOrderType", "GrantedCoins")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refund_requests_original_paid_coin_lot_snapshot");
                 });
 
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>

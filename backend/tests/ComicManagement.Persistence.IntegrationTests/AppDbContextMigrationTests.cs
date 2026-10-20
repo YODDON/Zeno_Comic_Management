@@ -36,6 +36,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261018164955_AddMissionReceiptWorkerIndex";
     private const string RF01Migration =
         "20261019082250_AddRefundRequests";
+    private const string RF01SecurityMigration =
+        "20261019150424_HardenRefundRequestSecurity";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -68,6 +70,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         M02Migration,
         M02WorkerIndexMigration,
         RF01Migration,
+        RF01SecurityMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -197,6 +200,14 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             context,
             "billing",
             "ux_refund_requests_user_idempotency"));
+        Assert.False(await IndexExists(
+            context,
+            "billing",
+            "IX_refund_requests_payment_order_id_user_id_payment_order_type"));
+        Assert.False(await IndexExists(
+            context,
+            "billing",
+            "IX_refund_requests_payment_order_id_user_id_payment_order_type~"));
         Assert.True(await IndexExists(context, "wallet", "ux_wallet_allocations_operation_lot"));
         Assert.True(await TriggerExists(
             context,
@@ -369,13 +380,76 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             Guid.NewGuid(), userId, orderId, 10_000, paidAt));
         await context.SaveChangesAsync();
 
-        await migrator.MigrateAsync(RF01Migration);
+        await migrator.MigrateAsync(RF01SecurityMigration);
 
         Assert.True(await TableExists(context, "billing.refund_requests"));
         Assert.True(await TableExists(context, "billing.refund_recipients"));
         Assert.Equal(1, await context.PaymentOrders.CountAsync(item => item.Id == orderId));
         Assert.Equal(1, await context.PaidCoinLots.CountAsync(item => item.TopUpOrderId == orderId));
         Assert.Empty(await context.RefundRequests.ToListAsync());
+    }
+
+    [Fact]
+    public async Task RF01_security_migration_rejects_legacy_unkeyed_fingerprints_and_rolls_back()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(RF01Migration);
+
+        var paidAt = DateTimeOffset.UtcNow.AddDays(-1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var refundId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(
+            userId, "RF01 Legacy Fingerprint", null, null, paidAt.AddDays(-1)));
+        var order = PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            $"ZENO-{orderId:N}",
+            100_000,
+            10_000,
+            $"rf01-legacy-{orderId:N}",
+            new string('a', 64),
+            paidAt.AddMinutes(-10),
+            paidAt.AddMinutes(10));
+        order.FulfillTopUp(paidAt);
+        context.PaymentOrders.Add(order);
+        context.PaidCoinLots.Add(PaidCoinLot.Create(
+            Guid.NewGuid(), userId, orderId, 10_000, paidAt));
+        await context.SaveChangesAsync();
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO billing.refund_requests
+                (id, payment_order_id, user_id, payment_order_type, reason,
+                 original_amount_vnd, fee_amount_vnd, net_refund_vnd,
+                 required_recovery_coins, status, idempotency_key,
+                 request_fingerprint, requested_at, version)
+            VALUES
+                ({refundId}, {orderId}, {userId}, {PaymentOrderTypes.TopUp}, {"legacy"},
+                 {100_000L}, {5_000L}, {95_000L}, {10_000L}, {"Requested"},
+                 {"legacy-key"}, {new string('a', 64)}, {paidAt}, {1L})
+            """);
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(
+            () => migrator.MigrateAsync(RF01SecurityMigration));
+        Assert.Contains("RF01_SECURITY_PRECONDITION", exception.MessageText,
+            StringComparison.Ordinal);
+        Assert.False(await ColumnExists(
+            context,
+            "billing",
+            "refund_requests",
+            "request_fingerprint_version"));
+        Assert.Equal(
+            1,
+            await context.Database.SqlQueryRaw<int>(
+                "SELECT count(*)::integer AS \"Value\" FROM billing.refund_requests")
+                .SingleAsync());
+        Assert.DoesNotContain(
+            RF01SecurityMigration,
+            await context.Database.GetAppliedMigrationsAsync());
     }
 
     [Fact]

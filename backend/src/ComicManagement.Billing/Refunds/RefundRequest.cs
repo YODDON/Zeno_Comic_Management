@@ -13,6 +13,7 @@ public sealed class RefundRequest
     public const int MaximumReasonLength = 1000;
     public const int MaximumIdempotencyKeyLength = 200;
     public const int FingerprintLength = 64;
+    public const int MaximumSecurityVersionLength = 40;
     public const int FeePercent = 5;
     public const int RequestWindowDays = 7;
 
@@ -44,6 +45,8 @@ public sealed class RefundRequest
 
     public string RequestFingerprint { get; private set; } = string.Empty;
 
+    public string RequestFingerprintVersion { get; private set; } = string.Empty;
+
     public DateTimeOffset RequestedAt { get; private set; }
 
     public Guid? ReviewedBy { get; private set; }
@@ -71,6 +74,7 @@ public sealed class RefundRequest
         long requiredRecoveryCoins,
         string idempotencyKey,
         string requestFingerprint,
+        string requestFingerprintVersion,
         DateTimeOffset requestedAt)
     {
         EnsureIdentifier(id, nameof(id));
@@ -79,6 +83,7 @@ public sealed class RefundRequest
         EnsureText(reason, MaximumReasonLength, nameof(reason));
         EnsureText(idempotencyKey, MaximumIdempotencyKeyLength, nameof(idempotencyKey));
         EnsureFingerprint(requestFingerprint);
+        EnsureSecurityVersion(requestFingerprintVersion);
         EnsureUtc(requestedAt, nameof(requestedAt));
         if (originalAmountVnd <= 0 || originalAmountVnd % 1000 != 0)
         {
@@ -105,6 +110,7 @@ public sealed class RefundRequest
             Status = RefundRequestStatuses.Requested,
             IdempotencyKey = idempotencyKey,
             RequestFingerprint = requestFingerprint,
+            RequestFingerprintVersion = requestFingerprintVersion,
             RequestedAt = requestedAt,
             Version = 1,
         };
@@ -136,6 +142,18 @@ public sealed class RefundRequest
         {
             throw new ArgumentException(
                 "Request fingerprint must be a lowercase SHA-256 hex digest.",
+                nameof(value));
+        }
+    }
+
+    private static void EnsureSecurityVersion(string value)
+    {
+        EnsureText(value, MaximumSecurityVersionLength, nameof(value));
+        if (value.Any(character => !char.IsAsciiLetterOrDigit(character) &&
+                                   character is not '-' and not '_'))
+        {
+            throw new ArgumentException(
+                "Security version must contain only ASCII letters, digits, '-' or '_'.",
                 nameof(value));
         }
     }

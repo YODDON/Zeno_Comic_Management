@@ -25,6 +25,7 @@ var databaseConnectionString = builder.Configuration.GetConnectionString("Databa
 var authenticationSettings = IdentityAuthenticationSettings.FromConfiguration(
     builder.Configuration,
     builder.Environment.ContentRootPath);
+var refundSecuritySettings = RefundSecuritySettings.FromConfiguration(builder.Configuration);
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi(options =>
@@ -32,6 +33,7 @@ builder.Services.AddOpenApi(options =>
     options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>();
     options.AddOperationTransformer<SePayWebhookOpenApiOperationTransformer>();
     options.AddSchemaTransformer<TopUpAmountOpenApiSchemaTransformer>();
+    options.AddSchemaTransformer<RefundOpenApiSchemaTransformer>();
 });
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
@@ -114,7 +116,9 @@ builder.Services.AddScoped<PublicChapterListWorkflow>();
 builder.Services.AddScoped<TopUpFulfillmentWorkflow>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddIdentityAuthentication(authenticationSettings);
+builder.Services.AddSingleton(refundSecuritySettings);
 builder.Services.AddSingleton<IRefundRecipientProtector, RefundRecipientProtector>();
+builder.Services.AddSingleton<IRefundRequestFingerprintService, RefundRequestFingerprintService>();
 builder.Services.AddReadingRateLimiting(builder.Configuration);
 builder.Services.AddBillingRateLimiting();
 builder.Services.AddMembershipRateLimiting();

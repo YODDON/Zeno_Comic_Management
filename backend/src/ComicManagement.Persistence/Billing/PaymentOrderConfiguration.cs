@@ -62,6 +62,14 @@ internal sealed class PaymentOrderConfiguration : IEntityTypeConfiguration<Payme
             .HasName("ak_payment_orders_id_user_id");
         builder.HasAlternateKey(order => new { order.Id, order.UserId, order.OrderType })
             .HasName("ak_payment_orders_id_user_id_order_type");
+        builder.HasAlternateKey(order => new
+            {
+                order.Id,
+                order.UserId,
+                order.OrderType,
+                order.AmountVnd,
+            })
+            .HasName("ak_payment_orders_refund_snapshot");
         builder.HasIndex(order => order.OrderCode)
             .IsUnique()
             .HasDatabaseName("ux_payment_orders_order_code");

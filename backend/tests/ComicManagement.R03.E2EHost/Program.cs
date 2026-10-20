@@ -220,6 +220,11 @@ internal sealed class R03E2EApplicationFactory(
             .UseSetting("Api:ErrorDocumentationBaseUri", "https://docs.example.test/errors")
             .UseSetting("Authentication:LoginRateLimit:PermitLimit", "1000")
             .UseSetting("Authentication:LoginRateLimit:Window", "00:01:00")
+            .UseSetting("Billing:RefundSecurity:CurrentFingerprintVersion", "v1")
+            .UseSetting(
+                "Billing:RefundSecurity:FingerprintKeys:v1",
+                "cmYwMS10ZXN0LWZpbmdlcnByaW50LWtleS12MS0zMiE=")
+            .UseSetting("Billing:RefundSecurity:CurrentProtectionVersion", "v1")
             .UseSetting("Reading:ProgressRateLimit:PermitLimit", "60")
             .UseSetting("ReverseProxy:KnownNetworks:0", "0.0.0.0/0")
             .UseSetting("ReverseProxy:KnownNetworks:1", "::/0");

@@ -1,6 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using ComicManagement.Billing.Payments;
 
 namespace ComicManagement.Billing.Refunds;
@@ -27,9 +25,28 @@ public sealed record ProtectedRefundRecipient(
     byte[] AccountHolderCiphertext,
     string EncryptionKeyVersion);
 
+public sealed record UnprotectedRefundRecipient(
+    string AccountNumber,
+    string AccountHolder);
+
 public interface IRefundRecipientProtector
 {
     ProtectedRefundRecipient Protect(string accountNumber, string accountHolder);
+
+    UnprotectedRefundRecipient Unprotect(
+        byte[] accountNumberCiphertext,
+        byte[] accountHolderCiphertext,
+        string protectionVersion);
+}
+
+public sealed record RefundRequestFingerprints(
+    string CurrentVersion,
+    string CurrentFingerprint,
+    IReadOnlyDictionary<string, string> CandidatesByVersion);
+
+public interface IRefundRequestFingerprintService
+{
+    RefundRequestFingerprints CreateFingerprints(string canonicalRequest);
 }
 
 public sealed record RefundEligibilityState(
@@ -146,7 +163,7 @@ public sealed record CreateRefundStoreRequest(
     Guid PaymentOrderId,
     string Reason,
     string IdempotencyKey,
-    string RequestFingerprint,
+    RefundRequestFingerprints Fingerprints,
     string BankCode,
     ProtectedRefundRecipient ProtectedRecipient,
     string AccountNumberLast4,
@@ -176,7 +193,8 @@ public interface IRefundRequestStore
 
 public sealed class RefundRequestHandler(
     IRefundRequestStore store,
-    IRefundRecipientProtector recipientProtector)
+    IRefundRecipientProtector recipientProtector,
+    IRefundRequestFingerprintService fingerprintService)
 {
     public Task<RefundEligibilityResult> GetEligibilityAsync(
         Guid userId,
@@ -209,6 +227,7 @@ public sealed class RefundRequestHandler(
         var protectedRecipient = recipientProtector.Protect(
             normalized.AccountNumber,
             normalized.AccountHolder);
+        var canonicalRequest = Canonicalize(paymentOrderId, normalized);
         return await store.CreateOrReplayAsync(
             new CreateRefundStoreRequest(
                 Guid.NewGuid(),
@@ -217,7 +236,7 @@ public sealed class RefundRequestHandler(
                 paymentOrderId,
                 normalized.Reason,
                 normalized.IdempotencyKey,
-                Fingerprint(paymentOrderId, normalized),
+                fingerprintService.CreateFingerprints(canonicalRequest),
                 normalized.BankCode,
                 protectedRecipient,
                 normalized.AccountNumber[^Math.Min(4, normalized.AccountNumber.Length)..],
@@ -283,15 +302,13 @@ public sealed class RefundRequestHandler(
         return true;
     }
 
-    private static string Fingerprint(
+    internal static string Canonicalize(
         Guid paymentOrderId,
         NormalizedRefundRequest request)
     {
-        var canonical = string.Create(
+        return string.Create(
             CultureInfo.InvariantCulture,
             $"Refund|order={paymentOrderId:N}|reason={request.Reason.Length}:{request.Reason}|bank={request.BankCode.Length}:{request.BankCode}|account={request.AccountNumber.Length}:{request.AccountNumber}|holder={request.AccountHolder.Length}:{request.AccountHolder}");
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
-            .ToLowerInvariant();
     }
 
     private static string CollapseWhitespace(string? value) =>
@@ -306,7 +323,7 @@ public sealed class RefundRequestHandler(
         string.Join(' ', accountHolder.Split(' ', StringSplitOptions.RemoveEmptyEntries)
             .Select(part => string.Concat(part[0], "***")));
 
-    private sealed record NormalizedRefundRequest(
+    internal sealed record NormalizedRefundRequest(
         string Reason,
         string IdempotencyKey,
         string BankCode,

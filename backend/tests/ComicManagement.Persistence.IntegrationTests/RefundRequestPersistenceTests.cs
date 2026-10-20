@@ -7,6 +7,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
+using System.Security.Cryptography;
+using System.Text;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -21,6 +23,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             .WithPassword("postgres")
             .Build();
     private readonly BlockingRefundObserver _observer = new();
+    private readonly TestFingerprintService _fingerprints = new();
     private ServiceProvider _services = null!;
     private Guid _userId;
 
@@ -32,6 +35,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         services.RemoveAll<IRefundRequestCriticalSectionObserver>();
         services.AddSingleton<IRefundRequestCriticalSectionObserver>(_observer);
         services.AddSingleton<IRefundRecipientProtector, TestRecipientProtector>();
+        services.AddSingleton<IRefundRequestFingerprintService>(_fingerprints);
         _services = services.BuildServiceProvider(validateScopes: true);
 
         await using var scope = _services.CreateAsyncScope();
@@ -98,11 +102,78 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Request_waiting_on_order_lock_past_seven_day_boundary_fails_closed()
+    {
+        var paidAt = DateTimeOffset.UtcNow
+            .AddDays(-RefundRequest.RequestWindowDays)
+            .AddSeconds(2);
+        var orderId = await SeedFulfilledTopUpAsync(paidAt);
+        await using var blocker = new NpgsqlConnection(_postgres.GetConnectionString());
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await using (var lockCommand = new NpgsqlCommand(
+                         "SELECT id FROM billing.payment_orders WHERE id = @id FOR UPDATE",
+                         blocker,
+                         transaction))
+        {
+            lockCommand.Parameters.AddWithValue("id", orderId);
+            await lockCommand.ExecuteScalarAsync();
+        }
+
+        var createTask = CreateAsync(orderId, "boundary-lock", "duplicate transfer");
+        await WaitForDatabaseLockWaiterAsync();
+        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        await transaction.CommitAsync();
+
+        var result = await createTask;
+        Assert.Equal(RefundRequestOutcome.WindowExpired, result.Outcome);
+        await AssertNoRefundStateAsync();
+    }
+
+    [Fact]
+    public async Task Request_waiting_on_original_lot_revalidates_concurrent_spend_and_fails_closed()
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        await using var blocker = new NpgsqlConnection(_postgres.GetConnectionString());
+        await blocker.OpenAsync();
+        await using var transaction = await blocker.BeginTransactionAsync();
+        await using (var lockCommand = new NpgsqlCommand(
+                         "SELECT id FROM wallet.paid_coin_lots WHERE topup_order_id = @id FOR UPDATE",
+                         blocker,
+                         transaction))
+        {
+            lockCommand.Parameters.AddWithValue("id", orderId);
+            await lockCommand.ExecuteScalarAsync();
+        }
+
+        var createTask = CreateAsync(orderId, "lot-lock", "duplicate transfer");
+        await WaitForDatabaseLockWaiterAsync();
+        await using (var mutateCommand = new NpgsqlCommand(
+                         """
+                         UPDATE wallet.paid_coin_lots
+                         SET spent_coins = 1, version = version + 1
+                         WHERE topup_order_id = @id
+                         """,
+                         blocker,
+                         transaction))
+        {
+            mutateCommand.Parameters.AddWithValue("id", orderId);
+            Assert.Equal(1, await mutateCommand.ExecuteNonQueryAsync());
+        }
+        await transaction.CommitAsync();
+
+        var result = await createTask;
+        Assert.Equal(RefundRequestOutcome.RecoveryInsufficient, result.Outcome);
+        await AssertNoRefundStateAsync();
+    }
+
+    [Fact]
     public async Task Permanent_idempotency_conflicts_and_one_request_per_order_are_enforced()
     {
         var firstOrder = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
         var secondOrder = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
         var created = await CreateAsync(firstOrder, "refund-key", "duplicate transfer");
+        _fingerprints.CurrentVersion = "v2";
 
         await using (var scope = _services.CreateAsyncScope())
         {
@@ -123,6 +194,10 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         Assert.Equal(created.State!.RefundId, replayAfterLotDrift.State!.RefundId);
         Assert.Equal(RefundRequestOutcome.IdempotencyConflict, differentPayload.Outcome);
         Assert.Equal(RefundRequestOutcome.RefundAlreadyExists, differentKeySameOrder.Outcome);
+        await using var versionScope = _services.CreateAsyncScope();
+        var persisted = await versionScope.ServiceProvider.GetRequiredService<AppDbContext>()
+            .RefundRequests.AsNoTracking().SingleAsync(item => item.Id == created.State.RefundId);
+        Assert.Equal("v1", persisted.RequestFingerprintVersion);
     }
 
     [Fact]
@@ -161,6 +236,16 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             $"UPDATE billing.refund_requests SET fee_amount_vnd = 1 WHERE id = '{refundId:D}'");
         await AssertCheckViolationAsync(
             $"UPDATE billing.refund_recipients SET account_number_encrypted = ''::bytea WHERE refund_request_id = '{refundId:D}'");
+        await AssertForeignKeyViolationAsync(
+            $"""
+            UPDATE billing.refund_requests
+            SET original_amount_vnd = 200000,
+                fee_amount_vnd = 10000,
+                net_refund_vnd = 190000
+            WHERE id = '{refundId:D}'
+            """);
+        await AssertForeignKeyViolationAsync(
+            $"UPDATE billing.refund_requests SET required_recovery_coins = 9999 WHERE id = '{refundId:D}'");
 
         var otherUserId = Guid.NewGuid();
         await using var scope = _services.CreateAsyncScope();
@@ -174,11 +259,11 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
                     (id, payment_order_id, user_id, payment_order_type, reason,
                      original_amount_vnd, fee_amount_vnd, net_refund_vnd,
                      required_recovery_coins, status, idempotency_key,
-                     request_fingerprint, requested_at, version)
+                     request_fingerprint, request_fingerprint_version, requested_at, version)
                 VALUES
                     ({Guid.NewGuid()}, {ownershipOrderId}, {otherUserId}, {PaymentOrderTypes.TopUp},
                      {'x'}, {100_000L}, {5_000L}, {95_000L}, {10_000L},
-                     {RefundRequestStatuses.Requested}, {'k'}, {new string('a', 64)},
+                     {RefundRequestStatuses.Requested}, {'k'}, {new string('a', 64)}, {"v1"},
                      {DateTimeOffset.UtcNow}, {1L})
                 """));
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, exception.SqlState);
@@ -251,6 +336,35 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         Assert.Fail("The duplicate refund request did not contend on the advisory lock.");
     }
 
+    private async Task WaitForDatabaseLockWaiterAsync()
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        var timeout = DateTimeOffset.UtcNow.AddSeconds(10);
+        while (DateTimeOffset.UtcNow < timeout)
+        {
+            await using var command = new NpgsqlCommand(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'",
+                connection);
+            if (Convert.ToInt32(await command.ExecuteScalarAsync()) > 0)
+            {
+                return;
+            }
+
+            await Task.Delay(25);
+        }
+
+        Assert.Fail("The refund request did not contend on the authoritative row lock.");
+    }
+
+    private async Task AssertNoRefundStateAsync()
+    {
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Empty(await context.RefundRequests.AsNoTracking().ToListAsync());
+        Assert.Empty(await context.RefundRecipients.AsNoTracking().ToListAsync());
+    }
+
     private async Task AssertCheckViolationAsync(string sql)
     {
         await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
@@ -260,10 +374,48 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
     }
 
+    private async Task AssertForeignKeyViolationAsync(string sql)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        var exception = await Assert.ThrowsAsync<PostgresException>(() => command.ExecuteNonQueryAsync());
+        Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, exception.SqlState);
+    }
+
     private sealed class TestRecipientProtector : IRefundRecipientProtector
     {
         public ProtectedRefundRecipient Protect(string accountNumber, string accountHolder) =>
             new([1, 2, 3], [4, 5, 6], "test-v1");
+
+        public UnprotectedRefundRecipient Unprotect(
+            byte[] accountNumberCiphertext,
+            byte[] accountHolderCiphertext,
+            string protectionVersion) => throw new NotSupportedException();
+    }
+
+    private sealed class TestFingerprintService : IRefundRequestFingerprintService
+    {
+        public string CurrentVersion { get; set; } = "v1";
+
+        public RefundRequestFingerprints CreateFingerprints(string canonicalRequest)
+        {
+            var candidates = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["v1"] = Fingerprint(canonicalRequest, "rf01-persistence-test-key-v1"),
+                ["v2"] = Fingerprint(canonicalRequest, "rf01-persistence-test-key-v2"),
+            };
+            return new RefundRequestFingerprints(
+                CurrentVersion,
+                candidates[CurrentVersion],
+                candidates);
+        }
+
+        private static string Fingerprint(string canonicalRequest, string key) => Convert.ToHexString(
+                HMACSHA256.HashData(
+                    Encoding.UTF8.GetBytes(key),
+                    Encoding.UTF8.GetBytes(canonicalRequest)))
+            .ToLowerInvariant();
     }
 
     private sealed class BlockingRefundObserver : IRefundRequestCriticalSectionObserver
