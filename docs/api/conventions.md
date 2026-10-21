@@ -13,6 +13,10 @@ Require `Idempotency-Key` for TopUp/VIP checkout, unlock and sensitive Admin fin
 
 Refund request creation is fixed-window limited to 10 requests/minute/authenticated User and partitioned by authenticated User ID. Eligibility/list/detail reads do not consume the mutation policy.
 
+Refund approval is a sensitive Admin financial command and requires `Idempotency-Key` (1-200 characters). Its persistent scope is authenticated Admin + approval operation + key; same canonical refund/version/decision note replays the existing reservation, while a different request returns `IDEMPOTENCY_CONFLICT`. Review and reject remain optimistic lifecycle transitions without financial mutation.
+
+Admin Refund mutations (review, approve and reject) share a fixed-window limit of 20 requests/minute/authenticated Admin, partitioned by server-authenticated Admin user ID. Rejection is standardized `429 RATE_LIMITED`.
+
 Admin Mission mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. The limit covers definition creation, revision append, activation and deactivation; read-only Mission routes do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
 ## Pagination

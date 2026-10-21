@@ -62,8 +62,11 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<TopUpOrderHandler>();
         services.TryAddScoped<IRefundRequestStore, RefundRequestStore>();
         services.TryAddScoped<IRefundFinancialProcessingLoader, RefundFinancialProcessingLoader>();
+        services.TryAddScoped<IRefundAdministrationStore, RefundAdministrationStore>();
         services.TryAddSingleton<IRefundRequestCriticalSectionObserver,
             NoOpRefundRequestCriticalSectionObserver>();
+        services.TryAddSingleton<IRefundApprovalCriticalSectionObserver,
+            NoOpRefundApprovalCriticalSectionObserver>();
         services.TryAddScoped<RefundRequestHandler>();
         services.TryAddScoped<ISePayWebhookStore, SePayWebhookStore>();
         services.TryAddSingleton<ISePayWebhookCriticalSectionObserver,

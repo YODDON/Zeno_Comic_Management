@@ -1,4 +1,5 @@
 using ComicManagement.Billing.Payments;
+using ComicManagement.Billing.Refunds;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Membership.Plans;
@@ -40,6 +41,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261019150424_HardenRefundRequestSecurity";
     private const string RF01FinalIntegrityMigration =
         "20261020080206_FinalizeRefundRequestIntegrity";
+    private const string RF02ReservationMigration =
+        "20261021133359_AddRefundRecoveryReservations";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -74,6 +77,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         RF01Migration,
         RF01SecurityMigration,
         RF01FinalIntegrityMigration,
+        RF02ReservationMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -134,6 +138,20 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
         Assert.True(await TableExists(context, "billing.refund_requests"));
         Assert.True(await TableExists(context, "billing.refund_recipients"));
+        Assert.True(await TableExists(context, "wallet.coin_reservations"));
+        Assert.True(await IndexExists(
+            context,
+            "wallet",
+            "ux_coin_reservations_refund_request_id"));
+        Assert.True(await IndexExists(
+            context,
+            "wallet",
+            "ux_coin_reservations_wallet_operation_id"));
+        Assert.True(await TriggerExists(
+            context,
+            "wallet",
+            "coin_reservations",
+            "trg_coin_reservations_financial_integrity"));
         Assert.True(await TableExists(context, "membership.vip_plans"));
         Assert.True(await TableExists(context, "membership.vip_subscriptions"));
         Assert.True(await TableExists(context, "membership.vip_transactions"));
@@ -401,6 +419,63 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.Equal(1, await context.PaymentOrders.CountAsync(item => item.Id == orderId));
         Assert.Equal(1, await context.PaidCoinLots.CountAsync(item => item.TopUpOrderId == orderId));
         Assert.Empty(await context.RefundRequests.ToListAsync());
+    }
+
+    [Fact]
+    public async Task RF02_incremental_migration_preserves_existing_requested_refund()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(RF01FinalIntegrityMigration);
+
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var refundId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(
+            userId, "RF02 Upgrade User", null, null, now.AddDays(-10)));
+        var order = PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            $"ZENO-{orderId:N}",
+            100_000,
+            10_000,
+            $"rf02-upgrade-{orderId:N}",
+            new string('a', 64),
+            now.AddMinutes(-10),
+            now.AddMinutes(10));
+        order.FulfillTopUp(now);
+        context.PaymentOrders.Add(order);
+        context.PaidCoinLots.Add(PaidCoinLot.Create(
+            Guid.NewGuid(), userId, orderId, 10_000, now));
+        context.RefundRequests.Add(RefundRequest.Create(
+            refundId,
+            orderId,
+            userId,
+            "Duplicate transfer",
+            100_000,
+            10_000,
+            "rf02-upgrade-request",
+            new string('b', 64),
+            "v1",
+            now));
+        context.RefundRecipients.Add(RefundRecipient.Create(
+            Guid.NewGuid(), refundId, "VCB", [1], [2], "6789",
+            "******6789", "N*** V*** A***", "v1", now));
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(RF02ReservationMigration);
+
+        var preserved = await context.RefundRequests.AsNoTracking()
+            .SingleAsync(request => request.Id == refundId);
+        Assert.Equal(RefundRequestStatuses.Requested, preserved.Status);
+        Assert.Equal(1, preserved.Version);
+        Assert.Empty(await context.CoinReservations.AsNoTracking().ToListAsync());
+        Assert.True(await TableExists(context, "wallet.coin_reservations"));
     }
 
     [Fact]

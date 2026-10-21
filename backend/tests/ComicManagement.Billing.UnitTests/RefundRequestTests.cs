@@ -34,6 +34,50 @@ public sealed class RefundRequestTests
     }
 
     [Fact]
+    public void Review_then_approval_is_versioned_and_snapshots_admin_decision()
+    {
+        var actorId = Guid.NewGuid();
+        var request = CreateRequest();
+
+        request.BeginReview(actorId, Now.AddMinutes(1));
+        request.ReserveRecovery(actorId, "Original lot verified", 2, Now.AddMinutes(2));
+
+        Assert.Equal(RefundRequestStatuses.RecoveryReserved, request.Status);
+        Assert.Equal(actorId, request.ReviewedBy);
+        Assert.Equal(actorId, request.ApprovedBy);
+        Assert.Equal("Original lot verified", request.DecisionReason);
+        Assert.Equal(3, request.Version);
+    }
+
+    [Fact]
+    public void Approval_rejects_stale_version_and_unreviewed_request()
+    {
+        var actorId = Guid.NewGuid();
+        var request = CreateRequest();
+
+        Assert.Throws<InvalidOperationException>(() => request.ReserveRecovery(
+            actorId, "approve", 1, Now.AddMinutes(1)));
+        request.BeginReview(actorId, Now.AddMinutes(1));
+        Assert.Throws<RefundRequestConcurrencyException>(() => request.ReserveRecovery(
+            actorId, "approve", 1, Now.AddMinutes(2)));
+    }
+
+    [Fact]
+    public void Reviewed_request_can_be_rejected_without_financial_transition()
+    {
+        var actorId = Guid.NewGuid();
+        var request = CreateRequest();
+        request.BeginReview(actorId, Now.AddMinutes(1));
+
+        request.Reject(actorId, "Policy evidence incomplete", 2, Now.AddMinutes(2));
+
+        Assert.Equal(RefundRequestStatuses.Rejected, request.Status);
+        Assert.Equal("Policy evidence incomplete", request.DecisionReason);
+        Assert.Null(request.ApprovedAt);
+        Assert.Equal(3, request.Version);
+    }
+
+    [Fact]
     public void Eligibility_includes_exact_seven_day_boundary_and_expires_after_it()
     {
         var paidAt = Now.AddDays(-RefundRequest.RequestWindowDays);
@@ -130,6 +174,18 @@ public sealed class RefundRequestTests
             byte[] accountHolderCiphertext,
             string protectionVersion) => throw new NotSupportedException();
     }
+
+    private static RefundRequest CreateRequest() => RefundRequest.Create(
+        Guid.NewGuid(),
+        Guid.NewGuid(),
+        Guid.NewGuid(),
+        "Duplicate transfer",
+        100_000,
+        10_000,
+        "refund-key",
+        new string('a', 64),
+        "v1",
+        Now);
 
     private sealed class TestFingerprintService : IRefundRequestFingerprintService
     {

@@ -34,6 +34,20 @@ internal sealed class RefundRequestConfiguration : IEntityTypeConfiguration<Refu
                 "AND request_fingerprint ~ '^[0-9a-f]{64}$' " +
                 "AND request_fingerprint_version ~ '^[A-Za-z0-9_-]{1,40}$'");
             table.HasCheckConstraint("ck_refund_requests_version", "version >= 1");
+            table.HasCheckConstraint(
+                "ck_refund_requests_review_lifecycle",
+                "(status = 'Requested' AND reviewed_by IS NULL AND reviewed_at IS NULL " +
+                "AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR " +
+                "(status = 'UnderReview' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL " +
+                "AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR " +
+                "(status = 'RecoveryReserved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL " +
+                "AND approved_by IS NOT NULL AND approved_at IS NOT NULL " +
+                "AND length(btrim(decision_reason)) > 0) OR " +
+                "(status = 'Rejected' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL " +
+                "AND approved_by IS NULL AND approved_at IS NULL " +
+                "AND length(btrim(decision_reason)) > 0) OR " +
+                "status IN ('TransferPending', 'Completed', 'NeedsReconciliation', " +
+                "'TransferConfirmedFailed', 'ReservationReleased')");
         });
 
         builder.HasKey(request => request.Id).HasName("pk_refund_requests");
@@ -144,6 +158,21 @@ internal sealed class RefundRequestConfiguration : IEntityTypeConfiguration<Refu
             .HasForeignKey(request => request.UserId)
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_refund_requests_users");
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(request => request.ReviewedBy)
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_refund_requests_reviewed_by_user");
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(request => request.ApprovedBy)
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_refund_requests_approved_by_user");
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(request => request.CompletedBy)
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_refund_requests_completed_by_user");
 
     }
 }

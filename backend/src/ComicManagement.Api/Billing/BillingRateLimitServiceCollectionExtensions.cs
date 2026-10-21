@@ -12,6 +12,8 @@ internal static class BillingRateLimitConstants
 
     internal const string RefundCreatePolicy = "billing-refund-create";
 
+    internal const string RefundAdminMutationPolicy = "billing-refund-admin-mutation";
+
     internal const string SePayWebhookPolicy = "billing-sepay-webhook";
 }
 
@@ -42,6 +44,17 @@ internal static class BillingRateLimitServiceCollectionExtensions
                     _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true,
+                    }));
+            options.AddPolicy(
+                BillingRateLimitConstants.RefundAdminMutationPolicy,
+                httpContext => RateLimitPartition.GetFixedWindowLimiter(
+                    GetPartitionKey(httpContext),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 20,
                         Window = TimeSpan.FromMinutes(1),
                         QueueLimit = 0,
                         AutoReplenishment = true,

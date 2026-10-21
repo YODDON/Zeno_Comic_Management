@@ -70,9 +70,13 @@ POST `/api/v1/refunds`, authenticated User + CSRF + required `Idempotency-Key` (
 GET `/api/v1/refunds` returns at most the latest 100 requests owned by the current User, newest first. GET `/api/v1/refunds/{refundId}` returns one owned request or 404. Detail/list items are `{refundId,paymentOrderId,status,reason,originalAmountVnd,feeVnd,netRefundVnd,requiredRecoveryCoins,requestedAt,recipient:{bankCode,accountNumberMasked,accountHolderMasked}}`; ciphertext/plain recipient fields are never returned. Refund create may return standardized 400/401/403/404/409/422/429 errors.
 
 ## Refund Admin transitions
-`POST /api/v1/admin/refunds/{id}/review`: UnderReview.
-`POST /approve` `{expectedVersion,decisionNote}` -> `RecoveryReserved` with reservation; lock Wallet/lot, recheck full `granted_coins` still available (spent/refunded/reserved=0), reserve all; 422 insufficient, 409 conflict.
-`POST /reject` `{expectedVersion,reason}` -> Rejected and audit.
+All routes require authenticated Admin authorization and CSRF, return `Cache-Control: no-store`, use standardized errors, and share a 20 mutation requests/minute/Admin rate limit with 429 `RATE_LIMITED`. The transition response is `{refundId,status,requiredRecoveryCoins,version,reviewedBy?,reviewedAt?,approvedBy?,approvedAt?,decisionReason?,reservationId?,walletOperationId?}`.
+
+`POST /api/v1/admin/refunds/{id}/review` -> 200 `UnderReview`; exact retry while already UnderReview is a no-op. Only `Requested` may enter review.
+
+`POST /api/v1/admin/refunds/{id}/approve`, required `Idempotency-Key` header (1..200), body `{expectedVersion,decisionNote}` -> 200 `RecoveryReserved`. Approval locks `Wallet -> exact original PaidCoinLot -> RefundRequest`, then uses PostgreSQL time and revalidates the fulfilled TopUp, immutable snapshot, protected recipient, full untouched original lot and Wallet/lot/ledger reconciliation. It atomically moves all granted coins from Paid Available to Paid Reserved, increments the exact lot's reservation, inserts one `CoinReservation`, appends the two immutable ledger legs, transitions the request and writes Admin audit. Same Admin/key/canonical approval replays the persisted response; another payload returns 409 `IDEMPOTENCY_CONFLICT`. Stale version is 409 `CONCURRENCY_CONFLICT`; invalid lifecycle is 409 `REFUND_STATE_CONFLICT`; integrity drift is 409 `FINANCIAL_INTEGRITY_CONFLICT`; insufficient original recovery is 422 `REFUND_RECOVERY_INSUFFICIENT` with zero partial mutation.
+
+`POST /api/v1/admin/refunds/{id}/reject` `{expectedVersion,reason}` -> 200 `Rejected` and audit, with no Wallet/lot/ledger/reservation mutation. Only `UnderReview` may be approved or rejected.
 `POST /transfer-attempts` records manual attempt details/reference/evidence and state, does **not** itself prove bank succeeded.
 `POST /complete` `{expectedVersion,transferRecordId,confirmationNote}` -> Completed only after verified/reviewed bank evidence; consumes reserved to refunded, immutable ledger. `POST /release` after **confirmed failed** transfer -> release to Paid available; ambiguous `NeedsReconciliation` holds reservation. Never automatically retry bank payout.
 

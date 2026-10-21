@@ -1,4 +1,5 @@
 using ComicManagement.Billing.Refunds;
+using ComicManagement.Wallet.Reservations;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions;
@@ -26,19 +27,48 @@ internal sealed class RefundAwareForeignKeyIndexConvention(
         ],
     ];
 
+    private static readonly string[][] RedundantReservationIndexes =
+    [
+        [nameof(CoinReservation.RefundRequestId), nameof(CoinReservation.UserId)],
+        [nameof(CoinReservation.WalletOperationId), nameof(CoinReservation.UserId)],
+        [nameof(CoinReservation.PaidCoinLotId), nameof(CoinReservation.UserId)],
+    ];
+
     public override void ProcessModelFinalizing(
         IConventionModelBuilder modelBuilder,
         IConventionContext<IConventionModelBuilder> context)
     {
         base.ProcessModelFinalizing(modelBuilder, context);
 
-        var entityType = modelBuilder.Metadata.FindEntityType(typeof(RefundRequest));
+        RemoveIndexes(modelBuilder.Metadata.FindEntityType(typeof(RefundRequest)),
+            RedundantIndexes);
+        RemoveIndexes(modelBuilder.Metadata.FindEntityType(typeof(CoinReservation)),
+            RedundantReservationIndexes);
+    }
+
+    public override void ProcessIndexRemoved(
+        IConventionEntityTypeBuilder entityTypeBuilder,
+        IConventionIndex index,
+        IConventionContext<IConventionIndex> context)
+    {
+        if (IsRedundant(index))
+        {
+            return;
+        }
+
+        base.ProcessIndexRemoved(entityTypeBuilder, index, context);
+    }
+
+    private static void RemoveIndexes(
+        IReadOnlyEntityType? entityType,
+        IEnumerable<string[]> redundantIndexes)
+    {
         if (entityType is null)
         {
             return;
         }
 
-        foreach (var propertyNames in RedundantIndexes)
+        foreach (var propertyNames in redundantIndexes)
         {
             var index = entityType.GetIndexes().SingleOrDefault(candidate =>
                 candidate.Properties.Select(property => property.Name)
@@ -50,19 +80,15 @@ internal sealed class RefundAwareForeignKeyIndexConvention(
         }
     }
 
-    public override void ProcessIndexRemoved(
-        IConventionEntityTypeBuilder entityTypeBuilder,
-        IConventionIndex index,
-        IConventionContext<IConventionIndex> context)
+    private static bool IsRedundant(IConventionIndex index)
     {
-        if (index.DeclaringEntityType.ClrType == typeof(RefundRequest) &&
-            RedundantIndexes.Any(propertyNames =>
-                index.Properties.Select(property => property.Name)
-                    .SequenceEqual(propertyNames, StringComparer.Ordinal)))
-        {
-            return;
-        }
-
-        base.ProcessIndexRemoved(entityTypeBuilder, index, context);
+        var candidates = index.DeclaringEntityType.ClrType == typeof(RefundRequest)
+            ? RedundantIndexes
+            : index.DeclaringEntityType.ClrType == typeof(CoinReservation)
+                ? RedundantReservationIndexes
+                : [];
+        return candidates.Any(propertyNames =>
+            index.Properties.Select(property => property.Name)
+                .SequenceEqual(propertyNames, StringComparer.Ordinal));
     }
 }
