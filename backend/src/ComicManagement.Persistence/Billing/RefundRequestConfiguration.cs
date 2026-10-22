@@ -42,12 +42,21 @@ internal sealed class RefundRequestConfiguration : IEntityTypeConfiguration<Refu
                 "AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR " +
                 "(status = 'RecoveryReserved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL " +
                 "AND approved_by IS NOT NULL AND approved_at IS NOT NULL " +
+                "AND completed_by IS NULL AND completed_at IS NULL " +
                 "AND length(btrim(decision_reason)) > 0) OR " +
                 "(status = 'Rejected' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL " +
                 "AND approved_by IS NULL AND approved_at IS NULL " +
                 "AND length(btrim(decision_reason)) > 0) OR " +
-                "status IN ('TransferPending', 'Completed', 'NeedsReconciliation', " +
-                "'TransferConfirmedFailed', 'ReservationReleased')");
+                "(status IN ('TransferPending', 'NeedsReconciliation') " +
+                "AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL " +
+                "AND approved_by IS NOT NULL AND approved_at IS NOT NULL " +
+                "AND completed_by IS NULL AND completed_at IS NULL " +
+                "AND length(btrim(decision_reason)) > 0) OR " +
+                "(status IN ('Completed', 'TransferConfirmedFailed', 'ReservationReleased') " +
+                "AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL " +
+                "AND approved_by IS NOT NULL AND approved_at IS NOT NULL " +
+                "AND completed_by IS NOT NULL AND completed_at IS NOT NULL " +
+                "AND length(btrim(decision_reason)) > 0)");
         });
 
         builder.HasKey(request => request.Id).HasName("pk_refund_requests");

@@ -78,6 +78,63 @@ public sealed class RefundRequestTests
     }
 
     [Fact]
+    public void Verified_success_completes_only_after_reported_success()
+    {
+        var actor = Guid.NewGuid();
+        var request = ReservedRequest(actor);
+        request.RecordTransferAttempt(RefundTransferReportedOutcomes.Succeeded,
+            Now.AddMinutes(3));
+
+        request.Complete(actor, 4, Now.AddMinutes(4));
+
+        Assert.Equal(RefundRequestStatuses.Completed, request.Status);
+        Assert.Equal(actor, request.CompletedBy);
+        Assert.Equal(5, request.Version);
+    }
+
+    [Fact]
+    public void Unknown_transfer_holds_recovery_until_explicit_reconciliation()
+    {
+        var actor = Guid.NewGuid();
+        var request = ReservedRequest(actor);
+
+        request.RecordTransferAttempt(RefundTransferReportedOutcomes.Unknown,
+            Now.AddMinutes(3));
+
+        Assert.Equal(RefundRequestStatuses.NeedsReconciliation, request.Status);
+        request.Complete(actor, 4, Now.AddMinutes(4));
+        Assert.Equal(RefundRequestStatuses.Completed, request.Status);
+    }
+
+    [Fact]
+    public void Failed_transfer_must_be_confirmed_before_reservation_release()
+    {
+        var actor = Guid.NewGuid();
+        var request = ReservedRequest(actor);
+        request.RecordTransferAttempt(RefundTransferReportedOutcomes.Failed,
+            Now.AddMinutes(3));
+
+        request.ConfirmTransferFailed(actor, 4, Now.AddMinutes(4));
+        request.MarkReservationReleased(Now.AddMinutes(4));
+
+        Assert.Equal(RefundRequestStatuses.ReservationReleased, request.Status);
+        Assert.Equal(6, request.Version);
+    }
+
+    [Fact]
+    public void Transfer_record_requires_matching_reported_outcome_for_verification()
+    {
+        var record = RefundTransferRecord.Create(Guid.NewGuid(), Guid.NewGuid(),
+            Guid.NewGuid(), "BANK-REF", 95_000, "evidence://safe-reference",
+            RefundTransferReportedOutcomes.Failed, Guid.NewGuid(), Now,
+            "attempt-key", new string('a', 64));
+
+        Assert.Throws<InvalidOperationException>(() => record.Verify(true,
+            Guid.NewGuid(), "reviewed evidence", "complete-key", new string('b', 64),
+            Guid.NewGuid(), Now.AddMinutes(1)));
+    }
+
+    [Fact]
     public void Eligibility_includes_exact_seven_day_boundary_and_expires_after_it()
     {
         var paidAt = Now.AddDays(-RefundRequest.RequestWindowDays);
@@ -186,6 +243,14 @@ public sealed class RefundRequestTests
         new string('a', 64),
         "v1",
         Now);
+
+    private static RefundRequest ReservedRequest(Guid actor)
+    {
+        var request = CreateRequest();
+        request.BeginReview(actor, Now.AddMinutes(1));
+        request.ReserveRecovery(actor, "Verified original lot", 2, Now.AddMinutes(2));
+        return request;
+    }
 
     private sealed class TestFingerprintService : IRefundRequestFingerprintService
     {

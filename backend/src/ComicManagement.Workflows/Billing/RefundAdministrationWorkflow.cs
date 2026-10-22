@@ -75,14 +75,91 @@ public sealed class RefundAdministrationWorkflow(IRefundAdministrationStore stor
                 cancellationToken);
     }
 
+    public Task<RefundAdministrationResult> RecordTransferAsync(
+        Guid refundId,
+        Guid actorId,
+        long expectedVersion,
+        string? bankReference,
+        string? evidenceReference,
+        string? reportedOutcome,
+        string? idempotencyKey,
+        string? correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        var reference = bankReference?.Trim().ToUpperInvariant();
+        var evidence = evidenceReference?.Trim();
+        var key = idempotencyKey?.Trim();
+        var validOutcome = reportedOutcome is RefundTransferReportedOutcomes.Succeeded or
+            RefundTransferReportedOutcomes.Failed or RefundTransferReportedOutcomes.Unknown;
+        if (refundId == Guid.Empty || actorId == Guid.Empty || expectedVersion < 1 ||
+            string.IsNullOrWhiteSpace(reference) ||
+            reference.Length > RefundTransferRecord.MaximumReferenceLength ||
+            string.IsNullOrWhiteSpace(evidence) ||
+            evidence.Length > RefundTransferRecord.MaximumEvidenceReferenceLength ||
+            !validOutcome || !ValidKey(key, idempotencyKey) ||
+            !ValidCorrelationId(correlationId))
+        {
+            return Task.FromResult(new RefundAdministrationResult(
+                RefundAdministrationOutcome.ValidationFailed));
+        }
+
+        return store.RecordTransferAsync(new RecordRefundTransferStoreRequest(
+            refundId, actorId, expectedVersion, reference, evidence, reportedOutcome!, key!,
+            Fingerprint("RefundTransfer", refundId, expectedVersion,
+                $"{reference.Length}:{reference}|{evidence.Length}:{evidence}|{reportedOutcome}"),
+            correlationId!), cancellationToken);
+    }
+
+    public Task<RefundAdministrationResult> ResolveTransferAsync(
+        Guid refundId,
+        Guid actorId,
+        long expectedVersion,
+        Guid transferRecordId,
+        string? confirmationNote,
+        string? idempotencyKey,
+        bool succeeded,
+        string? correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        var note = confirmationNote?.Trim();
+        var key = idempotencyKey?.Trim();
+        if (refundId == Guid.Empty || actorId == Guid.Empty || expectedVersion < 1 ||
+            transferRecordId == Guid.Empty || string.IsNullOrWhiteSpace(note) ||
+            note.Length > RefundTransferRecord.MaximumConfirmationNoteLength ||
+            !ValidKey(key, idempotencyKey) || !ValidCorrelationId(correlationId))
+        {
+            return Task.FromResult(new RefundAdministrationResult(
+                RefundAdministrationOutcome.ValidationFailed));
+        }
+
+        var operation = succeeded ? "RefundComplete" : "RefundRelease";
+        return store.ResolveTransferAsync(new ResolveRefundTransferStoreRequest(
+            refundId, actorId, expectedVersion, transferRecordId, note, key!,
+            Fingerprint(operation, refundId, expectedVersion,
+                $"transfer={transferRecordId:N}|note={note.Length}:{note}"),
+            succeeded, correlationId!), cancellationToken);
+    }
+
     private static bool ValidCorrelationId(string? value) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= 200;
 
+    private static bool ValidKey(string? normalized, string? original) =>
+        !string.IsNullOrWhiteSpace(normalized) && normalized == original &&
+        normalized.Length <= RefundTransferRecord.MaximumIdempotencyKeyLength;
+
     private static string Fingerprint(Guid refundId, long expectedVersion, string note)
+        => Fingerprint("RefundApproval", refundId, expectedVersion,
+            $"note={note.Length}:{note}");
+
+    private static string Fingerprint(
+        string operation,
+        Guid refundId,
+        long expectedVersion,
+        string payload)
     {
         var canonical = string.Create(
             CultureInfo.InvariantCulture,
-            $"RefundApproval|refund={refundId:N}|version={expectedVersion}|note={note.Length}:{note}");
+            $"{operation}|refund={refundId:N}|version={expectedVersion}|{payload}");
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)))
             .ToLowerInvariant();
     }

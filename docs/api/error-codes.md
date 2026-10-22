@@ -29,7 +29,7 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 404/422 | REFUND_ORDER_NOT_ELIGIBLE | Missing/non-owned orders are hidden as 404; a known order that is not a fulfilled TopUp with its authoritative original lot is 422 |
 | 422 | REFUND_WINDOW_EXPIRED | >7 days after paidAt |
 | 422 | REFUND_RECOVERY_INSUFFICIENT | Exact original lot not fully unspent/unreserved |
-| 422 | REFUND_TRANSFER_NOT_VERIFIED | Cannot complete refund absent evidence |
+| 422 | REFUND_TRANSFER_NOT_VERIFIED | Reported transfer outcome/evidence does not support completion or release; reservation remains held |
 | 422 | PUBLICATION_PRECONDITION_FAILED | Must have valid chapter/pages |
 | 429 | RATE_LIMITED | Honor Retry-After; includes the 20/minute/Admin Mission mutation policy |
 | 503 | PROVIDER_UNAVAILABLE | Do not assume money failed/paid |

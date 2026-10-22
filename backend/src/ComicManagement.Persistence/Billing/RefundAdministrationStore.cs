@@ -29,11 +29,25 @@ internal sealed class NoOpRefundApprovalCriticalSectionObserver :
         CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
-internal sealed class RefundAdministrationStore(
+internal interface IRefundPayoutCriticalSectionObserver
+{
+    Task AfterFinancialLocksAcquiredAsync(Guid refundRequestId,
+        CancellationToken cancellationToken);
+}
+
+internal sealed class NoOpRefundPayoutCriticalSectionObserver :
+    IRefundPayoutCriticalSectionObserver
+{
+    public Task AfterFinancialLocksAcquiredAsync(Guid refundRequestId,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
+internal sealed partial class RefundAdministrationStore(
     AppDbContext dbContext,
     IRefundFinancialProcessingLoader financialLoader,
     IOutboxWriter outboxWriter,
-    IRefundApprovalCriticalSectionObserver observer) : IRefundAdministrationStore
+    IRefundApprovalCriticalSectionObserver observer,
+    IRefundPayoutCriticalSectionObserver payoutObserver) : IRefundAdministrationStore
 {
     public async Task<RefundAdministrationResult> ReviewAsync(
         ReviewRefundStoreRequest command,
@@ -471,7 +485,10 @@ internal sealed class RefundAdministrationStore(
         RefundAdministrationOutcome outcome,
         RefundRequest? request = null,
         Guid? reservationId = null,
-        Guid? operationId = null) => new(
+        Guid? operationId = null,
+        Guid? transferRecordId = null,
+        string? transferStatus = null,
+        Guid? resolutionOperationId = null) => new(
         outcome,
         request is null
             ? null
@@ -486,5 +503,8 @@ internal sealed class RefundAdministrationStore(
                 request.ApprovedAt,
                 request.DecisionReason,
                 reservationId,
-                operationId));
+                operationId,
+                transferRecordId,
+                transferStatus,
+                resolutionOperationId));
 }

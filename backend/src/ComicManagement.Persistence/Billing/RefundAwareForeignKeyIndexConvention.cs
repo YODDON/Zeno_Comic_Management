@@ -34,6 +34,12 @@ internal sealed class RefundAwareForeignKeyIndexConvention(
         [nameof(CoinReservation.PaidCoinLotId), nameof(CoinReservation.UserId)],
     ];
 
+    private static readonly string[][] RedundantTransferIndexes =
+    [
+        [nameof(RefundTransferRecord.RefundRequestId), nameof(RefundTransferRecord.UserId)],
+        [nameof(RefundTransferRecord.ResolutionOperationId), nameof(RefundTransferRecord.UserId)],
+    ];
+
     public override void ProcessModelFinalizing(
         IConventionModelBuilder modelBuilder,
         IConventionContext<IConventionModelBuilder> context)
@@ -44,6 +50,8 @@ internal sealed class RefundAwareForeignKeyIndexConvention(
             RedundantIndexes);
         RemoveIndexes(modelBuilder.Metadata.FindEntityType(typeof(CoinReservation)),
             RedundantReservationIndexes);
+        RemoveIndexes(modelBuilder.Metadata.FindEntityType(typeof(RefundTransferRecord)),
+            RedundantTransferIndexes);
     }
 
     public override void ProcessIndexRemoved(
@@ -86,6 +94,8 @@ internal sealed class RefundAwareForeignKeyIndexConvention(
             ? RedundantIndexes
             : index.DeclaringEntityType.ClrType == typeof(CoinReservation)
                 ? RedundantReservationIndexes
+                : index.DeclaringEntityType.ClrType == typeof(RefundTransferRecord)
+                    ? RedundantTransferIndexes
                 : [];
         return candidates.Any(propertyNames =>
             index.Properties.Select(property => property.Name)

@@ -10,6 +10,7 @@ public enum RefundAdministrationOutcome
     RecoveryInsufficient,
     IntegrityConflict,
     IdempotencyConflict,
+    TransferNotVerified,
 }
 
 public sealed record RefundAdministrationState(
@@ -23,7 +24,10 @@ public sealed record RefundAdministrationState(
     DateTimeOffset? ApprovedAt,
     string? DecisionReason,
     Guid? ReservationId,
-    Guid? WalletOperationId);
+    Guid? WalletOperationId,
+    Guid? TransferRecordId = null,
+    string? TransferStatus = null,
+    Guid? ResolutionOperationId = null);
 
 public sealed record RefundAdministrationResult(
     RefundAdministrationOutcome Outcome,
@@ -50,6 +54,28 @@ public sealed record RejectRefundStoreRequest(
     string Reason,
     string CorrelationId);
 
+public sealed record RecordRefundTransferStoreRequest(
+    Guid RefundId,
+    Guid ActorId,
+    long ExpectedVersion,
+    string BankReference,
+    string EvidenceReference,
+    string ReportedOutcome,
+    string IdempotencyKey,
+    string RequestFingerprint,
+    string CorrelationId);
+
+public sealed record ResolveRefundTransferStoreRequest(
+    Guid RefundId,
+    Guid ActorId,
+    long ExpectedVersion,
+    Guid TransferRecordId,
+    string ConfirmationNote,
+    string IdempotencyKey,
+    string RequestFingerprint,
+    bool Succeeded,
+    string CorrelationId);
+
 public interface IRefundAdministrationStore
 {
     Task<RefundAdministrationResult> ReviewAsync(
@@ -62,5 +88,13 @@ public interface IRefundAdministrationStore
 
     Task<RefundAdministrationResult> RejectAsync(
         RejectRefundStoreRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<RefundAdministrationResult> RecordTransferAsync(
+        RecordRefundTransferStoreRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<RefundAdministrationResult> ResolveTransferAsync(
+        ResolveRefundTransferStoreRequest request,
         CancellationToken cancellationToken = default);
 }

@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Authorization;
 using ComicManagement.Api.Billing;
+using ComicManagement.Api.Serialization;
 using ComicManagement.Billing.Refunds;
 using ComicManagement.Workflows.Billing;
 using Microsoft.AspNetCore.Authorization;
@@ -79,6 +80,65 @@ public sealed class AdminRefundsController(RefundAdministrationWorkflow workflow
             HttpContext.TraceIdentifier,
             cancellationToken));
 
+    [HttpPost("{refundId:guid}/transfer-attempts")]
+    [ProducesResponseType<AdminRefundResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
+    [EnableRateLimiting(BillingRateLimitConstants.RefundAdminMutationPolicy)]
+    public async Task<ActionResult<AdminRefundResponse>> RecordTransfer(
+        Guid refundId,
+        RecordRefundTransferRequest request,
+        [FromHeader(Name = "Idempotency-Key"), Required, StringLength(200, MinimumLength = 1)]
+        string idempotencyKey,
+        CancellationToken cancellationToken) => ToResponse(await workflow.RecordTransferAsync(
+            refundId, ActorId(), request.ExpectedVersion, request.BankReference,
+            request.EvidenceReference, request.ReportedOutcome.ToString(), idempotencyKey,
+            HttpContext.TraceIdentifier, cancellationToken));
+
+    [HttpPost("{refundId:guid}/complete")]
+    [ProducesResponseType<AdminRefundResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
+    [EnableRateLimiting(BillingRateLimitConstants.RefundAdminMutationPolicy)]
+    public async Task<ActionResult<AdminRefundResponse>> Complete(
+        Guid refundId,
+        ResolveRefundTransferRequest request,
+        [FromHeader(Name = "Idempotency-Key"), Required, StringLength(200, MinimumLength = 1)]
+        string idempotencyKey,
+        CancellationToken cancellationToken) => ToResponse(await workflow.ResolveTransferAsync(
+            refundId, ActorId(), request.ExpectedVersion, request.TransferRecordId,
+            request.ConfirmationNote, idempotencyKey, true, HttpContext.TraceIdentifier,
+            cancellationToken));
+
+    [HttpPost("{refundId:guid}/release")]
+    [ProducesResponseType<AdminRefundResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
+    [EnableRateLimiting(BillingRateLimitConstants.RefundAdminMutationPolicy)]
+    public async Task<ActionResult<AdminRefundResponse>> Release(
+        Guid refundId,
+        ResolveRefundTransferRequest request,
+        [FromHeader(Name = "Idempotency-Key"), Required, StringLength(200, MinimumLength = 1)]
+        string idempotencyKey,
+        CancellationToken cancellationToken) => ToResponse(await workflow.ResolveTransferAsync(
+            refundId, ActorId(), request.ExpectedVersion, request.TransferRecordId,
+            request.ConfirmationNote, idempotencyKey, false, HttpContext.TraceIdentifier,
+            cancellationToken));
+
     private ActionResult<AdminRefundResponse> ToResponse(RefundAdministrationResult result) =>
         result.Outcome switch
         {
@@ -105,6 +165,9 @@ public sealed class AdminRefundsController(RefundAdministrationWorkflow workflow
             RefundAdministrationOutcome.RecoveryInsufficient => UnprocessableEntity(Problem(
                 422, "REFUND_RECOVERY_INSUFFICIENT", "Recovery is insufficient",
                 "The exact original Paid Coin lot is no longer fully recoverable.")),
+            RefundAdministrationOutcome.TransferNotVerified => UnprocessableEntity(Problem(
+                422, "REFUND_TRANSFER_NOT_VERIFIED", "Transfer evidence is not verified",
+                "The recorded transfer outcome does not support this transition.")),
             _ => Conflict(Problem(
                 409, "REFUND_STATE_CONFLICT", "Refund state conflict",
                 "The refund transition could not be completed.")),
@@ -123,7 +186,10 @@ public sealed class AdminRefundsController(RefundAdministrationWorkflow workflow
         state.ApprovedAt,
         state.DecisionReason,
         state.ReservationId,
-        state.WalletOperationId);
+        state.WalletOperationId,
+        state.TransferRecordId,
+        state.TransferStatus is null ? null : Enum.Parse<RefundTransferStatus>(state.TransferStatus),
+        state.ResolutionOperationId);
 
     private ApiErrorResponse Problem(int status, string code, string title, string detail) =>
         HttpContext.RequestServices.GetRequiredService<ApiProblemWriter>()
@@ -150,6 +216,52 @@ public sealed class RejectRefundRequest
     public string Reason { get; init; } = string.Empty;
 }
 
+[JsonConverter(typeof(StringOnlyEnumConverter<RefundTransferReportedOutcome>))]
+public enum RefundTransferReportedOutcome
+{
+    Succeeded,
+    Failed,
+    Unknown,
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<RefundTransferStatus>))]
+public enum RefundTransferStatus
+{
+    ReportedSucceeded,
+    ReportedFailed,
+    NeedsReconciliation,
+    VerifiedSucceeded,
+    VerifiedFailed,
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class RecordRefundTransferRequest
+{
+    [Range(1, long.MaxValue)]
+    public long ExpectedVersion { get; init; }
+
+    [Required, StringLength(RefundTransferRecord.MaximumReferenceLength, MinimumLength = 1)]
+    public string BankReference { get; init; } = string.Empty;
+
+    [Required, StringLength(RefundTransferRecord.MaximumEvidenceReferenceLength, MinimumLength = 1)]
+    public string EvidenceReference { get; init; } = string.Empty;
+
+    [Required]
+    public RefundTransferReportedOutcome ReportedOutcome { get; init; }
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed class ResolveRefundTransferRequest
+{
+    [Range(1, long.MaxValue)]
+    public long ExpectedVersion { get; init; }
+
+    public Guid TransferRecordId { get; init; }
+
+    [Required, StringLength(RefundTransferRecord.MaximumConfirmationNoteLength, MinimumLength = 1)]
+    public string ConfirmationNote { get; init; } = string.Empty;
+}
+
 public sealed record AdminRefundResponse(
     Guid RefundId,
     RefundStatus Status,
@@ -161,4 +273,7 @@ public sealed record AdminRefundResponse(
     DateTimeOffset? ApprovedAt,
     string? DecisionReason,
     Guid? ReservationId,
-    Guid? WalletOperationId);
+    Guid? WalletOperationId,
+    Guid? TransferRecordId,
+    RefundTransferStatus? TransferStatus,
+    Guid? ResolutionOperationId);

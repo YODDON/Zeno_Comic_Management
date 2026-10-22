@@ -29,6 +29,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             .Build();
     private readonly BlockingRefundObserver _observer = new();
     private readonly BlockingRefundApprovalObserver _approvalObserver = new();
+    private readonly BlockingRefundPayoutObserver _payoutObserver = new();
     private readonly TestFingerprintService _fingerprints = new();
     private ServiceProvider _services = null!;
     private Guid _userId;
@@ -42,6 +43,8 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         services.AddSingleton<IRefundRequestCriticalSectionObserver>(_observer);
         services.RemoveAll<IRefundApprovalCriticalSectionObserver>();
         services.AddSingleton<IRefundApprovalCriticalSectionObserver>(_approvalObserver);
+        services.RemoveAll<IRefundPayoutCriticalSectionObserver>();
+        services.AddSingleton<IRefundPayoutCriticalSectionObserver>(_payoutObserver);
         services.AddSingleton<IRefundRecipientProtector, TestRecipientProtector>();
         services.AddSingleton<IRefundRequestFingerprintService>(_fingerprints);
         _services = services.BuildServiceProvider(validateScopes: true);
@@ -131,6 +134,178 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             $"WHERE id = '{reservation.Id:D}'");
         await AssertImmutableViolationAsync(
             $"DELETE FROM wallet.coin_reservations WHERE id = '{reservation.Id:D}'");
+    }
+
+    [Fact]
+    public async Task Verified_transfer_completion_consumes_reservation_once_and_replays()
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        await SeedWalletForOrderAsync(orderId);
+        var created = await CreateAsync(orderId, "rf03-complete", "duplicate transfer");
+        var reviewed = await ReviewAsync(created.State!.RefundId);
+        var approved = await ApproveAsync(created.State.RefundId, reviewed.State!.Version,
+            "Original lot verified", "rf03-approval-complete");
+        var transfer = await RecordTransferAsync(created.State.RefundId,
+            approved.State!.Version, RefundTransferReportedOutcomes.Succeeded,
+            "BANK-COMPLETE", "rf03-transfer-complete");
+
+        var completed = await ResolveTransferAsync(created.State.RefundId,
+            transfer.State!.Version, transfer.State.TransferRecordId!.Value, true,
+            "rf03-complete-key");
+        var replay = await ResolveTransferAsync(created.State.RefundId,
+            transfer.State.Version, transfer.State.TransferRecordId.Value, true,
+            "rf03-complete-key");
+
+        Assert.Equal(RefundRequestStatuses.Completed, completed.State!.Status);
+        Assert.Equal(completed.State.ResolutionOperationId, replay.State!.ResolutionOperationId);
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var wallet = await context.Wallets.AsNoTracking().SingleAsync();
+        var lot = await context.PaidCoinLots.AsNoTracking()
+            .SingleAsync(item => item.TopUpOrderId == orderId);
+        var reservation = await context.CoinReservations.AsNoTracking().SingleAsync();
+        Assert.Equal(0, wallet.PaidReserved);
+        Assert.Equal(10_000, lot.RefundedCoins);
+        Assert.Equal(0, lot.ReservedCoins);
+        Assert.Equal(CoinReservationStatuses.Consumed, reservation.Status);
+        Assert.Single(await context.WalletOperations.Where(item =>
+            item.OperationType == WalletOperationTypes.RefundComplete).ToListAsync());
+        Assert.Single(await context.OutboxMessages.Where(item =>
+            item.EventType == BillingEventTypes.RefundCompleted).ToListAsync());
+        await AssertImmutableViolationAsync(
+            $"UPDATE billing.refund_transfer_records SET bank_reference='OTHER' " +
+            $"WHERE id='{completed.State.TransferRecordId!.Value:D}'");
+        await AssertImmutableViolationAsync(
+            $"DELETE FROM billing.refund_transfer_records " +
+            $"WHERE id='{completed.State.TransferRecordId!.Value:D}'");
+    }
+
+    [Fact]
+    public async Task Confirmed_failed_transfer_releases_original_reservation_atomically()
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        await SeedWalletForOrderAsync(orderId);
+        var created = await CreateAsync(orderId, "rf03-release", "duplicate transfer");
+        var reviewed = await ReviewAsync(created.State!.RefundId);
+        var approved = await ApproveAsync(created.State.RefundId, reviewed.State!.Version,
+            "Original lot verified", "rf03-approval-release");
+        var transfer = await RecordTransferAsync(created.State.RefundId,
+            approved.State!.Version, RefundTransferReportedOutcomes.Failed,
+            "BANK-FAILED", "rf03-transfer-failed");
+
+        var released = await ResolveTransferAsync(created.State.RefundId,
+            transfer.State!.Version, transfer.State.TransferRecordId!.Value, false,
+            "rf03-release-key");
+
+        Assert.Equal(RefundRequestStatuses.ReservationReleased, released.State!.Status);
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var wallet = await context.Wallets.AsNoTracking().SingleAsync();
+        var lot = await context.PaidCoinLots.AsNoTracking()
+            .SingleAsync(item => item.TopUpOrderId == orderId);
+        Assert.Equal(10_000, wallet.PaidAvailable);
+        Assert.Equal(0, wallet.PaidReserved);
+        Assert.Equal(0, lot.RefundedCoins);
+        Assert.Equal(0, lot.ReservedCoins);
+        Assert.Equal(CoinReservationStatuses.Released,
+            (await context.CoinReservations.AsNoTracking().SingleAsync()).Status);
+        Assert.Single(await context.OutboxMessages.Where(item =>
+            item.EventType == BillingEventTypes.RefundReservationReleased).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Concurrent_exact_completion_contends_and_creates_one_financial_resolution()
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        await SeedWalletForOrderAsync(orderId);
+        var created = await CreateAsync(orderId, "rf03-complete-race", "duplicate transfer");
+        var reviewed = await ReviewAsync(created.State!.RefundId);
+        var approved = await ApproveAsync(created.State.RefundId, reviewed.State!.Version,
+            "Original lot verified", "rf03-approval-race");
+        var transfer = await RecordTransferAsync(created.State.RefundId,
+            approved.State!.Version, RefundTransferReportedOutcomes.Succeeded,
+            "BANK-RACE", "rf03-transfer-race");
+        var release = _payoutObserver.BlockNext();
+
+        var first = ResolveTransferAsync(created.State.RefundId, transfer.State!.Version,
+            transfer.State.TransferRecordId!.Value, true, "rf03-complete-race-key");
+        await _payoutObserver.WaitUntilBlockedAsync();
+        var second = ResolveTransferAsync(created.State.RefundId, transfer.State.Version,
+            transfer.State.TransferRecordId.Value, true, "rf03-complete-race-key");
+        await WaitForDatabaseLockWaiterAsync();
+        release();
+
+        var results = await Task.WhenAll(first, second);
+        Assert.All(results, result =>
+            Assert.Equal(RefundAdministrationOutcome.Succeeded, result.Outcome));
+        Assert.Equal(results[0].State!.ResolutionOperationId,
+            results[1].State!.ResolutionOperationId);
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(1, await context.WalletOperations.CountAsync(item =>
+            item.OperationType == WalletOperationTypes.RefundComplete));
+        Assert.Equal(1, await context.OutboxMessages.CountAsync(item =>
+            item.EventType == BillingEventTypes.RefundCompleted));
+    }
+
+    [Fact]
+    public async Task Completion_integrity_drift_rolls_back_without_partial_financial_state()
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        await SeedWalletForOrderAsync(orderId);
+        var created = await CreateAsync(orderId, "rf03-drift", "duplicate transfer");
+        var reviewed = await ReviewAsync(created.State!.RefundId);
+        var approved = await ApproveAsync(created.State.RefundId, reviewed.State!.Version,
+            "Original lot verified", "rf03-approval-drift");
+        var transfer = await RecordTransferAsync(created.State.RefundId,
+            approved.State!.Version, RefundTransferReportedOutcomes.Succeeded,
+            "BANK-DRIFT", "rf03-transfer-drift");
+        await CorruptRecipientForTestAsync(created.State.RefundId, "ciphertext");
+
+        var result = await ResolveTransferAsync(created.State.RefundId,
+            transfer.State!.Version, transfer.State.TransferRecordId!.Value, true,
+            "rf03-complete-drift");
+
+        Assert.Equal(RefundAdministrationOutcome.IntegrityConflict, result.Outcome);
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(RefundRequestStatuses.TransferPending,
+            (await context.RefundRequests.AsNoTracking().SingleAsync()).Status);
+        Assert.Equal(CoinReservationStatuses.Reserved,
+            (await context.CoinReservations.AsNoTracking().SingleAsync()).Status);
+        Assert.Empty(await context.WalletOperations.Where(item =>
+            item.OperationType == WalletOperationTypes.RefundComplete).ToListAsync());
+        Assert.Empty(await context.OutboxMessages.Where(item =>
+            item.EventType == BillingEventTypes.RefundCompleted).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Unknown_transfer_holds_reservation_until_explicit_reconciliation()
+    {
+        var orderId = await SeedFulfilledTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        await SeedWalletForOrderAsync(orderId);
+        var created = await CreateAsync(orderId, "rf03-unknown", "duplicate transfer");
+        var reviewed = await ReviewAsync(created.State!.RefundId);
+        var approved = await ApproveAsync(created.State.RefundId, reviewed.State!.Version,
+            "Original lot verified", "rf03-approval-unknown");
+        var transfer = await RecordTransferAsync(created.State.RefundId,
+            approved.State!.Version, RefundTransferReportedOutcomes.Unknown,
+            "BANK-UNKNOWN", "rf03-transfer-unknown");
+
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(10_000, (await context.Wallets.AsNoTracking().SingleAsync()).PaidReserved);
+        Assert.Equal(CoinReservationStatuses.Reserved,
+            (await context.CoinReservations.AsNoTracking().SingleAsync()).Status);
+        Assert.Empty(await context.WalletOperations.Where(item =>
+            item.OperationType == WalletOperationTypes.RefundComplete ||
+            item.OperationType == WalletOperationTypes.RefundRelease).ToListAsync());
+
+        var result = await ResolveTransferAsync(created.State.RefundId,
+            transfer.State!.Version, transfer.State.TransferRecordId!.Value, true,
+            "rf03-unknown-complete");
+        Assert.Equal(RefundAdministrationOutcome.Succeeded, result.Outcome);
+        Assert.Equal(RefundRequestStatuses.Completed, result.State!.Status);
     }
 
     [Fact]
@@ -937,6 +1112,38 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
                 $"approve-{Guid.NewGuid():N}"));
     }
 
+    private async Task<RefundAdministrationResult> RecordTransferAsync(
+        Guid refundId,
+        long expectedVersion,
+        string outcome,
+        string bankReference,
+        string idempotencyKey)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<IRefundAdministrationStore>()
+            .RecordTransferAsync(new RecordRefundTransferStoreRequest(
+                refundId, _userId, expectedVersion, bankReference,
+                "evidence://manual-proof", outcome, idempotencyKey,
+                new string(outcome == RefundTransferReportedOutcomes.Unknown ? 'c' : 'b', 64),
+                $"transfer-{Guid.NewGuid():N}"));
+    }
+
+    private async Task<RefundAdministrationResult> ResolveTransferAsync(
+        Guid refundId,
+        long expectedVersion,
+        Guid transferRecordId,
+        bool succeeded,
+        string idempotencyKey)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<IRefundAdministrationStore>()
+            .ResolveTransferAsync(new ResolveRefundTransferStoreRequest(
+                refundId, _userId, expectedVersion, transferRecordId,
+                "Evidence independently reviewed", idempotencyKey,
+                new string(succeeded ? 'd' : 'e', 64), succeeded,
+                $"resolve-{Guid.NewGuid():N}"));
+    }
+
     private async Task SimulateFutureReservationStateAsync(
         Guid refundId,
         string reservationStatus,
@@ -953,6 +1160,10 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             WHERE refund_request_id = @refund_id;
             UPDATE billing.refund_requests
             SET status = @request_status,
+                completed_by = CASE WHEN @request_status IN ('Completed','ReservationReleased')
+                                    THEN @user ELSE completed_by END,
+                completed_at = CASE WHEN @request_status IN ('Completed','ReservationReleased')
+                                    THEN clock_timestamp() ELSE completed_at END,
                 version = version + 1
             WHERE id = @refund_id;
             """,
@@ -961,6 +1172,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         command.Parameters.AddWithValue("reservation_status", reservationStatus);
         command.Parameters.AddWithValue("request_status", requestStatus);
         command.Parameters.AddWithValue("refund_id", refundId);
+        command.Parameters.AddWithValue("user", _userId);
         await command.ExecuteNonQueryAsync();
         await transaction.CommitAsync();
     }
@@ -995,7 +1207,8 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             SET status = 'Consumed', resolved_at = clock_timestamp()
             WHERE refund_request_id = @refund_id;
             UPDATE billing.refund_requests
-            SET status = 'Completed', version = version + 1
+            SET status = 'Completed', completed_by = @user,
+                completed_at = clock_timestamp(), version = version + 1
             WHERE id = @refund_id;
             """,
             connection,
@@ -1307,6 +1520,48 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             {
                 await release.WaitAsync(cancellationToken);
             }
+        }
+    }
+
+    private sealed class BlockingRefundPayoutObserver : IRefundPayoutCriticalSectionObserver
+    {
+        private readonly object _sync = new();
+        private TaskCompletionSource? _blocked;
+        private TaskCompletionSource? _release;
+
+        public Action BlockNext()
+        {
+            lock (_sync)
+            {
+                _blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return () => _release.TrySetResult();
+            }
+        }
+
+        public async Task WaitUntilBlockedAsync()
+        {
+            Task blocked;
+            lock (_sync)
+            {
+                blocked = _blocked?.Task ?? throw new InvalidOperationException();
+            }
+            await blocked.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        public async Task AfterFinancialLocksAcquiredAsync(Guid refundRequestId,
+            CancellationToken cancellationToken)
+        {
+            Task? release = null;
+            lock (_sync)
+            {
+                if (_blocked is not null && !_blocked.Task.IsCompleted)
+                {
+                    _blocked.TrySetResult();
+                    release = _release!.Task;
+                }
+            }
+            if (release is not null) await release.WaitAsync(cancellationToken);
         }
     }
 }

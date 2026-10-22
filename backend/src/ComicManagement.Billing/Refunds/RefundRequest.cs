@@ -7,7 +7,12 @@ public static class RefundRequestStatuses
     public const string Requested = "Requested";
     public const string UnderReview = "UnderReview";
     public const string RecoveryReserved = "RecoveryReserved";
+    public const string TransferPending = "TransferPending";
+    public const string Completed = "Completed";
     public const string Rejected = "Rejected";
+    public const string NeedsReconciliation = "NeedsReconciliation";
+    public const string TransferConfirmedFailed = "TransferConfirmedFailed";
+    public const string ReservationReleased = "ReservationReleased";
 }
 
 public sealed class RefundRequest
@@ -186,6 +191,86 @@ public sealed class RefundRequest
 
         Status = RefundRequestStatuses.Rejected;
         DecisionReason = reason;
+        Version = checked(Version + 1);
+    }
+
+    public void RecordTransferAttempt(string reportedOutcome, DateTimeOffset recordedAt)
+    {
+        EnsureUtc(recordedAt, nameof(recordedAt));
+        if (Status != RefundRequestStatuses.RecoveryReserved)
+        {
+            throw new InvalidOperationException(
+                "Only a reserved refund can record its transfer attempt.");
+        }
+
+        Status = reportedOutcome == RefundTransferReportedOutcomes.Unknown
+            ? RefundRequestStatuses.NeedsReconciliation
+            : RefundRequestStatuses.TransferPending;
+        Version = checked(Version + 1);
+    }
+
+    public void Complete(
+        Guid actorId,
+        long expectedVersion,
+        DateTimeOffset completedAt)
+    {
+        EnsureIdentifier(actorId, nameof(actorId));
+        EnsureUtc(completedAt, nameof(completedAt));
+        EnsureVersion(expectedVersion);
+        if (Version != expectedVersion)
+        {
+            throw new RefundRequestConcurrencyException();
+        }
+
+        if (Status is not (RefundRequestStatuses.TransferPending or
+                RefundRequestStatuses.NeedsReconciliation))
+        {
+            throw new InvalidOperationException(
+                "Only a pending transfer can complete a refund.");
+        }
+
+        Status = RefundRequestStatuses.Completed;
+        CompletedBy = actorId;
+        CompletedAt = completedAt;
+        Version = checked(Version + 1);
+    }
+
+    public void ConfirmTransferFailed(
+        Guid actorId,
+        long expectedVersion,
+        DateTimeOffset confirmedAt)
+    {
+        EnsureIdentifier(actorId, nameof(actorId));
+        EnsureUtc(confirmedAt, nameof(confirmedAt));
+        EnsureVersion(expectedVersion);
+        if (Version != expectedVersion)
+        {
+            throw new RefundRequestConcurrencyException();
+        }
+
+        if (Status is not (RefundRequestStatuses.TransferPending or
+                RefundRequestStatuses.NeedsReconciliation))
+        {
+            throw new InvalidOperationException(
+                "Only a pending transfer can be confirmed failed.");
+        }
+
+        Status = RefundRequestStatuses.TransferConfirmedFailed;
+        CompletedBy = actorId;
+        CompletedAt = confirmedAt;
+        Version = checked(Version + 1);
+    }
+
+    public void MarkReservationReleased(DateTimeOffset releasedAt)
+    {
+        EnsureUtc(releasedAt, nameof(releasedAt));
+        if (Status != RefundRequestStatuses.TransferConfirmedFailed)
+        {
+            throw new InvalidOperationException(
+                "Only a confirmed failed transfer can release its reservation.");
+        }
+
+        Status = RefundRequestStatuses.ReservationReleased;
         Version = checked(Version + 1);
     }
 

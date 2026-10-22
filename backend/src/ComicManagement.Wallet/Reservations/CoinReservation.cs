@@ -139,6 +139,29 @@ public sealed class CoinReservation
         };
     }
 
+    public void Consume(DateTimeOffset resolvedAt)
+    {
+        Resolve(CoinReservationStatuses.Consumed, resolvedAt);
+    }
+
+    public void Release(DateTimeOffset resolvedAt)
+    {
+        Resolve(CoinReservationStatuses.Released, resolvedAt);
+    }
+
+    private void Resolve(string status, DateTimeOffset resolvedAt)
+    {
+        if (resolvedAt.Offset != TimeSpan.Zero)
+            throw new ArgumentException("Timestamp must use the UTC offset.", nameof(resolvedAt));
+        if (Status != CoinReservationStatuses.Reserved)
+            throw new InvalidOperationException("Only a reserved coin reservation can be resolved.");
+        if (resolvedAt < CreatedAt)
+            throw new ArgumentOutOfRangeException(nameof(resolvedAt));
+
+        Status = status;
+        ResolvedAt = resolvedAt;
+    }
+
     private static void EnsureIdentifier(Guid value, string parameterName)
     {
         if (value == Guid.Empty)

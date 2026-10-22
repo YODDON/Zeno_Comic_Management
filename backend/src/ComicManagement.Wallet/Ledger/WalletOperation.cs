@@ -6,6 +6,8 @@ public static class WalletOperationTypes
     public const string ChapterUnlock = "ChapterUnlock";
     public const string MissionReward = "MissionReward";
     public const string RefundReserve = "RefundReserve";
+    public const string RefundComplete = "RefundComplete";
+    public const string RefundRelease = "RefundRelease";
 }
 
 public static class WalletOperationSourceTypes
