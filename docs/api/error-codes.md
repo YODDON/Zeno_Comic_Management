@@ -22,6 +22,8 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 409 | PRICE_CHANGED | Get quote with current pricing |
 | 409 | ALREADY_UNLOCKED | Quote is unnecessary because access is already Free, VIP-included or coin-unlocked; the U02 unlock command should replay an existing entitlement rather than debit twice |
 | 409 | REFUND_ALREADY_EXISTS | One refund request per TopUp even if Rejected |
+| 409 | REFUND_STATE_CONFLICT | Admin refund transition is invalid for the current lifecycle state |
+| 409 | FINANCIAL_INTEGRITY_CONFLICT | Financial snapshot/Wallet/lot/ledger state requires reconciliation; no mutation is committed |
 | 409 | TRANSFER_REFERENCE_CONFLICT | Reconcile transfer, never silently overwrite |
 | 422 | INSUFFICIENT_COINS | Offer TopUp; no debit |
 | 404/422 | REFUND_ORDER_NOT_ELIGIBLE | Missing/non-owned orders are hidden as 404; a known order that is not a fulfilled TopUp with its authoritative original lot is 422 |

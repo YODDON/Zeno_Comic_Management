@@ -1,10 +1,14 @@
 using ComicManagement.Billing.Payments;
+using ComicManagement.Billing.Refunds;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Persistence;
 using ComicManagement.Identity.Users;
 using ComicManagement.Wallet.Lots;
+using ComicManagement.Wallet.Ledger;
+using ComicManagement.Shared.Time;
+using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -40,6 +44,10 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261019150424_HardenRefundRequestSecurity";
     private const string RF01FinalIntegrityMigration =
         "20261020080206_FinalizeRefundRequestIntegrity";
+    private const string RF02ReservationMigration =
+        "20261021133359_AddRefundRecoveryReservations";
+    private const string RF02HardeningMigration =
+        "20261022022542_HardenRefundRecoveryReservations";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -74,6 +82,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         RF01Migration,
         RF01SecurityMigration,
         RF01FinalIntegrityMigration,
+        RF02ReservationMigration,
+        RF02HardeningMigration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -134,6 +144,20 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
         Assert.True(await TableExists(context, "billing.refund_requests"));
         Assert.True(await TableExists(context, "billing.refund_recipients"));
+        Assert.True(await TableExists(context, "wallet.coin_reservations"));
+        Assert.True(await IndexExists(
+            context,
+            "wallet",
+            "ux_coin_reservations_refund_request_id"));
+        Assert.True(await IndexExists(
+            context,
+            "wallet",
+            "ux_coin_reservations_wallet_operation_id"));
+        Assert.True(await TriggerExists(
+            context,
+            "wallet",
+            "coin_reservations",
+            "trg_coin_reservations_financial_integrity"));
         Assert.True(await TableExists(context, "membership.vip_plans"));
         Assert.True(await TableExists(context, "membership.vip_subscriptions"));
         Assert.True(await TableExists(context, "membership.vip_transactions"));
@@ -401,6 +425,157 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.Equal(1, await context.PaymentOrders.CountAsync(item => item.Id == orderId));
         Assert.Equal(1, await context.PaidCoinLots.CountAsync(item => item.TopUpOrderId == orderId));
         Assert.Empty(await context.RefundRequests.ToListAsync());
+    }
+
+    [Fact]
+    public async Task RF02_incremental_migration_preserves_existing_requested_refund()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(RF01FinalIntegrityMigration);
+
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var refundId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(
+            userId, "RF02 Upgrade User", null, null, now.AddDays(-10)));
+        var order = PaymentOrder.CreateTopUp(
+            orderId,
+            userId,
+            $"ZENO-{orderId:N}",
+            100_000,
+            10_000,
+            $"rf02-upgrade-{orderId:N}",
+            new string('a', 64),
+            now.AddMinutes(-10),
+            now.AddMinutes(10));
+        order.FulfillTopUp(now);
+        context.PaymentOrders.Add(order);
+        context.PaidCoinLots.Add(PaidCoinLot.Create(
+            Guid.NewGuid(), userId, orderId, 10_000, now));
+        context.RefundRequests.Add(RefundRequest.Create(
+            refundId,
+            orderId,
+            userId,
+            "Duplicate transfer",
+            100_000,
+            10_000,
+            "rf02-upgrade-request",
+            new string('b', 64),
+            "v1",
+            now));
+        context.RefundRecipients.Add(RefundRecipient.Create(
+            Guid.NewGuid(), refundId, "VCB", [1], [2], "6789",
+            "******6789", "N*** V*** A***", "v1", now));
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(RF02ReservationMigration);
+
+        var preserved = await context.RefundRequests.AsNoTracking()
+            .SingleAsync(request => request.Id == refundId);
+        Assert.Equal(RefundRequestStatuses.Requested, preserved.Status);
+        Assert.Equal(1, preserved.Version);
+        Assert.Equal(0, await CountRows(context, "wallet.coin_reservations"));
+        Assert.True(await TableExists(context, "wallet.coin_reservations"));
+    }
+
+    [Fact]
+    public async Task RF02_hardening_migration_backfills_existing_reservation_result()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync(RF01FinalIntegrityMigration);
+
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        var reviewedAt = now.AddMinutes(1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var lotId = Guid.NewGuid();
+        var refundId = Guid.NewGuid();
+        var operationId = Guid.NewGuid();
+        var reservationId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(
+            userId, "RF02 Reservation Upgrade User", null, null, now.AddDays(-10)));
+        var order = PaymentOrder.CreateTopUp(
+            orderId, userId, $"ZENO-{orderId:N}", 100_000, 10_000,
+            $"rf02-reservation-upgrade-{orderId:N}", new string('a', 64),
+            now.AddMinutes(-10), now.AddMinutes(10));
+        order.FulfillTopUp(now);
+        var lot = PaidCoinLot.Create(lotId, userId, orderId, 10_000, now);
+        var wallet = WalletAccount.Create(userId, now);
+        wallet.CreditPaid(10_000, now);
+        var credit = WalletOperation.Create(
+            Guid.NewGuid(), userId, WalletOperationTypes.TopUpCredit,
+            WalletOperationSourceTypes.PaymentOrder, orderId, null, now);
+        var refund = RefundRequest.Create(
+            refundId, orderId, userId, "Duplicate transfer", 100_000, 10_000,
+            "rf02-reservation-upgrade-request", new string('b', 64), "v1", now);
+        refund.BeginReview(userId, reviewedAt);
+        context.PaymentOrders.Add(order);
+        context.PaidCoinLots.Add(lot);
+        context.Wallets.Add(wallet);
+        context.WalletOperations.Add(credit);
+        context.WalletEntries.Add(WalletEntry.Create(
+            Guid.NewGuid(), credit, WalletCoinTypes.Paid, WalletBuckets.Available,
+            10_000, 1, now));
+        context.RefundRequests.Add(refund);
+        context.RefundRecipients.Add(RefundRecipient.Create(
+            Guid.NewGuid(), refundId, "VCB", [1], [2], "6789",
+            "******6789", "N*** V*** A***", "v1", now));
+        await context.SaveChangesAsync();
+
+        await migrator.MigrateAsync(RF02ReservationMigration);
+        await using (var transaction = await context.Database.BeginTransactionAsync())
+        {
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO wallet.wallet_operations
+                    (id,user_id,operation_type,source_type,source_id,idempotency_key,created_at)
+                VALUES ({operationId},{userId},{WalletOperationTypes.RefundReserve},
+                    {WalletOperationSourceTypes.RefundRequest},{refundId},NULL,{reviewedAt});
+                INSERT INTO wallet.wallet_entries
+                    (id,operation_id,user_id,coin_type,bucket,delta_coins,leg_order,created_at)
+                VALUES
+                    ({Guid.NewGuid()},{operationId},{userId},{WalletCoinTypes.Paid},
+                     {WalletBuckets.Available},{-10_000L},{1},{reviewedAt}),
+                    ({Guid.NewGuid()},{operationId},{userId},{WalletCoinTypes.Paid},
+                     {WalletBuckets.Reserved},{10_000L},{2},{reviewedAt});
+                UPDATE wallet.wallets SET paid_available=0,paid_reserved=10000,
+                    version=version+1,updated_at={reviewedAt} WHERE user_id={userId};
+                UPDATE wallet.paid_coin_lots SET reserved_coins=10000,version=version+1
+                    WHERE id={lotId};
+                UPDATE billing.refund_requests
+                SET status='RecoveryReserved',approved_by={userId},approved_at={reviewedAt},
+                    decision_reason='Verified legacy approval',version=3
+                WHERE id={refundId};
+                INSERT INTO wallet.coin_reservations
+                    (id,refund_request_id,user_id,paid_coin_lot_id,wallet_operation_id,
+                     approved_by,idempotency_key,request_fingerprint,amount_coins,status,
+                     created_at,resolved_at)
+                VALUES ({reservationId},{refundId},{userId},{lotId},{operationId},{userId},
+                    {"legacy-approval-key"},{new string('c', 64)},10000,'Reserved',
+                    {reviewedAt},NULL);
+                """);
+            await transaction.CommitAsync();
+        }
+
+        await migrator.MigrateAsync(RF02HardeningMigration);
+        var preserved = await context.CoinReservations.AsNoTracking()
+            .SingleAsync(item => item.Id == reservationId);
+        Assert.Equal("RecoveryReserved", preserved.ApprovalResultStatus);
+        Assert.Equal(3, preserved.ApprovalResultVersion);
+        Assert.Equal(userId, preserved.ApprovalResultReviewedBy);
+        Assert.Equal(PostgreSqlTimestamp.Normalize(reviewedAt),
+            preserved.ApprovalResultReviewedAt);
+        Assert.Equal("Verified legacy approval", preserved.ApprovalResultDecisionNote);
     }
 
     [Fact]

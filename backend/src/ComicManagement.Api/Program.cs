@@ -114,6 +114,7 @@ builder.Services.AddScoped<LogoutHandler>();
 builder.Services.AddScoped<UpdateDisplayNameHandler>();
 builder.Services.AddScoped<PublicChapterListWorkflow>();
 builder.Services.AddScoped<TopUpFulfillmentWorkflow>();
+builder.Services.AddScoped<RefundAdministrationWorkflow>();
 builder.Services.AddScoped<ICurrentUser, HttpCurrentUser>();
 builder.Services.AddIdentityAuthentication(authenticationSettings);
 builder.Services.AddSingleton(refundSecuritySettings);

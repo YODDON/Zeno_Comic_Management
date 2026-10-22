@@ -5,6 +5,7 @@ public static class WalletOperationTypes
     public const string TopUpCredit = "TopUpCredit";
     public const string ChapterUnlock = "ChapterUnlock";
     public const string MissionReward = "MissionReward";
+    public const string RefundReserve = "RefundReserve";
 }
 
 public static class WalletOperationSourceTypes
@@ -12,6 +13,7 @@ public static class WalletOperationSourceTypes
     public const string PaymentOrder = "PaymentOrder";
     public const string ReadingUnlock = "ReadingUnlock";
     public const string RewardGrant = "RewardGrant";
+    public const string RefundRequest = "RefundRequest";
 }
 
 public sealed class WalletOperation

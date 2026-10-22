@@ -8,6 +8,7 @@ using ComicManagement.Reading.Unlocks;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Spending;
+using ComicManagement.Wallet.Reservations;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using ComicManagement.Reading.Library;
 using ComicManagement.Billing.Payments;
@@ -72,6 +73,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<WalletEntry> WalletEntries => Set<WalletEntry>();
 
     internal DbSet<WalletAllocation> WalletAllocations => Set<WalletAllocation>();
+
+    internal DbSet<CoinReservation> CoinReservations => Set<CoinReservation>();
 
     internal DbSet<ComicFollow> ComicFollows => Set<ComicFollow>();
 
@@ -153,6 +156,28 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
             throw new InvalidOperationException("Wallet ledger records are append-only.");
+        }
+
+        if (ChangeTracker.Entries<CoinReservation>().Any(entry =>
+                entry.State == EntityState.Deleted ||
+                entry.State == EntityState.Modified &&
+                (entry.Property(item => item.Id).IsModified ||
+                 entry.Property(item => item.RefundRequestId).IsModified ||
+                 entry.Property(item => item.UserId).IsModified ||
+                 entry.Property(item => item.PaidCoinLotId).IsModified ||
+                 entry.Property(item => item.WalletOperationId).IsModified ||
+                 entry.Property(item => item.ApprovedBy).IsModified ||
+                 entry.Property(item => item.IdempotencyKey).IsModified ||
+                 entry.Property(item => item.RequestFingerprint).IsModified ||
+                 entry.Property(item => item.AmountCoins).IsModified ||
+                 entry.Property(item => item.ApprovalResultStatus).IsModified ||
+                 entry.Property(item => item.ApprovalResultVersion).IsModified ||
+                 entry.Property(item => item.ApprovalResultReviewedBy).IsModified ||
+                 entry.Property(item => item.ApprovalResultReviewedAt).IsModified ||
+                 entry.Property(item => item.ApprovalResultDecisionNote).IsModified ||
+                 entry.Property(item => item.CreatedAt).IsModified)))
+        {
+            throw new InvalidOperationException("Coin reservation snapshots are immutable.");
         }
 
         if (ChangeTracker.Entries<ChapterUnlock>().Any(entry =>

@@ -5,6 +5,9 @@ namespace ComicManagement.Billing.Refunds;
 public static class RefundRequestStatuses
 {
     public const string Requested = "Requested";
+    public const string UnderReview = "UnderReview";
+    public const string RecoveryReserved = "RecoveryReserved";
+    public const string Rejected = "Rejected";
 }
 
 public sealed class RefundRequest
@@ -116,6 +119,76 @@ public sealed class RefundRequest
         };
     }
 
+    public void BeginReview(Guid actorId, DateTimeOffset reviewedAt)
+    {
+        EnsureIdentifier(actorId, nameof(actorId));
+        EnsureUtc(reviewedAt, nameof(reviewedAt));
+        if (Status != RefundRequestStatuses.Requested)
+        {
+            throw new InvalidOperationException("Only a requested refund can enter review.");
+        }
+
+        Status = RefundRequestStatuses.UnderReview;
+        ReviewedBy = actorId;
+        ReviewedAt = reviewedAt;
+        Version = checked(Version + 1);
+    }
+
+    public void ReserveRecovery(
+        Guid actorId,
+        string decisionNote,
+        long expectedVersion,
+        DateTimeOffset approvedAt)
+    {
+        EnsureIdentifier(actorId, nameof(actorId));
+        EnsureText(decisionNote, MaximumReasonLength, nameof(decisionNote));
+        EnsureUtc(approvedAt, nameof(approvedAt));
+        EnsureVersion(expectedVersion);
+        if (Version != expectedVersion)
+        {
+            throw new RefundRequestConcurrencyException();
+        }
+
+        if (Status != RefundRequestStatuses.UnderReview ||
+            ReviewedBy is null || ReviewedAt is null)
+        {
+            throw new InvalidOperationException(
+                "Only a reviewed refund can reserve its original Paid Coin lot.");
+        }
+
+        Status = RefundRequestStatuses.RecoveryReserved;
+        ApprovedBy = actorId;
+        ApprovedAt = approvedAt;
+        DecisionReason = decisionNote;
+        Version = checked(Version + 1);
+    }
+
+    public void Reject(
+        Guid actorId,
+        string reason,
+        long expectedVersion,
+        DateTimeOffset rejectedAt)
+    {
+        EnsureIdentifier(actorId, nameof(actorId));
+        EnsureText(reason, MaximumReasonLength, nameof(reason));
+        EnsureUtc(rejectedAt, nameof(rejectedAt));
+        EnsureVersion(expectedVersion);
+        if (Version != expectedVersion)
+        {
+            throw new RefundRequestConcurrencyException();
+        }
+
+        if (Status != RefundRequestStatuses.UnderReview ||
+            ReviewedBy is null || ReviewedAt is null)
+        {
+            throw new InvalidOperationException("Only a reviewed refund can be rejected.");
+        }
+
+        Status = RefundRequestStatuses.Rejected;
+        DecisionReason = reason;
+        Version = checked(Version + 1);
+    }
+
     private static void EnsureIdentifier(Guid value, string parameterName)
     {
         if (value == Guid.Empty)
@@ -146,6 +219,14 @@ public sealed class RefundRequest
         }
     }
 
+    private static void EnsureVersion(long value)
+    {
+        if (value < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(value));
+        }
+    }
+
     private static void EnsureSecurityVersion(string value)
     {
         EnsureText(value, MaximumSecurityVersionLength, nameof(value));
@@ -164,5 +245,13 @@ public sealed class RefundRequest
         {
             throw new ArgumentException("Timestamp must use the UTC offset.", parameterName);
         }
+    }
+}
+
+public sealed class RefundRequestConcurrencyException : Exception
+{
+    public RefundRequestConcurrencyException()
+        : base("The refund request version is stale.")
+    {
     }
 }

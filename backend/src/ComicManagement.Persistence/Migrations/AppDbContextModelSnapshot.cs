@@ -575,9 +575,15 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasAlternateKey("Id", "UserId")
                         .HasName("ak_refund_requests_id_user_id");
 
+                    b.HasIndex("ApprovedBy");
+
+                    b.HasIndex("CompletedBy");
+
                     b.HasIndex("PaymentOrderId")
                         .IsUnique()
                         .HasDatabaseName("ux_refund_requests_payment_order_id");
+
+                    b.HasIndex("ReviewedBy");
 
                     b.HasIndex("UserId", "IdempotencyKey")
                         .IsUnique()
@@ -596,6 +602,8 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_refund_requests_order_type", "payment_order_type = 'TopUp'");
 
                             t.HasCheckConstraint("ck_refund_requests_recovery", "required_recovery_coins > 0");
+
+                            t.HasCheckConstraint("ck_refund_requests_review_lifecycle", "(status = 'Requested' AND reviewed_by IS NULL AND reviewed_at IS NULL AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR (status = 'UnderReview' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR (status = 'RecoveryReserved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NOT NULL AND approved_at IS NOT NULL AND length(btrim(decision_reason)) > 0) OR (status = 'Rejected' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NULL AND approved_at IS NULL AND length(btrim(decision_reason)) > 0) OR status IN ('TransferPending', 'Completed', 'NeedsReconciliation', 'TransferConfirmedFailed', 'ReservationReleased')");
 
                             t.HasCheckConstraint("ck_refund_requests_status", "status IN ('Requested', 'UnderReview', 'RecoveryReserved', 'TransferPending', 'Completed', 'Rejected', 'NeedsReconciliation', 'TransferConfirmedFailed', 'ReservationReleased')");
 
@@ -2419,6 +2427,9 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_paid_coin_lots");
 
+                    b.HasAlternateKey("Id", "UserId")
+                        .HasName("ak_paid_coin_lots_id_user_id");
+
                     b.HasAlternateKey("TopUpOrderId", "UserId", "TopUpOrderType", "GrantedCoins")
                         .HasName("ak_paid_coin_lots_refund_snapshot");
 
@@ -2452,6 +2463,120 @@ namespace ComicManagement.Persistence.Migrations
                             t.HasCheckConstraint("ck_paid_coin_lots_topup_order_type", "topup_order_type = 'TopUp'");
 
                             t.HasCheckConstraint("ck_paid_coin_lots_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Reservations.CoinReservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("AmountCoins")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_coins");
+
+                    b.Property<string>("ApprovalResultDecisionNote")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("approval_result_decision_note");
+
+                    b.Property<DateTimeOffset>("ApprovalResultReviewedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approval_result_reviewed_at");
+
+                    b.Property<Guid>("ApprovalResultReviewedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approval_result_reviewed_by");
+
+                    b.Property<string>("ApprovalResultStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("approval_result_status");
+
+                    b.Property<long>("ApprovalResultVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("approval_result_version");
+
+                    b.Property<Guid>("ApprovedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approved_by");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid>("PaidCoinLotId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("paid_coin_lot_id");
+
+                    b.Property<Guid>("RefundRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("refund_request_id");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_fingerprint");
+
+                    b.Property<DateTimeOffset?>("ResolvedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("WalletOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("wallet_operation_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_coin_reservations");
+
+                    b.HasIndex("ApprovalResultReviewedBy");
+
+                    b.HasIndex("RefundRequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_coin_reservations_refund_request_id");
+
+                    b.HasIndex("WalletOperationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_coin_reservations_wallet_operation_id");
+
+                    b.HasIndex("ApprovedBy", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_coin_reservations_approver_idempotency");
+
+                    b.HasIndex("PaidCoinLotId", "Status")
+                        .HasDatabaseName("ix_coin_reservations_lot_status");
+
+                    b.ToTable("coin_reservations", "wallet", t =>
+                        {
+                            t.HasCheckConstraint("ck_coin_reservations_amount", "amount_coins > 0");
+
+                            t.HasCheckConstraint("ck_coin_reservations_approval_result", "approval_result_status = 'RecoveryReserved' AND approval_result_version > 0 AND length(btrim(approval_result_decision_note)) > 0 AND approval_result_decision_note = btrim(approval_result_decision_note)");
+
+                            t.HasCheckConstraint("ck_coin_reservations_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_coin_reservations_resolution", "(status = 'Reserved' AND resolved_at IS NULL) OR (status IN ('Consumed', 'Released') AND resolved_at IS NOT NULL)");
+
+                            t.HasCheckConstraint("ck_coin_reservations_status", "status IN ('Reserved', 'Consumed', 'Released')");
                         });
                 });
 
@@ -2539,6 +2664,24 @@ namespace ComicManagement.Persistence.Migrations
 
             modelBuilder.Entity("ComicManagement.Billing.Refunds.RefundRequest", b =>
                 {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_requests_approved_by_user");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("CompletedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_requests_completed_by_user");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("ReviewedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_requests_reviewed_by_user");
+
                     b.HasOne("ComicManagement.Identity.Users.User", null)
                         .WithMany()
                         .HasForeignKey("UserId")
@@ -2948,6 +3091,47 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_paid_coin_lots_topup_payment_orders");
+                });
+
+            modelBuilder.Entity("ComicManagement.Wallet.Reservations.CoinReservation", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalResultReviewedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_coin_reservations_result_reviewed_by_user");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_coin_reservations_approved_by_user");
+
+                    b.HasOne("ComicManagement.Wallet.Lots.PaidCoinLot", null)
+                        .WithMany()
+                        .HasForeignKey("PaidCoinLotId", "UserId")
+                        .HasPrincipalKey("Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_coin_reservations_paid_lot_owner");
+
+                    b.HasOne("ComicManagement.Billing.Refunds.RefundRequest", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Wallet.Reservations.CoinReservation", "RefundRequestId", "UserId")
+                        .HasPrincipalKey("ComicManagement.Billing.Refunds.RefundRequest", "Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_coin_reservations_refund_request_owner");
+
+                    b.HasOne("ComicManagement.Wallet.Ledger.WalletOperation", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Wallet.Reservations.CoinReservation", "WalletOperationId", "UserId")
+                        .HasPrincipalKey("ComicManagement.Wallet.Ledger.WalletOperation", "Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_coin_reservations_wallet_operation_owner");
                 });
 
             modelBuilder.Entity("ComicManagement.Wallet.Spending.WalletAllocation", b =>

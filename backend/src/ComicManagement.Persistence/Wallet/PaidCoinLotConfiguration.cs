@@ -26,6 +26,8 @@ internal sealed class PaidCoinLotConfiguration : IEntityTypeConfiguration<PaidCo
         });
 
         builder.HasKey(lot => lot.Id).HasName("pk_paid_coin_lots");
+        builder.HasAlternateKey(lot => new { lot.Id, lot.UserId })
+            .HasName("ak_paid_coin_lots_id_user_id");
         builder.HasAlternateKey(lot => new
             {
                 lot.TopUpOrderId,

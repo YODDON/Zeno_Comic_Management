@@ -1,6 +1,6 @@
 namespace ComicManagement.Billing.Events;
 
-public static class BillingEventTypes
+public static partial class BillingEventTypes
 {
     public const string WalletTopUpCompleted = "Billing.WalletTopUpCompleted.v1";
 }
