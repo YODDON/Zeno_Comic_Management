@@ -170,6 +170,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                  entry.Property(item => item.IdempotencyKey).IsModified ||
                  entry.Property(item => item.RequestFingerprint).IsModified ||
                  entry.Property(item => item.AmountCoins).IsModified ||
+                 entry.Property(item => item.ApprovalResultStatus).IsModified ||
+                 entry.Property(item => item.ApprovalResultVersion).IsModified ||
+                 entry.Property(item => item.ApprovalResultReviewedBy).IsModified ||
+                 entry.Property(item => item.ApprovalResultReviewedAt).IsModified ||
+                 entry.Property(item => item.ApprovalResultDecisionNote).IsModified ||
                  entry.Property(item => item.CreatedAt).IsModified)))
         {
             throw new InvalidOperationException("Coin reservation snapshots are immutable.");

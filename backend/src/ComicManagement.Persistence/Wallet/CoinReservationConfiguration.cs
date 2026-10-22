@@ -26,6 +26,12 @@ internal sealed class CoinReservationConfiguration : IEntityTypeConfiguration<Co
                 "ck_coin_reservations_idempotency",
                 "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) " +
                 "AND request_fingerprint ~ '^[0-9a-f]{64}$'");
+            table.HasCheckConstraint(
+                "ck_coin_reservations_approval_result",
+                "approval_result_status = 'RecoveryReserved' AND " +
+                "approval_result_version > 0 AND " +
+                "length(btrim(approval_result_decision_note)) > 0 AND " +
+                "approval_result_decision_note = btrim(approval_result_decision_note)");
         });
 
         builder.HasKey(reservation => reservation.Id).HasName("pk_coin_reservations");
@@ -67,6 +73,21 @@ internal sealed class CoinReservationConfiguration : IEntityTypeConfiguration<Co
             .HasMaxLength(CoinReservation.FingerprintLength)
             .IsRequired();
         builder.Property(reservation => reservation.AmountCoins).HasColumnName("amount_coins");
+        builder.Property(reservation => reservation.ApprovalResultStatus)
+            .HasColumnName("approval_result_status")
+            .HasMaxLength(CoinReservation.MaximumApprovalResultStatusLength)
+            .IsRequired();
+        builder.Property(reservation => reservation.ApprovalResultVersion)
+            .HasColumnName("approval_result_version");
+        builder.Property(reservation => reservation.ApprovalResultReviewedBy)
+            .HasColumnName("approval_result_reviewed_by");
+        builder.Property(reservation => reservation.ApprovalResultReviewedAt)
+            .HasColumnName("approval_result_reviewed_at")
+            .HasColumnType("timestamp with time zone");
+        builder.Property(reservation => reservation.ApprovalResultDecisionNote)
+            .HasColumnName("approval_result_decision_note")
+            .HasMaxLength(CoinReservation.MaximumDecisionNoteLength)
+            .IsRequired();
         builder.Property(reservation => reservation.Status)
             .HasColumnName("status")
             .HasMaxLength(CoinReservation.MaximumStatusLength)
@@ -117,5 +138,10 @@ internal sealed class CoinReservationConfiguration : IEntityTypeConfiguration<Co
             .HasForeignKey(reservation => reservation.ApprovedBy)
             .OnDelete(DeleteBehavior.Restrict)
             .HasConstraintName("fk_coin_reservations_approved_by_user");
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(reservation => reservation.ApprovalResultReviewedBy)
+            .OnDelete(DeleteBehavior.Restrict)
+            .HasConstraintName("fk_coin_reservations_result_reviewed_by_user");
     }
 }

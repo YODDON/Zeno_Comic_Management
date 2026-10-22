@@ -1928,7 +1928,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     public async Task Admin_refund_mutations_are_limited_to_twenty_requests_per_minute_per_admin()
     {
         var (admin, csrf) = await CreateAdminClientAsync("rf02-rate-limit-admin");
+        var (otherAdmin, otherCsrf) = await CreateAdminClientAsync(
+            "rf02-rate-limit-other-admin");
         using (admin)
+        using (otherAdmin)
         {
             for (var attempt = 1; attempt <= 20; attempt++)
             {
@@ -1952,6 +1955,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 await admin.SendAsync(limitedRequest),
                 HttpStatusCode.TooManyRequests,
                 "RATE_LIMITED");
+
+            using var independentRequest = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/admin/refunds/{Guid.NewGuid()}/review");
+            independentRequest.Headers.Add("X-CSRF-TOKEN", otherCsrf);
+            await AssertStandardizedErrorAsync(
+                await otherAdmin.SendAsync(independentRequest),
+                HttpStatusCode.NotFound,
+                "RESOURCE_NOT_FOUND");
         }
     }
 
@@ -2029,6 +2041,22 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                         $"/api/v1/admin/refunds/{refundId}/review", null)).StatusCode);
             }
 
+            _factory.TokenEndpoint.SetProfile(
+                $"rf02-user-role-{Guid.NewGuid():N}", "RF02 User", null, null);
+            using (var user = CreateClient())
+            {
+                await CompleteLoginAsync(user, await BeginLoginAsync(user, "/refunds"));
+                var userProfile = await user.GetAsync("/api/v1/me");
+                var userCsrf = Assert.Single(userProfile.Headers.GetValues("X-CSRF-TOKEN"));
+                using var forbidden = new HttpRequestMessage(
+                    HttpMethod.Post, $"/api/v1/admin/refunds/{refundId}/review");
+                forbidden.Headers.Add("X-CSRF-TOKEN", userCsrf);
+                await AssertStandardizedErrorAsync(
+                    await user.SendAsync(forbidden),
+                    HttpStatusCode.Forbidden,
+                    "FORBIDDEN");
+            }
+
             var missingCsrf = await admin.PostAsync(
                 $"/api/v1/admin/refunds/{refundId}/review", null);
             await AssertStandardizedErrorAsync(
@@ -2079,6 +2107,24 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     await admin.SendAsync(missingKey),
                     HttpStatusCode.BadRequest,
                     "VALIDATION_FAILED");
+            }
+
+            using (var staleApproval = new HttpRequestMessage(
+                       HttpMethod.Post, $"/api/v1/admin/refunds/{refundId}/approve")
+                   {
+                       Content = JsonContent.Create(new
+                       {
+                           expectedVersion = reviewedVersion - 1,
+                           decisionNote = "Original lot fully verified",
+                       }),
+                   })
+            {
+                staleApproval.Headers.Add("X-CSRF-TOKEN", csrf);
+                staleApproval.Headers.Add("Idempotency-Key", "rf02-http-stale-approval");
+                await AssertStandardizedErrorAsync(
+                    await admin.SendAsync(staleApproval),
+                    HttpStatusCode.Conflict,
+                    "CONCURRENCY_CONFLICT");
             }
 
             using var approveRequest = new HttpRequestMessage(
@@ -2138,6 +2184,69 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 .SingleAsync(candidate => candidate.UserId == ownerId);
             Assert.Equal(0, persistedWallet.PaidAvailable);
             Assert.Equal(10_000, persistedWallet.PaidReserved);
+            Assert.Equal(1, await verification.OutboxMessages.CountAsync(message =>
+                message.EventType == BillingEventTypes.RefundRecoveryReserved));
+
+            var rejectedOrderId = Guid.NewGuid();
+            var rejectedRefundId = Guid.NewGuid();
+            var rejectedOwnerId = Guid.NewGuid();
+            var rejectedOrder = PaymentOrder.CreateTopUp(
+                rejectedOrderId, rejectedOwnerId, $"ZENO-{rejectedOrderId:N}", 100_000, 10_000,
+                $"rf02-reject-{rejectedOrderId:N}", new string('c', 64),
+                now.AddMinutes(-10), now.AddMinutes(10));
+            rejectedOrder.FulfillTopUp(now);
+            var rejectedRefund = RefundRequest.Create(
+                rejectedRefundId, rejectedOrderId, rejectedOwnerId, "Duplicate transfer",
+                100_000, 10_000, "rf02-reject-key", new string('d', 64), "v1", now);
+            rejectedRefund.BeginReview(rejectedOwnerId, now.AddSeconds(1));
+            var rejectedProtectedRecipient = _factory.Services
+                .GetRequiredService<IRefundRecipientProtector>()
+                .Protect("0123456789", "NGUYEN VAN A");
+            verification.Users.Add(User.CreateFromGoogle(
+                rejectedOwnerId, "RF02 Rejected Owner", null, null, now.AddDays(-10)));
+            verification.PaymentOrders.Add(rejectedOrder);
+            verification.PaidCoinLots.Add(PaidCoinLot.Create(
+                Guid.NewGuid(), rejectedOwnerId, rejectedOrderId, 10_000, now));
+            verification.RefundRequests.Add(rejectedRefund);
+            verification.RefundRecipients.Add(RefundRecipient.Create(
+                Guid.NewGuid(), rejectedRefundId, "VCB",
+                rejectedProtectedRecipient.AccountNumberCiphertext,
+                rejectedProtectedRecipient.AccountHolderCiphertext,
+                "6789", "******6789", "N*** V*** A***",
+                rejectedProtectedRecipient.EncryptionKeyVersion, now));
+            await verification.SaveChangesAsync();
+
+            using (var staleReject = new HttpRequestMessage(
+                       HttpMethod.Post, $"/api/v1/admin/refunds/{rejectedRefundId}/reject")
+                   {
+                       Content = JsonContent.Create(new
+                       {
+                           expectedVersion = 1,
+                           reason = "Evidence mismatch",
+                       }),
+                   })
+            {
+                staleReject.Headers.Add("X-CSRF-TOKEN", csrf);
+                await AssertStandardizedErrorAsync(
+                    await admin.SendAsync(staleReject),
+                    HttpStatusCode.Conflict,
+                    "CONCURRENCY_CONFLICT");
+            }
+
+            using var reject = new HttpRequestMessage(
+                HttpMethod.Post, $"/api/v1/admin/refunds/{rejectedRefundId}/reject")
+            {
+                Content = JsonContent.Create(new
+                {
+                    expectedVersion = 2,
+                    reason = "Evidence mismatch",
+                }),
+            };
+            reject.Headers.Add("X-CSRF-TOKEN", csrf);
+            var rejected = await admin.SendAsync(reject);
+            Assert.Equal(HttpStatusCode.OK, rejected.StatusCode);
+            Assert.Equal("Rejected", (await rejected.Content.ReadFromJsonAsync<JsonElement>())
+                .GetProperty("status").GetString());
         }
     }
 

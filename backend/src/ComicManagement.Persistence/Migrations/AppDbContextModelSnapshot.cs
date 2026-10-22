@@ -2476,6 +2476,30 @@ namespace ComicManagement.Persistence.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("amount_coins");
 
+                    b.Property<string>("ApprovalResultDecisionNote")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("approval_result_decision_note");
+
+                    b.Property<DateTimeOffset>("ApprovalResultReviewedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("approval_result_reviewed_at");
+
+                    b.Property<Guid>("ApprovalResultReviewedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("approval_result_reviewed_by");
+
+                    b.Property<string>("ApprovalResultStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("approval_result_status");
+
+                    b.Property<long>("ApprovalResultVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("approval_result_version");
+
                     b.Property<Guid>("ApprovedBy")
                         .HasColumnType("uuid")
                         .HasColumnName("approved_by");
@@ -2525,6 +2549,8 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasKey("Id")
                         .HasName("pk_coin_reservations");
 
+                    b.HasIndex("ApprovalResultReviewedBy");
+
                     b.HasIndex("RefundRequestId")
                         .IsUnique()
                         .HasDatabaseName("ux_coin_reservations_refund_request_id");
@@ -2543,6 +2569,8 @@ namespace ComicManagement.Persistence.Migrations
                     b.ToTable("coin_reservations", "wallet", t =>
                         {
                             t.HasCheckConstraint("ck_coin_reservations_amount", "amount_coins > 0");
+
+                            t.HasCheckConstraint("ck_coin_reservations_approval_result", "approval_result_status = 'RecoveryReserved' AND approval_result_version > 0 AND length(btrim(approval_result_decision_note)) > 0 AND approval_result_decision_note = btrim(approval_result_decision_note)");
 
                             t.HasCheckConstraint("ck_coin_reservations_idempotency", "length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
 
@@ -3067,6 +3095,13 @@ namespace ComicManagement.Persistence.Migrations
 
             modelBuilder.Entity("ComicManagement.Wallet.Reservations.CoinReservation", b =>
                 {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalResultReviewedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_coin_reservations_result_reviewed_by_user");
+
                     b.HasOne("ComicManagement.Identity.Users.User", null)
                         .WithMany()
                         .HasForeignKey("ApprovedBy")

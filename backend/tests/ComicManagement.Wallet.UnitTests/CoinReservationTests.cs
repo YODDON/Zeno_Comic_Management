@@ -19,11 +19,18 @@ public sealed class CoinReservationTests
             "approval-key",
             new string('a', 64),
             10_000,
+            3,
+            Guid.NewGuid(),
+            now.AddMinutes(-1),
+            "Verified original lot",
             now);
 
         Assert.Equal(CoinReservationStatuses.Reserved, reservation.Status);
         Assert.Equal(10_000, reservation.AmountCoins);
         Assert.Equal(now, reservation.CreatedAt);
+        Assert.Equal(RefundApprovalResultStatuses.RecoveryReserved,
+            reservation.ApprovalResultStatus);
+        Assert.Equal(3, reservation.ApprovalResultVersion);
         Assert.Null(reservation.ResolvedAt);
     }
 
@@ -40,6 +47,10 @@ public sealed class CoinReservationTests
             "approval-key",
             new string('a', 64),
             0,
+            3,
+            Guid.NewGuid(),
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            "Verified original lot",
             DateTimeOffset.UtcNow));
     }
 }

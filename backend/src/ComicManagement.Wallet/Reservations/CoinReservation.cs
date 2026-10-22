@@ -7,11 +7,18 @@ public static class CoinReservationStatuses
     public const string Released = "Released";
 }
 
+public static class RefundApprovalResultStatuses
+{
+    public const string RecoveryReserved = "RecoveryReserved";
+}
+
 public sealed class CoinReservation
 {
     public const int MaximumStatusLength = 16;
     public const int MaximumIdempotencyKeyLength = 200;
     public const int FingerprintLength = 64;
+    public const int MaximumApprovalResultStatusLength = 32;
+    public const int MaximumDecisionNoteLength = 1000;
 
     private CoinReservation()
     {
@@ -35,6 +42,16 @@ public sealed class CoinReservation
 
     public long AmountCoins { get; private set; }
 
+    public string ApprovalResultStatus { get; private set; } = string.Empty;
+
+    public long ApprovalResultVersion { get; private set; }
+
+    public Guid ApprovalResultReviewedBy { get; private set; }
+
+    public DateTimeOffset ApprovalResultReviewedAt { get; private set; }
+
+    public string ApprovalResultDecisionNote { get; private set; } = string.Empty;
+
     public string Status { get; private set; } = string.Empty;
 
     public DateTimeOffset CreatedAt { get; private set; }
@@ -51,6 +68,10 @@ public sealed class CoinReservation
         string idempotencyKey,
         string requestFingerprint,
         long amountCoins,
+        long approvalResultVersion,
+        Guid approvalResultReviewedBy,
+        DateTimeOffset approvalResultReviewedAt,
+        string approvalResultDecisionNote,
         DateTimeOffset createdAt)
     {
         EnsureIdentifier(id, nameof(id));
@@ -79,9 +100,22 @@ public sealed class CoinReservation
             throw new ArgumentOutOfRangeException(nameof(amountCoins));
         }
 
-        if (createdAt.Offset != TimeSpan.Zero)
+        if (approvalResultVersion < 1)
         {
-            throw new ArgumentException("Timestamp must use the UTC offset.", nameof(createdAt));
+            throw new ArgumentOutOfRangeException(nameof(approvalResultVersion));
+        }
+
+        EnsureIdentifier(approvalResultReviewedBy, nameof(approvalResultReviewedBy));
+        ArgumentException.ThrowIfNullOrWhiteSpace(approvalResultDecisionNote);
+        if (approvalResultDecisionNote != approvalResultDecisionNote.Trim() ||
+            approvalResultDecisionNote.Length > MaximumDecisionNoteLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(approvalResultDecisionNote));
+        }
+
+        if (createdAt.Offset != TimeSpan.Zero || approvalResultReviewedAt.Offset != TimeSpan.Zero)
+        {
+            throw new ArgumentException("Timestamps must use the UTC offset.");
         }
 
         return new CoinReservation
@@ -95,6 +129,11 @@ public sealed class CoinReservation
             IdempotencyKey = idempotencyKey,
             RequestFingerprint = requestFingerprint,
             AmountCoins = amountCoins,
+            ApprovalResultStatus = RefundApprovalResultStatuses.RecoveryReserved,
+            ApprovalResultVersion = approvalResultVersion,
+            ApprovalResultReviewedBy = approvalResultReviewedBy,
+            ApprovalResultReviewedAt = approvalResultReviewedAt,
+            ApprovalResultDecisionNote = approvalResultDecisionNote,
             Status = CoinReservationStatuses.Reserved,
             CreatedAt = createdAt,
         };

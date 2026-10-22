@@ -1,8 +1,10 @@
 using System.Data;
 using System.Text.Json;
 using ComicManagement.Administration.Auditing;
+using ComicManagement.Billing.Events;
 using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Refunds;
+using ComicManagement.Shared.Messaging;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Reservations;
@@ -30,6 +32,7 @@ internal sealed class NoOpRefundApprovalCriticalSectionObserver :
 internal sealed class RefundAdministrationStore(
     AppDbContext dbContext,
     IRefundFinancialProcessingLoader financialLoader,
+    IOutboxWriter outboxWriter,
     IRefundApprovalCriticalSectionObserver observer) : IRefundAdministrationStore
 {
     public async Task<RefundAdministrationResult> ReviewAsync(
@@ -93,20 +96,7 @@ internal sealed class RefundAdministrationStore(
                 return Result(RefundAdministrationOutcome.IdempotencyConflict);
             }
 
-            var replayRequest = await LockRefundRequestAsync(
-                command.RefundId,
-                cancellationToken);
-            if (replayRequest is null)
-            {
-                await transaction.RollbackAsync(cancellationToken);
-                return Result(RefundAdministrationOutcome.IntegrityConflict);
-            }
-
-            var replay = await ValidateReplayAsync(
-                command,
-                replayRequest,
-                existingByKey,
-                cancellationToken);
+            var replay = ValidateReplay(command, existingByKey);
             if (replay.Outcome == RefundAdministrationOutcome.Succeeded)
             {
                 await transaction.CommitAsync(cancellationToken);
@@ -156,11 +146,7 @@ internal sealed class RefundAdministrationStore(
         if (existingReservation is not null ||
             request.Status == RefundRequestStatuses.RecoveryReserved)
         {
-            var replay = await ValidateReplayAsync(
-                command,
-                request,
-                existingReservation,
-                cancellationToken);
+            var replay = ValidateReplay(command, existingReservation);
             if (replay.Outcome == RefundAdministrationOutcome.Succeeded)
             {
                 await transaction.CommitAsync(cancellationToken);
@@ -224,18 +210,6 @@ internal sealed class RefundAdministrationStore(
             request.Id,
             idempotencyKey: null,
             serverNow);
-        var reservation = CoinReservation.Create(
-            Guid.NewGuid(),
-            request.Id,
-            request.UserId,
-            lot.Id,
-            operation.Id,
-            command.ActorId,
-            command.IdempotencyKey,
-            command.RequestFingerprint,
-            request.RequiredRecoveryCoins,
-            serverNow);
-
         try
         {
             wallet.ReservePaid(request.RequiredRecoveryCoins, serverNow);
@@ -257,6 +231,22 @@ internal sealed class RefundAdministrationStore(
             return Result(RefundAdministrationOutcome.ConcurrencyConflict);
         }
 
+        var reservation = CoinReservation.Create(
+            Guid.NewGuid(),
+            request.Id,
+            request.UserId,
+            lot.Id,
+            operation.Id,
+            command.ActorId,
+            command.IdempotencyKey,
+            command.RequestFingerprint,
+            request.RequiredRecoveryCoins,
+            request.Version,
+            request.ReviewedBy!.Value,
+            request.ReviewedAt!.Value,
+            command.DecisionNote,
+            serverNow);
+
         dbContext.WalletOperations.Add(operation);
         dbContext.WalletEntries.AddRange(
             WalletEntry.Create(
@@ -266,6 +256,17 @@ internal sealed class RefundAdministrationStore(
                 Guid.NewGuid(), operation, WalletCoinTypes.Paid, WalletBuckets.Reserved,
                 request.RequiredRecoveryCoins, 2, serverNow));
         dbContext.CoinReservations.Add(reservation);
+        outboxWriter.Enqueue(
+            BillingEventTypes.RefundRecoveryReserved,
+            new RefundRecoveryReservedEvent(
+                request.Id,
+                request.UserId,
+                request.PaymentOrderId,
+                lot.Id,
+                operation.Id,
+                request.RequiredRecoveryCoins,
+                serverNow),
+            serverNow);
         AddAudit(command.ActorId, "Billing.RefundRecoveryReserved", request,
             command.CorrelationId, serverNow);
 
@@ -329,56 +330,36 @@ internal sealed class RefundAdministrationStore(
         return Result(RefundAdministrationOutcome.Succeeded, request);
     }
 
-    private async Task<RefundAdministrationResult> ValidateReplayAsync(
+    private static RefundAdministrationResult ValidateReplay(
         ApproveRefundStoreRequest command,
-        RefundRequest request,
-        CoinReservation? reservation,
-        CancellationToken cancellationToken)
+        CoinReservation? reservation)
     {
         if (reservation is null ||
-            request.Status != RefundRequestStatuses.RecoveryReserved ||
-            request.Version != command.ExpectedVersion + 1 ||
-            request.ApprovedBy != command.ActorId ||
-            request.DecisionReason != command.DecisionNote ||
-            reservation.UserId != request.UserId ||
+            reservation.RefundRequestId != command.RefundId ||
             reservation.ApprovedBy != command.ActorId ||
             reservation.IdempotencyKey != command.IdempotencyKey ||
             reservation.RequestFingerprint != command.RequestFingerprint ||
-            reservation.AmountCoins != request.RequiredRecoveryCoins ||
-            reservation.Status != CoinReservationStatuses.Reserved)
+            reservation.ApprovalResultVersion != command.ExpectedVersion + 1 ||
+            reservation.ApprovalResultDecisionNote != command.DecisionNote ||
+            reservation.ApprovalResultStatus != RefundApprovalResultStatuses.RecoveryReserved)
         {
             return Result(RefundAdministrationOutcome.StateConflict);
         }
 
-        var operation = await dbContext.WalletOperations.AsNoTracking()
-            .SingleOrDefaultAsync(
-                candidate => candidate.Id == reservation.WalletOperationId,
-                cancellationToken);
-        var entries = await dbContext.WalletEntries.AsNoTracking()
-            .Where(entry => entry.OperationId == reservation.WalletOperationId)
-            .OrderBy(entry => entry.LegOrder)
-            .ToArrayAsync(cancellationToken);
-        if (operation is null ||
-            operation.UserId != request.UserId ||
-            operation.OperationType != WalletOperationTypes.RefundReserve ||
-            operation.SourceType != WalletOperationSourceTypes.RefundRequest ||
-            operation.SourceId != request.Id ||
-            entries.Length != 2 ||
-            entries[0].CoinType != WalletCoinTypes.Paid ||
-            entries[0].Bucket != WalletBuckets.Available ||
-            entries[0].DeltaCoins != -reservation.AmountCoins ||
-            entries[1].CoinType != WalletCoinTypes.Paid ||
-            entries[1].Bucket != WalletBuckets.Reserved ||
-            entries[1].DeltaCoins != reservation.AmountCoins)
-        {
-            return Result(RefundAdministrationOutcome.IntegrityConflict);
-        }
-
-        return Result(
+        return new RefundAdministrationResult(
             RefundAdministrationOutcome.Succeeded,
-            request,
-            reservation.Id,
-            operation.Id);
+            new RefundAdministrationState(
+                reservation.RefundRequestId,
+                reservation.ApprovalResultStatus,
+                reservation.AmountCoins,
+                reservation.ApprovalResultVersion,
+                reservation.ApprovalResultReviewedBy,
+                reservation.ApprovalResultReviewedAt,
+                reservation.ApprovedBy,
+                reservation.CreatedAt,
+                reservation.ApprovalResultDecisionNote,
+                reservation.Id,
+                reservation.WalletOperationId));
     }
 
     private Task<RefundRequest?> LockRefundRequestAsync(

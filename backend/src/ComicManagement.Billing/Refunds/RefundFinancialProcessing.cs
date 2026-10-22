@@ -12,7 +12,8 @@ public enum RefundFinancialLoadOutcome
 public sealed record RefundFinancialProcessingState(
     RefundRequestState Request,
     Guid UserId,
-    ProtectedRefundRecipient Recipient,
+    UnprotectedRefundRecipient Recipient,
+    string RecipientProtectionVersion,
     Guid OriginalPaidCoinLotId,
     string OrderType,
     string OrderStatus,
