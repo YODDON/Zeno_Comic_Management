@@ -9,6 +9,7 @@ test("reader can follow, persist progress, and resume from the Library", async (
   let followed = false;
   let progressSaved = false;
   let sessionCount = 0;
+  let myRating: number | null = null;
   const heartbeatPayloads: Array<{ session: number; pageOrder: number; pageOffsetRatio: number; sequenceNumber: number }> = [];
   await page.clock.install();
   await page.route("**/api/v1/**", async (route) => {
@@ -58,6 +59,18 @@ test("reader can follow, persist progress, and resume from the Library", async (
         genres: [{ id: "2b22fe02-2d14-4c88-966a-e4192955b9bf", name: "Phiêu lưu", slug: "phieu-luu" }],
         authors: [],
         translationGroups: [],
+        rating: { averageStars: 0, ratingCount: 0, myRating: null },
+      } });
+      return;
+    }
+    if (path === `/api/v1/comics/${comicId}/rating`) {
+      if (request.method() === "PUT") {
+        myRating = (request.postDataJSON() as { stars: number }).stars;
+      }
+      await route.fulfill({ json: {
+        averageStars: myRating ?? 0,
+        ratingCount: myRating === null ? 0 : 1,
+        myRating,
       } });
       return;
     }
@@ -212,6 +225,12 @@ test("reader can follow, persist progress, and resume from the Library", async (
   await page.getByRole("link", { name: "Mở Hành trình R03" }).click();
   await page.getByRole("button", { name: "Theo dõi truyện" }).click();
   await expect(page.getByRole("button", { name: "Bỏ theo dõi" })).toBeVisible();
+  const selectedRating = page.getByRole("radio", { name: "4 sao" });
+  await selectedRating.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("radio", { name: "5 sao" })).toBeChecked();
+  const comicDetailAccessibility = await new AxeBuilder({ page }).analyze();
+  expect(comicDetailAccessibility.violations).toEqual([]);
   await page.getByRole("link", { name: "Đọc từ đầu" }).click();
   await expect(page.getByRole("img", { name: "Trang 1" })).toBeVisible();
   await expect(page.getByText(/Đã đồng bộ/)).toBeVisible();

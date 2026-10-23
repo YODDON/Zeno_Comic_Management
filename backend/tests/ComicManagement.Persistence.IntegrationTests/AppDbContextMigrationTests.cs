@@ -51,6 +51,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261022022542_HardenRefundRecoveryReservations";
     private const string RF03Migration =
         "20261022150731_AddRefundManualPayout";
+    private const string IN01Migration =
+        "20261023081149_AddComicRatings";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -88,6 +90,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         RF02ReservationMigration,
         RF02HardeningMigration,
         RF03Migration,
+        IN01Migration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -144,6 +147,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "wallet.wallet_allocations"));
         Assert.True(await TableExists(context, "billing.refund_transfer_records"));
         Assert.True(await TableExists(context, "reading.comic_follows"));
+        Assert.True(await TableExists(context, "interaction.comic_ratings"));
         Assert.True(await TableExists(context, "billing.payment_orders"));
         Assert.True(await TableExists(context, "billing.provider_transactions"));
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));
@@ -251,6 +255,10 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             "refund_recipients",
             "trg_refund_recipients_immutable"));
         Assert.False(context.Database.HasPendingModelChanges());
+        Assert.True(await IndexExists(
+            context,
+            "interaction",
+            "ix_comic_ratings_comic_id"));
         Assert.True(await IndexExists(context, "wallet", "ux_wallet_allocations_operation_lot"));
         Assert.True(await TriggerExists(
             context,

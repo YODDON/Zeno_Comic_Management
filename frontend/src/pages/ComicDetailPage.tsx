@@ -9,6 +9,7 @@ import {
   useUnfollowComic,
 } from "@/features/library/use-library";
 import { useProfileQuery } from "@/features/profile/use-profile";
+import { ComicRatingPanel } from "@/features/ratings/ComicRatingPanel";
 import { ApiError } from "@/shared/api/problem-details";
 import { ApiErrorState, LoadingState } from "@/shared/ui/AsyncState";
 import { Button } from "@/shared/ui/Button";
@@ -89,6 +90,14 @@ export function ComicDetailPage() {
             : null}
         </div>
       </header>
+
+      <ComicRatingPanel
+        comicId={detail.id}
+        initialRating={detail.rating}
+        isAuthenticated={Boolean(profile.data)}
+        loginUrl={`/api/v1/auth/google/login?returnUrl=${encodeURIComponent(`/comics/${detail.slug}`)}`}
+        viewerKey={profile.data?.id ?? (profile.isPending ? "pending" : "anonymous")}
+      />
 
       <section className="chapter-section" aria-labelledby="chapter-heading">
         <div className="section-heading-row">

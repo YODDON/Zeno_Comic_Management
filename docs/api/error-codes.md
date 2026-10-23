@@ -38,6 +38,8 @@ Reading session creation/update may return `404 READING_SESSION_UNAVAILABLE` wit
 
 Library routes use `401 AUTH_REQUIRED`/`403 FORBIDDEN` for authentication/role failures. PUT Follow returns `404 RESOURCE_NOT_FOUND` when the Comic is not currently public and valid without disclosing draft metadata. Invalid Library cursor/limit or an empty identifier returns `400 VALIDATION_FAILED`; idempotent PUT replay and DELETE unfollow are successful responses rather than conflict errors. Follow-status returns only the current User's ownership state and no Comic metadata.
 
+Comic Rating GET/PUT/DELETE use the same non-disclosing `404 RESOURCE_NOT_FOUND` public-Catalog predicate. Stars outside `1..5` return `400 VALIDATION_FAILED`; anonymous mutation returns `401 AUTH_REQUIRED`, insufficient role returns `403 FORBIDDEN`, and deleting an absent current-User rating is a successful idempotent response.
+
 ### State enums (separate concerns)
 
 Persisted refund lifecycle is `Requested -> UnderReview -> RecoveryReserved -> TransferPending -> Completed`, or `Rejected`, or `NeedsReconciliation -> Completed|ReservationReleased`. A confirmed failed report persists directly as `ReservationReleased` in the same transaction. `TransferConfirmedFailed` is an internal aggregate transition only and is not an externally observable persisted state.

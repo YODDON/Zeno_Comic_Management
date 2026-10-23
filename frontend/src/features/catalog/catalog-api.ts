@@ -34,6 +34,11 @@ const comicDetailSchema = z.object({
   genres: z.array(referenceSchema),
   authors: z.array(referenceSchema),
   translationGroups: z.array(referenceSchema),
+  rating: z.object({
+    averageStars: z.number().min(0).max(5),
+    ratingCount: z.number().int().nonnegative(),
+    myRating: z.number().int().min(1).max(5).nullable(),
+  }),
 });
 
 const chapterSchema = z.object({

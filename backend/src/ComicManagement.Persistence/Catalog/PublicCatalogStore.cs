@@ -12,19 +12,7 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
         int take,
         CancellationToken cancellationToken = default)
     {
-        var query = dbContext.Comics
-            .AsNoTracking()
-            .Where(comic =>
-                comic.PublicationStatus == ComicPublicationStatuses.Published &&
-                comic.FirstPublishedAt != null &&
-                dbContext.Chapters.Any(chapter =>
-                    chapter.ComicId == comic.Id &&
-                    chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
-                    dbContext.ChapterPages.Any(page =>
-                        page.ChapterId == chapter.Id &&
-                        page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                        page.Width > 0 &&
-                        page.Height > 0)));
+        var query = PublicComicVisibilityQuery.Apply(dbContext).AsNoTracking();
 
         if (criteria.Search is not null)
         {
@@ -111,20 +99,9 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
         string slug,
         CancellationToken cancellationToken = default)
     {
-        var row = await dbContext.Comics
+        var row = await PublicComicVisibilityQuery.Apply(dbContext)
             .AsNoTracking()
-            .Where(comic =>
-                comic.Slug == slug &&
-                comic.PublicationStatus == ComicPublicationStatuses.Published &&
-                comic.FirstPublishedAt != null &&
-                dbContext.Chapters.Any(chapter =>
-                    chapter.ComicId == comic.Id &&
-                    chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
-                    dbContext.ChapterPages.Any(page =>
-                        page.ChapterId == chapter.Id &&
-                        page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                        page.Width > 0 &&
-                        page.Height > 0)))
+            .Where(comic => comic.Slug == slug)
             .Select(comic => new
             {
                 comic.Id,
@@ -198,20 +175,9 @@ internal sealed class PublicCatalogStore(AppDbContext dbContext) : IPublicCatalo
         int take,
         CancellationToken cancellationToken = default)
     {
-        var comic = await dbContext.Comics
+        var comic = await PublicComicVisibilityQuery.Apply(dbContext)
             .AsNoTracking()
-            .Where(value =>
-                value.Id == criteria.ComicId &&
-                value.PublicationStatus == ComicPublicationStatuses.Published &&
-                value.FirstPublishedAt != null &&
-                dbContext.Chapters.Any(chapter =>
-                    chapter.ComicId == value.Id &&
-                    chapter.PublicationStatus == ChapterPublicationStatuses.Published &&
-                    dbContext.ChapterPages.Any(page =>
-                        page.ChapterId == chapter.Id &&
-                        page.AssetStatus == ChapterPageAssetStatuses.Ready &&
-                        page.Width > 0 &&
-                        page.Height > 0)))
+            .Where(value => value.Id == criteria.ComicId)
             .Select(value => new
             {
                 value.Id,

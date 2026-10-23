@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
+import { PersonalCacheIsolation } from "@/app/PersonalCacheIsolation";
 import { ThemeProvider } from "@/app/theme/ThemeProvider";
 import { profileQueryKey } from "@/features/profile/profile-api";
 import { subscribeToApiUnauthorized } from "@/shared/api/client";
@@ -14,6 +15,8 @@ export function AppProviders({ children }: AppProvidersProps) {
 
   useEffect(
     () => subscribeToApiUnauthorized(() => {
+      queryClient.removeQueries({ queryKey: ["interaction", "rating"] });
+      queryClient.removeQueries({ queryKey: ["catalog", "comic"] });
       queryClient.setQueryData(profileQueryKey, null);
     }),
     [queryClient],
@@ -21,6 +24,7 @@ export function AppProviders({ children }: AppProvidersProps) {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <PersonalCacheIsolation />
       <ThemeProvider>{children}</ThemeProvider>
     </QueryClientProvider>
   );

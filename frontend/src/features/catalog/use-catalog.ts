@@ -13,7 +13,18 @@ export function useCatalogQuery(search: string) {
 export function useComicQuery(slug: string) {
   return useQuery({
     queryKey: ["catalog", "comic", slug] as const,
-    queryFn: () => getComic(slug),
+    queryFn: async () => {
+      const detail = await getComic(slug);
+      return {
+        ...detail,
+        rating: {
+          ...detail.rating,
+          // Comic detail is cached by slug and is therefore public-only. The
+          // viewer-owned value lives exclusively in the identity-scoped query.
+          myRating: null,
+        },
+      };
+    },
     enabled: Boolean(slug),
   });
 }
