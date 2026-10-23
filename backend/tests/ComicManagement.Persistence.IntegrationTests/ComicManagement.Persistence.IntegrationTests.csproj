@@ -15,5 +15,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/ComicManagement.Persistence/ComicManagement.Persistence.csproj" />
+    <ProjectReference Include="../../src/ComicManagement.Workflows/ComicManagement.Workflows.csproj" />
   </ItemGroup>
 </Project>

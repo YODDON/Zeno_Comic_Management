@@ -1188,6 +1188,42 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Interaction.Ratings.ComicRating", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<short>("Stars")
+                        .HasColumnType("smallint")
+                        .HasColumnName("stars");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("UserId", "ComicId")
+                        .HasName("pk_comic_ratings");
+
+                    b.HasIndex("ComicId")
+                        .HasDatabaseName("ix_comic_ratings_comic_id");
+
+                    b.ToTable("comic_ratings", "interaction", t =>
+                        {
+                            t.HasCheckConstraint("ck_comic_ratings_stars", "stars BETWEEN 1 AND 5");
+
+                            t.HasCheckConstraint("ck_comic_ratings_timestamps", "updated_at >= created_at");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Membership.Plans.VipPlan", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2938,6 +2974,23 @@ namespace ComicManagement.Persistence.Migrations
                         .HasConstraintName("fk_google_identities_users_user_id");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ComicManagement.Interaction.Ratings.ComicRating", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_ratings_comics");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_comic_ratings_users");
                 });
 
             modelBuilder.Entity("ComicManagement.Membership.Subscriptions.VipSubscription", b =>

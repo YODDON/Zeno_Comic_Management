@@ -39,6 +39,8 @@ using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Memberships;
 using ComicManagement.Membership.Plans;
 using ComicManagement.Membership.Subscriptions;
+using ComicManagement.Interaction.Ratings;
+using ComicManagement.Workflows.Interaction;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Hosting;
@@ -5220,10 +5222,21 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                  {
                      "id", "slug", "title", "description", "coverAssetId", "seriesStatus",
                      "firstPublishedAt", "updatedAt", "genres", "authors", "translationGroups",
+                     "rating",
                  })
         {
             Assert.True(detailSchema.GetProperty("properties").TryGetProperty(property, out _));
         }
+        var detailRating = ResolveOpenApiSchema(
+            document,
+            detailSchema.GetProperty("properties").GetProperty("rating"));
+        foreach (var property in new[] { "averageStars", "ratingCount", "myRating" })
+        {
+            Assert.True(detailRating.GetProperty("properties").TryGetProperty(property, out _));
+        }
+        AssertOpenApiSchemaIsNullable(ResolveOpenApiSchema(
+            document,
+            detailRating.GetProperty("properties").GetProperty("myRating")));
 
         var chapters = paths
             .GetProperty("/api/v1/comics/{comicId}/chapters")
@@ -6290,6 +6303,315 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         await context.SaveChangesAsync();
     }
 
+    [Fact]
+    public async Task Comic_rating_http_flow_enforces_auth_csrf_validation_and_editable_uniqueness()
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 10, 23, 9, 0, 0, TimeSpan.Zero);
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var comic = Comic.Create(
+                comicId,
+                $"in01-{comicId:N}",
+                "IN01 Rating Comic",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now);
+            var chapter = Chapter.Create(
+                chapterId,
+                comicId,
+                "Chapter 1",
+                1,
+                0,
+                null,
+                now);
+            var page = ChapterPage.CreatePending(
+                Guid.NewGuid(),
+                chapterId,
+                1,
+                $"in01/{comicId:N}/1",
+                $"sha256:{comicId:N}{comicId:N}",
+                now);
+            page.MarkReady(1200, 1800);
+            chapter.Publish(true, 1, now.AddMinutes(1));
+            comic.Publish(true, 1, now.AddMinutes(2));
+            context.Comics.Add(comic);
+            context.Chapters.Add(chapter);
+            context.ChapterPages.Add(page);
+            await context.SaveChangesAsync();
+        }
+
+        using var anonymous = CreateClient();
+        var empty = await anonymous.GetFromJsonAsync<JsonElement>(
+            $"/api/v1/comics/{comicId}/rating");
+        Assert.Equal(0, empty.GetProperty("ratingCount").GetInt32());
+        Assert.Equal(JsonValueKind.Null, empty.GetProperty("myRating").ValueKind);
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymous.PutAsJsonAsync(
+                $"/api/v1/comics/{comicId}/rating",
+                new { stars = 5 })).StatusCode);
+
+        _factory.TokenEndpoint.SetProfile(
+            $"in01-rating-{comicId:N}",
+            "IN01 Rating User",
+            $"in01-{comicId:N}@example.com",
+            null);
+        using var user = CreateClient();
+        await CompleteLoginAsync(user, await BeginLoginAsync(user, $"/comics/in01-{comicId:N}"));
+        var me = await user.GetAsync("/api/v1/me");
+        var csrf = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+
+        var missingCsrf = await user.PutAsJsonAsync(
+            $"/api/v1/comics/{comicId}/rating",
+            new { stars = 5 });
+        Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
+        Assert.Equal(
+            "VALIDATION_FAILED",
+            (await missingCsrf.Content.ReadFromJsonAsync<JsonElement>())
+                .GetProperty("errorCode").GetString());
+
+        using (var invalid = new HttpRequestMessage(
+                   HttpMethod.Put,
+                   $"/api/v1/comics/{comicId}/rating")
+               {
+                   Content = JsonContent.Create(new { stars = 6 }),
+               })
+        {
+            invalid.Headers.Add("X-CSRF-TOKEN", csrf);
+            var response = await user.SendAsync(invalid);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Equal(
+                "VALIDATION_FAILED",
+                (await response.Content.ReadFromJsonAsync<JsonElement>())
+                    .GetProperty("errorCode").GetString());
+        }
+
+        async Task<JsonElement> PutAsync(int stars)
+        {
+            using var request = new HttpRequestMessage(
+                HttpMethod.Put,
+                $"/api/v1/comics/{comicId}/rating")
+            {
+                Content = JsonContent.Create(new { stars }),
+            };
+            request.Headers.Add("X-CSRF-TOKEN", csrf);
+            var response = await user.SendAsync(request);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            return await response.Content.ReadFromJsonAsync<JsonElement>();
+        }
+
+        Assert.Equal(2, (await PutAsync(2)).GetProperty("myRating").GetInt32());
+        var updated = await PutAsync(4);
+        Assert.Equal(1, updated.GetProperty("ratingCount").GetInt32());
+        Assert.Equal(4, updated.GetProperty("myRating").GetInt32());
+
+        var detail = await user.GetFromJsonAsync<JsonElement>($"/api/v1/comics/in01-{comicId:N}");
+        Assert.Equal(4, detail.GetProperty("rating").GetProperty("myRating").GetInt32());
+
+        foreach (var invalidJson in new[]
+                 {
+                     "{}",
+                     "{\"stars\":null}",
+                     "{\"stars\":2.5}",
+                     "{\"stars\":0}",
+                     "{\"stars\":6}",
+                     "{\"stars\":4,\"averageStars\":5}",
+                     "{\"stars\":",
+                 })
+        {
+            using var invalidRequest = new HttpRequestMessage(
+                HttpMethod.Put,
+                $"/api/v1/comics/{comicId}/rating")
+            {
+                Content = new StringContent(invalidJson, Encoding.UTF8, "application/json"),
+            };
+            invalidRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+            await AssertStandardizedErrorAsync(
+                await user.SendAsync(invalidRequest),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+
+        using var delete = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"/api/v1/comics/{comicId}/rating");
+        delete.Headers.Add("X-CSRF-TOKEN", csrf);
+        var deleted = await user.SendAsync(delete);
+        Assert.Equal(HttpStatusCode.OK, deleted.StatusCode);
+        var deletedBody = await deleted.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, deletedBody.GetProperty("ratingCount").GetInt32());
+        Assert.Equal(JsonValueKind.Null, deletedBody.GetProperty("myRating").ValueKind);
+
+        using var repeatedDelete = new HttpRequestMessage(
+            HttpMethod.Delete,
+            $"/api/v1/comics/{comicId}/rating");
+        repeatedDelete.Headers.Add("X-CSRF-TOKEN", csrf);
+        var repeatedDeleteResponse = await user.SendAsync(repeatedDelete);
+        Assert.Equal(HttpStatusCode.OK, repeatedDeleteResponse.StatusCode);
+
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var hidden = ComicPublicationStatuses.Hidden;
+            await context.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE catalog.comics SET publication_status = {hidden} WHERE id = {comicId}");
+        }
+
+        await AssertStandardizedErrorAsync(
+            await user.GetAsync($"/api/v1/comics/{comicId}/rating"),
+            HttpStatusCode.NotFound,
+            "RESOURCE_NOT_FOUND");
+        await AssertStandardizedErrorAsync(
+            await user.GetAsync($"/api/v1/comics/in01-{comicId:N}"),
+            HttpStatusCode.NotFound,
+            "RESOURCE_NOT_FOUND");
+
+        var draftComicId = Guid.NewGuid();
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            context.Comics.Add(Comic.Create(
+                draftComicId,
+                $"in01-draft-{draftComicId:N}",
+                "IN01 Draft Comic",
+                string.Empty,
+                ComicSeriesStatuses.Ongoing,
+                null,
+                0,
+                false,
+                now));
+            await context.SaveChangesAsync();
+        }
+
+        await AssertStandardizedErrorAsync(
+            await user.GetAsync($"/api/v1/comics/{draftComicId}/rating"),
+            HttpStatusCode.NotFound,
+            "RESOURCE_NOT_FOUND");
+    }
+
+    [Fact]
+    public async Task Comic_rating_mutation_returns_forbidden_for_authenticated_principal_without_user_role()
+    {
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            useInsufficientRoleTestAuthentication: true);
+        using var client = CreateClient(factory);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Put,
+            $"/api/v1/comics/{Guid.NewGuid()}/rating")
+        {
+            Content = JsonContent.Create(new { stars = 5 }),
+        };
+
+        await AssertStandardizedErrorAsync(
+            await client.SendAsync(request),
+            HttpStatusCode.Forbidden,
+            "FORBIDDEN");
+    }
+
+    [Fact]
+    public async Task Comic_rating_get_and_detail_return_consistent_snapshot_during_concurrent_hide()
+    {
+        var ratingObserver = new BlockingRatingReadObserver();
+        var detailObserver = new BlockingComicDetailReadObserver();
+        await using var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(),
+            _securityDirectory,
+            comicRatingReadObserver: ratingObserver,
+            comicDetailReadObserver: detailObserver);
+        var (comicId, _) = await SeedPublicRatingComicAsync(factory.Services, "in01-race");
+        using var client = CreateClient(factory);
+
+        var ratingRead = client.GetAsync($"/api/v1/comics/{comicId}/rating");
+        await ratingObserver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await HideComicAsync(factory.Services, comicId);
+        ratingObserver.Release.TrySetResult();
+        Assert.Equal(HttpStatusCode.OK, (await ratingRead).StatusCode);
+        await AssertStandardizedErrorAsync(
+            await client.GetAsync($"/api/v1/comics/{comicId}/rating"),
+            HttpStatusCode.NotFound,
+            "RESOURCE_NOT_FOUND");
+
+        var (detailComicId, detailSlug) = await SeedPublicRatingComicAsync(
+            factory.Services,
+            "in01-detail-race");
+        var detailRead = client.GetAsync($"/api/v1/comics/{detailSlug}");
+        await detailObserver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await HideComicAsync(factory.Services, detailComicId);
+        detailObserver.Release.TrySetResult();
+        Assert.Equal(HttpStatusCode.OK, (await detailRead).StatusCode);
+        await AssertStandardizedErrorAsync(
+            await client.GetAsync($"/api/v1/comics/{detailSlug}"),
+            HttpStatusCode.NotFound,
+            "RESOURCE_NOT_FOUND");
+    }
+
+    [Fact]
+    public async Task Comic_rating_openapi_contract_declares_constraints_and_standard_errors()
+    {
+        using var client = CreateClient();
+        using var document = JsonDocument.Parse(
+            await client.GetStringAsync("/openapi/v1.json"));
+        var path = document.RootElement.GetProperty("paths")
+            .GetProperty("/api/v1/comics/{comicId}/rating");
+        var put = path.GetProperty("put");
+        var requestSchema = ResolveOpenApiSchema(
+            document.RootElement,
+            put.GetProperty("requestBody")
+                .GetProperty("content")
+                .GetProperty("application/json")
+                .GetProperty("schema"));
+        var stars = ResolveOpenApiSchema(
+            document.RootElement,
+            requestSchema.GetProperty("properties").GetProperty("stars"));
+        Assert.Equal(1, stars.GetProperty("minimum").GetInt32());
+        Assert.Equal(5, stars.GetProperty("maximum").GetInt32());
+
+        foreach (var method in new[] { "get", "put", "delete" })
+        {
+            var operation = path.GetProperty(method);
+            var response = ResolveResponseSchema(document.RootElement, operation, "200");
+            foreach (var property in new[] { "averageStars", "ratingCount", "myRating" })
+            {
+                Assert.True(response.GetProperty("properties").TryGetProperty(property, out _));
+            }
+        }
+
+        var expectedResponses = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["get"] = ["200", "400", "404"],
+            ["put"] = ["200", "400", "401", "403", "404"],
+            ["delete"] = ["200", "400", "401", "403", "404"],
+        };
+        foreach (var (method, statuses) in expectedResponses)
+        {
+            var operation = path.GetProperty(method);
+            foreach (var status in statuses)
+            {
+                Assert.True(
+                    operation.GetProperty("responses").TryGetProperty(status, out _),
+                    $"{method.ToUpperInvariant()} is missing {status}.");
+                if (status == "200")
+                {
+                    continue;
+                }
+
+                var error = ResolveResponseSchema(document.RootElement, operation, status);
+                foreach (var property in new[] { "errorCode", "message", "traceId" })
+                {
+                    Assert.True(error.GetProperty("properties").TryGetProperty(property, out _));
+                }
+            }
+        }
+    }
+
     private HttpClient CreateClient() => _factory.CreateClient(
         new WebApplicationFactoryClientOptions
         {
@@ -6352,6 +6674,58 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             BaseAddress = new Uri("https://localhost"),
             HandleCookies = true,
         });
+
+    private static async Task<(Guid ComicId, string Slug)> SeedPublicRatingComicAsync(
+        IServiceProvider services,
+        string prefix)
+    {
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        var slug = $"{prefix}-{comicId:N}";
+        var now = DateTimeOffset.UtcNow.AddMinutes(-5);
+        await using var scope = services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var comic = Comic.Create(
+            comicId,
+            slug,
+            "IN01 Race Comic",
+            string.Empty,
+            ComicSeriesStatuses.Ongoing,
+            null,
+            0,
+            false,
+            now);
+        var chapter = Chapter.Create(
+            chapterId,
+            comicId,
+            "Chapter 1",
+            1,
+            0,
+            null,
+            now);
+        var page = ChapterPage.CreatePending(
+            Guid.NewGuid(),
+            chapterId,
+            1,
+            $"in01-race/{comicId:N}/1",
+            $"sha256:{comicId:N}{comicId:N}",
+            now);
+        page.MarkReady(1200, 1800);
+        chapter.Publish(true, 1, now.AddMinutes(1));
+        comic.Publish(true, 1, now.AddMinutes(2));
+        context.AddRange(comic, chapter, page);
+        await context.SaveChangesAsync();
+        return (comicId, slug);
+    }
+
+    private static async Task HideComicAsync(IServiceProvider services, Guid comicId)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var hidden = ComicPublicationStatuses.Hidden;
+        await context.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE catalog.comics SET publication_status = {hidden} WHERE id = {comicId}");
+    }
 
     private static async Task AssertStandardizedErrorAsync(
         HttpResponseMessage response,
@@ -6661,7 +7035,9 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         int vipOrderTtlMinutes = 30,
         bool useInsufficientRoleTestAuthentication = false,
         bool sePayWebhookEnabled = false,
-        int sePayPermitLimitPerMinute = 120) : WebApplicationFactory<Program>
+        int sePayPermitLimitPerMinute = 120,
+        IComicRatingReadObserver? comicRatingReadObserver = null,
+        IPublicComicDetailReadObserver? comicDetailReadObserver = null) : WebApplicationFactory<Program>
     {
         private readonly string _keysPath = Path.Combine(securityDirectory, "keys");
         private readonly string _certificatePath = Path.Combine(
@@ -6787,6 +7163,16 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     services.RemoveAll<IUserProfileStore>();
                     services.AddScoped<IUserProfileStore, AlwaysConflictUserProfileStore>();
                 }
+
+                if (comicRatingReadObserver is not null)
+                {
+                    services.Replace(ServiceDescriptor.Singleton(comicRatingReadObserver));
+                }
+
+                if (comicDetailReadObserver is not null)
+                {
+                    services.Replace(ServiceDescriptor.Singleton(comicDetailReadObserver));
+                }
             });
         }
 
@@ -6794,6 +7180,34 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         {
             base.Dispose(disposing);
             TokenEndpoint.Dispose();
+        }
+    }
+
+    private sealed class BlockingRatingReadObserver : IComicRatingReadObserver
+    {
+        internal TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task AfterPublicVisibilityReadAsync(CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
+        }
+    }
+
+    private sealed class BlockingComicDetailReadObserver : IPublicComicDetailReadObserver
+    {
+        internal TaskCompletionSource Entered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task AfterCatalogReadAsync(CancellationToken cancellationToken)
+        {
+            Entered.TrySetResult();
+            await Release.Task.WaitAsync(cancellationToken);
         }
     }
 

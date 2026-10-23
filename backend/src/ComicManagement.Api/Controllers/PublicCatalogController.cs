@@ -3,6 +3,9 @@ using ComicManagement.Catalog.Browsing;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Taxonomy;
 using ComicManagement.Workflows.Reading;
+using ComicManagement.Workflows.Interaction;
+using ComicManagement.Interaction.Ratings;
+using ComicManagement.Shared.Identity;
 using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,7 +15,9 @@ namespace ComicManagement.Api.Controllers;
 [Route("api/v1/comics")]
 public sealed class PublicCatalogController(
     PublicCatalogHandler catalogHandler,
-    PublicChapterListWorkflow chapterListWorkflow) : ControllerBase
+    PublicChapterListWorkflow chapterListWorkflow,
+    PublicComicDetailWorkflow comicDetailWorkflow,
+    ICurrentUser currentUser) : ControllerBase
 {
     [HttpGet]
     [ProducesResponseType<PublicComicListResponse>(StatusCodes.Status200OK)]
@@ -50,6 +55,7 @@ public sealed class PublicCatalogController(
     }
 
     [HttpGet("{slug}")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType<PublicComicDetailResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
@@ -57,17 +63,25 @@ public sealed class PublicCatalogController(
         [StringLength(Comic.MaximumSlugLength, MinimumLength = 1)] string slug,
         CancellationToken cancellationToken)
     {
-        var result = await catalogHandler.GetComicAsync(slug, cancellationToken);
-        return result.Outcome switch
+        var result = await comicDetailWorkflow.GetAsync(
+            slug,
+            currentUser.UserId,
+            cancellationToken);
+        if (result.Outcome == PublicCatalogOutcome.ValidationFailed)
         {
-            PublicCatalogOutcome.Succeeded => Ok(ToResponse(
-                result.Detail ?? throw new InvalidOperationException(
-                    "A successful comic detail query requires a detail."))),
-            PublicCatalogOutcome.ValidationFailed => BadRequest(ValidationProblem(
-                "A valid comic slug is required.")),
-            PublicCatalogOutcome.NotFound => NotFound(NotFoundProblem()),
-            _ => throw new InvalidOperationException("Unknown public catalog outcome."),
-        };
+            return BadRequest(ValidationProblem("A valid comic slug is required."));
+        }
+
+        if (result.Outcome == PublicCatalogOutcome.NotFound)
+        {
+            return NotFound(NotFoundProblem());
+        }
+
+        var detail = result.Detail ?? throw new InvalidOperationException(
+            "A successful comic detail query requires a detail.");
+        var rating = result.Rating ?? throw new InvalidOperationException(
+            "A successful comic detail query requires a rating projection.");
+        return Ok(ToResponse(detail, rating));
     }
 
     [HttpGet("{comicId:guid}/chapters")]
@@ -133,7 +147,9 @@ public sealed class PublicCatalogController(
         item.UpdateSortAt,
         item.Genres.Select(ToResponse).ToArray());
 
-    private static PublicComicDetailResponse ToResponse(PublicComicDetail detail) => new(
+    private static PublicComicDetailResponse ToResponse(
+        PublicComicDetail detail,
+        ComicRatingSummary rating) => new(
         detail.Id,
         detail.Slug,
         detail.Title,
@@ -144,7 +160,11 @@ public sealed class PublicCatalogController(
         detail.UpdatedAt,
         detail.Genres.Select(ToResponse).ToArray(),
         detail.Authors.Select(ToResponse).ToArray(),
-        detail.TranslationGroups.Select(ToResponse).ToArray());
+        detail.TranslationGroups.Select(ToResponse).ToArray(),
+        new ComicRatingResponse(
+            rating.AverageStars,
+            rating.RatingCount,
+            rating.MyRating));
 
     private static PublicChapterListItemResponse ToResponse(PublicChapterListItem chapter) => new(
         chapter.Id,
@@ -186,7 +206,8 @@ public sealed record PublicComicDetailResponse(
     DateTimeOffset UpdatedAt,
     IReadOnlyList<CatalogReferenceResponse> Genres,
     IReadOnlyList<CatalogReferenceResponse> Authors,
-    IReadOnlyList<CatalogReferenceResponse> TranslationGroups);
+    IReadOnlyList<CatalogReferenceResponse> TranslationGroups,
+    ComicRatingResponse Rating);
 
 public sealed record CatalogReferenceResponse(Guid Id, string Name, string? Slug);
 

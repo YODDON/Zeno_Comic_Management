@@ -1091,6 +1091,74 @@ svg {
   margin-top: 1.5rem;
 }
 
+.rating-panel {
+  align-items: center;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  justify-content: space-between;
+  margin-top: 2rem;
+  padding: 1.25rem;
+}
+
+.rating-panel h2,
+.rating-panel p {
+  margin: 0;
+}
+
+.rating-panel .section-kicker {
+  color: var(--text-muted);
+}
+
+.rating-stars {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.rating-stars {
+  border: 0;
+  padding: 0;
+}
+
+.rating-stars label {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.5rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+  justify-content: center;
+}
+
+.rating-stars label:hover,
+.rating-stars label:has(input:focus-visible),
+.rating-stars label.is-selected {
+  color: var(--accent-strong);
+}
+
+.rating-stars label.is-selected svg {
+  fill: currentColor;
+}
+
+.rating-stars:disabled label {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.rating-stars input {
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+  width: 1px;
+}
+
 .inline-notice,
 .access-warning {
   margin-top: 1rem;

@@ -20,6 +20,7 @@
     <Project Path="backend/tests/ComicManagement.Billing.UnitTests/ComicManagement.Billing.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Catalog.UnitTests/ComicManagement.Catalog.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Identity.UnitTests/ComicManagement.Identity.UnitTests.csproj" />
+    <Project Path="backend/tests/ComicManagement.Interaction.UnitTests/ComicManagement.Interaction.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Membership.UnitTests/ComicManagement.Membership.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Missions.UnitTests/ComicManagement.Missions.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Persistence.IntegrationTests/ComicManagement.Persistence.IntegrationTests.csproj" />

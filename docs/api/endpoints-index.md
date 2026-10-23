@@ -24,7 +24,8 @@
 | User | GET | `/api/v1/missions`, `/api/v1/missions/daily-limit`, `/api/v1/missions/rewards` | Missions (M02 implemented) |
 | User | GET/POST | `/api/v1/refunds`, `/api/v1/refunds/eligibility` | Billing |
 | User | GET | `/api/v1/refunds/{id}` | Billing |
-| User | GET/POST/PATCH | Ratings/comments endpoints defined in Interaction vertical slice | Interaction |
+| Public/User | GET/PUT/DELETE | `/api/v1/comics/{comicId}/rating` | Interaction (IN01 implemented) |
+| User | GET/POST/PATCH | Comments endpoints defined in Interaction vertical slice | Interaction |
 | Admin | POST | `/api/v1/admin/comics/{comicId}/publish`, `/api/v1/admin/comics/{comicId}/hide`, `/api/v1/admin/chapters/{chapterId}/publish`, `/api/v1/admin/chapters/{chapterId}/hide` | Catalog |
 | Admin | PATCH | `/api/v1/admin/comics/{comicId}/slug` | Catalog |
 | Admin | CRUD (proposed) | `/api/v1/admin/comics`, `/api/v1/admin/chapters`, `/api/v1/admin/genres`, etc. | Catalog |

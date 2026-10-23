@@ -20,6 +20,8 @@ using ComicManagement.Missions.Periods;
 using ComicManagement.Missions.Administration;
 using ComicManagement.Missions.Processing;
 using ComicManagement.Missions.Queries;
+using ComicManagement.Interaction.Ratings;
+using ComicManagement.Shared.Persistence;
 
 namespace ComicManagement.Persistence;
 
@@ -35,6 +37,7 @@ public static class PersistenceServiceCollectionExtensions
         services.AddDbContext<AppDbContext>(options =>
             ConfigurePostgreSql(options, connectionString));
         services.AddLogging();
+        services.TryAddScoped<IConsistentReadExecutor, PostgreSqlConsistentReadExecutor>();
         services.TryAddSingleton<IClock, SystemClock>();
         services.TryAddScoped<IGoogleIdentityStore, GoogleIdentityStore>();
         services.TryAddScoped<IUserProfileStore, UserProfileStore>();
@@ -44,6 +47,9 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<CatalogPublicationHandler>();
         services.TryAddScoped<IPublicCatalogStore, PublicCatalogStore>();
         services.TryAddScoped<PublicCatalogHandler>();
+        services.TryAddScoped<IComicRatingStore, ComicRatingStore>();
+        services.TryAddSingleton<IComicRatingReadObserver, NoOpComicRatingReadObserver>();
+        services.TryAddScoped<ComicRatingHandler>();
         services.TryAddScoped<IChapterAccessProjectionStore, ChapterAccessProjectionStore>();
         services.TryAddScoped<ChapterAccessHandler>();
         services.TryAddScoped<IChapterUnlockQuoteStore, ChapterUnlockQuoteStore>();
