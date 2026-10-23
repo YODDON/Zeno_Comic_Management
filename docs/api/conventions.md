@@ -17,6 +17,8 @@ Refund approval is a sensitive Admin financial command and requires `Idempotency
 
 Admin Refund mutations (review, approve and reject) share a fixed-window limit of 20 requests/minute/authenticated Admin, partitioned by server-authenticated Admin user ID. Rejection is standardized `429 RATE_LIMITED`.
 
+RF03 transfer-attempt, complete and release commands use the same Admin mutation policy. Each requires a persistent Admin-scoped `Idempotency-Key`; exact replay returns its original transfer/resolution result, while a different semantic payload returns `IDEMPOTENCY_CONFLICT`.
+
 Admin Mission mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. The limit covers definition creation, revision append, activation and deactivation; read-only Mission routes do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
 ## Pagination

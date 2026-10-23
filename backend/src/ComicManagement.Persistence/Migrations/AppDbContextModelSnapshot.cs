@@ -603,11 +603,131 @@ namespace ComicManagement.Persistence.Migrations
 
                             t.HasCheckConstraint("ck_refund_requests_recovery", "required_recovery_coins > 0");
 
-                            t.HasCheckConstraint("ck_refund_requests_review_lifecycle", "(status = 'Requested' AND reviewed_by IS NULL AND reviewed_at IS NULL AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR (status = 'UnderReview' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR (status = 'RecoveryReserved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NOT NULL AND approved_at IS NOT NULL AND length(btrim(decision_reason)) > 0) OR (status = 'Rejected' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NULL AND approved_at IS NULL AND length(btrim(decision_reason)) > 0) OR status IN ('TransferPending', 'Completed', 'NeedsReconciliation', 'TransferConfirmedFailed', 'ReservationReleased')");
+                            t.HasCheckConstraint("ck_refund_requests_review_lifecycle", "(status = 'Requested' AND reviewed_by IS NULL AND reviewed_at IS NULL AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR (status = 'UnderReview' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NULL AND approved_at IS NULL AND decision_reason IS NULL) OR (status = 'RecoveryReserved' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NOT NULL AND approved_at IS NOT NULL AND completed_by IS NULL AND completed_at IS NULL AND length(btrim(decision_reason)) > 0) OR (status = 'Rejected' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NULL AND approved_at IS NULL AND length(btrim(decision_reason)) > 0) OR (status IN ('TransferPending', 'NeedsReconciliation') AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NOT NULL AND approved_at IS NOT NULL AND completed_by IS NULL AND completed_at IS NULL AND length(btrim(decision_reason)) > 0) OR (status IN ('Completed', 'TransferConfirmedFailed', 'ReservationReleased') AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND approved_by IS NOT NULL AND approved_at IS NOT NULL AND completed_by IS NOT NULL AND completed_at IS NOT NULL AND length(btrim(decision_reason)) > 0)");
 
                             t.HasCheckConstraint("ck_refund_requests_status", "status IN ('Requested', 'UnderReview', 'RecoveryReserved', 'TransferPending', 'Completed', 'Rejected', 'NeedsReconciliation', 'TransferConfirmedFailed', 'ReservationReleased')");
 
                             t.HasCheckConstraint("ck_refund_requests_version", "version >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Refunds.RefundTransferRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<long>("AmountVnd")
+                        .HasColumnType("bigint")
+                        .HasColumnName("amount_vnd");
+
+                    b.Property<string>("BankReference")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("bank_reference");
+
+                    b.Property<string>("ConfirmationNote")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("confirmation_note");
+
+                    b.Property<string>("EvidenceReference")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("evidence_reference");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTimeOffset>("RecordedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_at");
+
+                    b.Property<Guid>("RecordedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("recorded_by");
+
+                    b.Property<Guid>("RefundRequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("refund_request_id");
+
+                    b.Property<string>("RequestFingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("request_fingerprint");
+
+                    b.Property<Guid?>("ResolutionOperationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("resolution_operation_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("VerificationFingerprint")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("verification_fingerprint");
+
+                    b.Property<string>("VerificationIdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("verification_idempotency_key");
+
+                    b.Property<DateTimeOffset?>("VerifiedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("verified_at");
+
+                    b.Property<Guid?>("VerifiedBy")
+                        .HasColumnType("uuid")
+                        .HasColumnName("verified_by");
+
+                    b.HasKey("Id")
+                        .HasName("pk_refund_transfer_records");
+
+                    b.HasIndex("BankReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_transfer_records_bank_reference");
+
+                    b.HasIndex("RefundRequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_transfer_records_refund_request_id");
+
+                    b.HasIndex("ResolutionOperationId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_transfer_records_resolution_operation")
+                        .HasFilter("resolution_operation_id IS NOT NULL");
+
+                    b.HasIndex("RecordedBy", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_transfer_records_record_idempotency");
+
+                    b.HasIndex("VerifiedBy", "VerificationIdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("ux_refund_transfer_records_verify_idempotency")
+                        .HasFilter("verification_idempotency_key IS NOT NULL");
+
+                    b.ToTable("refund_transfer_records", "billing", t =>
+                        {
+                            t.HasCheckConstraint("ck_refund_transfer_records_amount", "amount_vnd > 0");
+
+                            t.HasCheckConstraint("ck_refund_transfer_records_evidence", "length(btrim(bank_reference)) > 0 AND bank_reference = btrim(bank_reference) AND length(btrim(evidence_reference)) > 0 AND evidence_reference = btrim(evidence_reference) AND length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) AND request_fingerprint ~ '^[0-9a-f]{64}$'");
+
+                            t.HasCheckConstraint("ck_refund_transfer_records_status", "status IN ('ReportedSucceeded','ReportedFailed','NeedsReconciliation','VerifiedSucceeded','VerifiedFailed')");
+
+                            t.HasCheckConstraint("ck_refund_transfer_records_verification", "(status IN ('ReportedSucceeded','ReportedFailed','NeedsReconciliation') AND verified_by IS NULL AND verified_at IS NULL AND confirmation_note IS NULL AND verification_idempotency_key IS NULL AND verification_fingerprint IS NULL AND resolution_operation_id IS NULL) OR (status IN ('VerifiedSucceeded','VerifiedFailed') AND verified_by IS NOT NULL AND verified_at IS NOT NULL AND verified_at >= recorded_at AND length(btrim(confirmation_note)) > 0 AND confirmation_note = btrim(confirmation_note) AND length(btrim(verification_idempotency_key)) > 0 AND verification_idempotency_key = btrim(verification_idempotency_key) AND verification_fingerprint ~ '^[0-9a-f]{64}$' AND resolution_operation_id IS NOT NULL)");
                         });
                 });
 
@@ -2704,6 +2824,37 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_refund_requests_original_paid_coin_lot_snapshot");
+                });
+
+            modelBuilder.Entity("ComicManagement.Billing.Refunds.RefundTransferRecord", b =>
+                {
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("RecordedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refund_transfer_records_recorded_by");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("VerifiedBy")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_transfer_records_verified_by");
+
+                    b.HasOne("ComicManagement.Billing.Refunds.RefundRequest", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Billing.Refunds.RefundTransferRecord", "RefundRequestId", "UserId")
+                        .HasPrincipalKey("ComicManagement.Billing.Refunds.RefundRequest", "Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_refund_transfer_records_refund_owner");
+
+                    b.HasOne("ComicManagement.Wallet.Ledger.WalletOperation", null)
+                        .WithOne()
+                        .HasForeignKey("ComicManagement.Billing.Refunds.RefundTransferRecord", "ResolutionOperationId", "UserId")
+                        .HasPrincipalKey("ComicManagement.Wallet.Ledger.WalletOperation", "Id", "UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_refund_transfer_records_resolution_operation_owner");
                 });
 
             modelBuilder.Entity("ComicManagement.Catalog.Chapters.Chapter", b =>

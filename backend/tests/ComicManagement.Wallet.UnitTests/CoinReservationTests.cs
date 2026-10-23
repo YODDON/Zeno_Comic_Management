@@ -53,4 +53,20 @@ public sealed class CoinReservationTests
             "Verified original lot",
             DateTimeOffset.UtcNow));
     }
+
+    [Fact]
+    public void Reservation_can_be_resolved_exactly_once()
+    {
+        var now = new DateTimeOffset(2026, 10, 22, 8, 0, 0, TimeSpan.Zero);
+        var reservation = CoinReservation.Create(Guid.NewGuid(), Guid.NewGuid(),
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "approval-key",
+            new string('a', 64), 10_000, 3, Guid.NewGuid(), now.AddMinutes(-1),
+            "Verified original lot", now);
+
+        reservation.Consume(now.AddMinutes(1));
+
+        Assert.Equal(CoinReservationStatuses.Consumed, reservation.Status);
+        Assert.Equal(now.AddMinutes(1), reservation.ResolvedAt);
+        Assert.Throws<InvalidOperationException>(() => reservation.Release(now.AddMinutes(2)));
+    }
 }

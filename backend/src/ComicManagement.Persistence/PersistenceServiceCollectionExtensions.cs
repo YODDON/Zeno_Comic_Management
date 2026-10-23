@@ -67,6 +67,8 @@ public static class PersistenceServiceCollectionExtensions
             NoOpRefundRequestCriticalSectionObserver>();
         services.TryAddSingleton<IRefundApprovalCriticalSectionObserver,
             NoOpRefundApprovalCriticalSectionObserver>();
+        services.TryAddSingleton<IRefundPayoutCriticalSectionObserver,
+            NoOpRefundPayoutCriticalSectionObserver>();
         services.TryAddScoped<RefundRequestHandler>();
         services.TryAddScoped<ISePayWebhookStore, SePayWebhookStore>();
         services.TryAddSingleton<ISePayWebhookCriticalSectionObserver,

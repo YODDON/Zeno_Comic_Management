@@ -88,6 +88,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
 
     internal DbSet<RefundRecipient> RefundRecipients => Set<RefundRecipient>();
 
+    internal DbSet<RefundTransferRecord> RefundTransferRecords => Set<RefundTransferRecord>();
+
     internal DbSet<VipPlan> VipPlans => Set<VipPlan>();
 
     internal DbSet<VipSubscription> VipSubscriptions => Set<VipSubscription>();
@@ -223,6 +225,25 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
             throw new InvalidOperationException("Refund recipients are immutable.");
+        }
+
+        if (ChangeTracker.Entries<RefundTransferRecord>().Any(entry =>
+                entry.State == EntityState.Deleted ||
+                entry.State == EntityState.Modified &&
+                (entry.Property(item => item.Id).IsModified ||
+                 entry.Property(item => item.RefundRequestId).IsModified ||
+                 entry.Property(item => item.UserId).IsModified ||
+                 entry.Property(item => item.BankReference).IsModified ||
+                 entry.Property(item => item.AmountVnd).IsModified ||
+                 entry.Property(item => item.EvidenceReference).IsModified ||
+                 entry.Property(item => item.RecordedBy).IsModified ||
+                 entry.Property(item => item.RecordedAt).IsModified ||
+                 entry.Property(item => item.IdempotencyKey).IsModified ||
+                 entry.Property(item => item.RequestFingerprint).IsModified ||
+                 entry.Property(item => item.VerifiedAt).OriginalValue is not null)))
+        {
+            throw new InvalidOperationException(
+                "Refund transfer records are immutable after verification.");
         }
 
         if (ChangeTracker.Entries<RefundRequest>().Any(entry =>

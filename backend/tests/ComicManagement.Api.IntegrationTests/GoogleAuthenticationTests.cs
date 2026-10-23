@@ -1876,12 +1876,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         Assert.True(ResolveOpenApiSchema(document, listSchema.GetProperty("items"))
             .GetProperty("properties").TryGetProperty("recipient", out _));
 
-        foreach (var route in new[] { "review", "approve", "reject" })
+        foreach (var route in new[]
+                 {
+                     "review", "approve", "reject", "transfer-attempts", "complete", "release",
+                 })
         {
             var operation = paths
                 .GetProperty($"/api/v1/admin/refunds/{{refundId}}/{route}")
                 .GetProperty("post");
-            foreach (var status in route == "approve"
+            foreach (var status in route is "approve" or "complete" or "release"
                          ? new[] { "200", "400", "401", "403", "404", "409", "422", "429" }
                          : new[] { "200", "400", "401", "403", "404", "409", "429" })
             {
@@ -1906,13 +1909,14 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                          "refundId", "status", "requiredRecoveryCoins", "version",
                          "reviewedBy", "reviewedAt", "approvedBy", "approvedAt",
                          "decisionReason", "reservationId", "walletOperationId",
+                         "transferRecordId", "transferStatus", "resolutionOperationId",
                      })
             {
                 Assert.True(adminSchema.GetProperty("properties").TryGetProperty(property, out _),
                     $"{route}:{property}");
             }
 
-            if (route == "approve")
+            if (route is "approve" or "transfer-attempts" or "complete" or "release")
             {
                 var approvalKey = FindOpenApiParameter(operation, "Idempotency-Key");
                 Assert.True(approvalKey.GetProperty("required").GetBoolean());
@@ -1922,6 +1926,18 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                     approvalKey.GetProperty("schema").GetProperty("maxLength").GetInt32());
             }
         }
+
+        var transferOperation = paths
+            .GetProperty("/api/v1/admin/refunds/{refundId}/transfer-attempts")
+            .GetProperty("post");
+        var transferRequestSchema = ResolveOpenApiSchema(document,
+            transferOperation.GetProperty("requestBody").GetProperty("content")
+                .GetProperty("application/json").GetProperty("schema"));
+        var transferRequired = transferRequestSchema.GetProperty("required")
+            .EnumerateArray().Select(item => item.GetString()).ToHashSet(StringComparer.Ordinal);
+        Assert.Contains("reportedOutcome", transferRequired);
+        Assert.Equal(["Succeeded", "Failed", "Unknown"], GetOpenApiEnumValues(document,
+            transferRequestSchema.GetProperty("properties").GetProperty("reportedOutcome")));
     }
 
     [Fact]
@@ -2187,6 +2203,165 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             Assert.Equal(1, await verification.OutboxMessages.CountAsync(message =>
                 message.EventType == BillingEventTypes.RefundRecoveryReserved));
 
+            var approvedVersion = approved.GetProperty("version").GetInt64();
+            var (payoutAdmin, payoutCsrf) = await CreateAdminClientAsync(
+                "rf03-payout-validation-admin");
+            using var payoutAdminScope = payoutAdmin;
+            string TransferBody(string reportedOutcomeJson, bool unexpected = false) => $$"""
+                {
+                  "expectedVersion": {{approvedVersion}},
+                  "bankReference": "bank-validation-{{refundId:N}}",
+                  "evidenceReference": "evidence://manual-bank-proof",
+                  "reportedOutcome": {{reportedOutcomeJson}}{{(unexpected ? ",\"amountVnd\":1" : string.Empty)}}
+                }
+                """;
+
+            async Task AssertInvalidTransferAsync(string body, string? key = "rf03-validation-key",
+                string? csrfToken = null)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post,
+                    $"/api/v1/admin/refunds/{refundId}/transfer-attempts")
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json"),
+                };
+                request.Headers.Add("X-CSRF-TOKEN", csrfToken ?? payoutCsrf);
+                if (key is not null)
+                {
+                    request.Headers.TryAddWithoutValidation("Idempotency-Key", key);
+                }
+
+                await AssertStandardizedErrorAsync(await payoutAdmin.SendAsync(request),
+                    HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            }
+
+            await AssertInvalidTransferAsync($$"""
+                {"expectedVersion":{{approvedVersion}},"bankReference":"bank-missing-outcome",
+                 "evidenceReference":"evidence://manual-bank-proof"}
+                """);
+            await AssertInvalidTransferAsync(TransferBody("null"));
+            await AssertInvalidTransferAsync(TransferBody("1"));
+            await AssertInvalidTransferAsync(TransferBody("\"NotAnOutcome\""));
+            await AssertInvalidTransferAsync(TransferBody("\"Succeeded\"", unexpected: true));
+            await AssertInvalidTransferAsync(TransferBody("\"Succeeded\""), key: null);
+            await AssertInvalidTransferAsync(TransferBody("\"Succeeded\""), key: " ");
+            await AssertInvalidTransferAsync(TransferBody("\"Succeeded\""), key: new string('k', 201));
+            await AssertInvalidTransferAsync(TransferBody("\"Succeeded\""),
+                key: "rf03-invalid-csrf", csrfToken: "invalid-csrf-token");
+            using (var missingCsrfTransfer = new HttpRequestMessage(HttpMethod.Post,
+                       $"/api/v1/admin/refunds/{refundId}/transfer-attempts")
+                   {
+                       Content = new StringContent(TransferBody("\"Succeeded\""),
+                           Encoding.UTF8, "application/json"),
+                   })
+            {
+                missingCsrfTransfer.Headers.Add("Idempotency-Key", "rf03-missing-csrf");
+                await AssertStandardizedErrorAsync(await payoutAdmin.SendAsync(missingCsrfTransfer),
+                    HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            }
+
+            using (var anonymous = CreateClient())
+            using (var anonymousTransfer = new HttpRequestMessage(HttpMethod.Post,
+                       $"/api/v1/admin/refunds/{refundId}/transfer-attempts")
+                   {
+                       Content = new StringContent(TransferBody("\"Succeeded\""),
+                           Encoding.UTF8, "application/json"),
+                   })
+            {
+                anonymousTransfer.Headers.Add("Idempotency-Key", "rf03-anonymous-transfer");
+                Assert.Equal(HttpStatusCode.Unauthorized,
+                    (await anonymous.SendAsync(anonymousTransfer)).StatusCode);
+            }
+
+            _factory.TokenEndpoint.SetProfile(
+                $"rf03-user-role-{Guid.NewGuid():N}", "RF03 User", null, null);
+            using (var user = CreateClient())
+            {
+                await CompleteLoginAsync(user, await BeginLoginAsync(user, "/refunds"));
+                var userProfile = await user.GetAsync("/api/v1/me");
+                var userCsrf = Assert.Single(userProfile.Headers.GetValues("X-CSRF-TOKEN"));
+                using var forbidden = new HttpRequestMessage(HttpMethod.Post,
+                    $"/api/v1/admin/refunds/{refundId}/transfer-attempts")
+                {
+                    Content = new StringContent(TransferBody("\"Succeeded\""),
+                        Encoding.UTF8, "application/json"),
+                };
+                forbidden.Headers.Add("X-CSRF-TOKEN", userCsrf);
+                forbidden.Headers.Add("Idempotency-Key", "rf03-user-transfer");
+                await AssertStandardizedErrorAsync(await user.SendAsync(forbidden),
+                    HttpStatusCode.Forbidden, "FORBIDDEN");
+            }
+
+            verification.ChangeTracker.Clear();
+            Assert.Equal(0, await verification.RefundTransferRecords.CountAsync(item =>
+                item.RefundRequestId == refundId));
+            var stillReserved = await verification.RefundRequests.AsNoTracking()
+                .SingleAsync(item => item.Id == refundId);
+            Assert.Equal(RefundRequestStatuses.RecoveryReserved, stillReserved.Status);
+
+            using var transferRequest = new HttpRequestMessage(HttpMethod.Post,
+                $"/api/v1/admin/refunds/{refundId}/transfer-attempts")
+            {
+                Content = JsonContent.Create(new
+                {
+                    expectedVersion = approvedVersion,
+                    bankReference = $"bank-{refundId:N}",
+                    evidenceReference = "evidence://manual-bank-proof",
+                    reportedOutcome = "Succeeded",
+                }),
+            };
+            transferRequest.Headers.Add("X-CSRF-TOKEN", payoutCsrf);
+            transferRequest.Headers.Add("Idempotency-Key", "rf03-http-transfer");
+            var transferResponse = await payoutAdmin.SendAsync(transferRequest);
+            Assert.True(transferResponse.StatusCode == HttpStatusCode.OK,
+                await transferResponse.Content.ReadAsStringAsync());
+            var transfer = await transferResponse.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("TransferPending", transfer.GetProperty("status").GetString());
+            Assert.Equal("ReportedSucceeded", transfer.GetProperty("transferStatus").GetString());
+
+            using (var invalidRelease = new HttpRequestMessage(HttpMethod.Post,
+                       $"/api/v1/admin/refunds/{refundId}/release")
+                   {
+                       Content = JsonContent.Create(new
+                       {
+                           expectedVersion = transfer.GetProperty("version").GetInt64(),
+                           transferRecordId = transfer.GetProperty("transferRecordId").GetGuid(),
+                           confirmationNote = "Cannot release a reported success",
+                       }),
+                   })
+            {
+                invalidRelease.Headers.Add("X-CSRF-TOKEN", payoutCsrf);
+                invalidRelease.Headers.Add("Idempotency-Key", "rf03-invalid-release");
+                await AssertStandardizedErrorAsync(await payoutAdmin.SendAsync(invalidRelease),
+                    HttpStatusCode.UnprocessableEntity, "REFUND_TRANSFER_NOT_VERIFIED");
+            }
+
+            using var completeRequest = new HttpRequestMessage(HttpMethod.Post,
+                $"/api/v1/admin/refunds/{refundId}/complete")
+            {
+                Content = JsonContent.Create(new
+                {
+                    expectedVersion = transfer.GetProperty("version").GetInt64(),
+                    transferRecordId = transfer.GetProperty("transferRecordId").GetGuid(),
+                    confirmationNote = "Bank evidence independently reviewed",
+                }),
+            };
+            completeRequest.Headers.Add("X-CSRF-TOKEN", payoutCsrf);
+            completeRequest.Headers.Add("Idempotency-Key", "rf03-http-complete");
+            var completeResponse = await payoutAdmin.SendAsync(completeRequest);
+            Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+            var completed = await completeResponse.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("Completed", completed.GetProperty("status").GetString());
+
+            verification.ChangeTracker.Clear();
+            var completedWallet = await verification.Wallets.AsNoTracking()
+                .SingleAsync(candidate => candidate.UserId == ownerId);
+            var completedLot = await verification.PaidCoinLots.AsNoTracking()
+                .SingleAsync(candidate => candidate.Id == lotId);
+            Assert.Equal(0, completedWallet.PaidReserved);
+            Assert.Equal(10_000, completedLot.RefundedCoins);
+            Assert.Equal(1, await verification.OutboxMessages.CountAsync(message =>
+                message.EventType == BillingEventTypes.RefundCompleted));
+
             var rejectedOrderId = Guid.NewGuid();
             var rejectedRefundId = Guid.NewGuid();
             var rejectedOwnerId = Guid.NewGuid();
@@ -2247,6 +2422,105 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             Assert.Equal(HttpStatusCode.OK, rejected.StatusCode);
             Assert.Equal("Rejected", (await rejected.Content.ReadFromJsonAsync<JsonElement>())
                 .GetProperty("status").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task Admin_refund_transfer_outcomes_and_duplicate_evidence_follow_http_contract()
+    {
+        var (admin, csrf) = await CreateAdminClientAsync("rf03-transfer-contract-admin");
+        using (admin)
+        {
+            async Task<JsonElement> RecordAsync(
+                (Guid RefundId, long Version) seeded,
+                string outcome,
+                string bankReference,
+                string key)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post,
+                    $"/api/v1/admin/refunds/{seeded.RefundId}/transfer-attempts")
+                {
+                    Content = JsonContent.Create(new
+                    {
+                        expectedVersion = seeded.Version,
+                        bankReference,
+                        evidenceReference = "evidence://rf03-http-contract",
+                        reportedOutcome = outcome,
+                    }),
+                };
+                request.Headers.Add("X-CSRF-TOKEN", csrf);
+                request.Headers.Add("Idempotency-Key", key);
+                var response = await admin.SendAsync(request);
+                Assert.True(response.StatusCode == HttpStatusCode.OK,
+                    await response.Content.ReadAsStringAsync());
+                return await response.Content.ReadFromJsonAsync<JsonElement>();
+            }
+
+            async Task<HttpResponseMessage> ResolveAsync(
+                Guid refundId, JsonElement transfer, bool complete, string key)
+            {
+                var request = new HttpRequestMessage(HttpMethod.Post,
+                    $"/api/v1/admin/refunds/{refundId}/{(complete ? "complete" : "release")}")
+                {
+                    Content = JsonContent.Create(new
+                    {
+                        expectedVersion = transfer.GetProperty("version").GetInt64(),
+                        transferRecordId = transfer.GetProperty("transferRecordId").GetGuid(),
+                        confirmationNote = "Evidence independently reconciled",
+                    }),
+                };
+                request.Headers.Add("X-CSRF-TOKEN", csrf);
+                request.Headers.Add("Idempotency-Key", key);
+                return await admin.SendAsync(request);
+            }
+
+            var failed = await SeedRecoveryReservedRefundAsync("reported-failed");
+            var failedTransfer = await RecordAsync(failed, "Failed",
+                $"BANK-FAILED-{failed.RefundId:N}", "rf03-http-failed-transfer");
+            await AssertStandardizedErrorAsync(
+                await ResolveAsync(failed.RefundId, failedTransfer, true,
+                    "rf03-http-failed-complete"),
+                HttpStatusCode.UnprocessableEntity, "REFUND_TRANSFER_NOT_VERIFIED");
+            Assert.Equal(HttpStatusCode.OK,
+                (await ResolveAsync(failed.RefundId, failedTransfer, false,
+                    "rf03-http-failed-release")).StatusCode);
+
+            var unknownCompleted = await SeedRecoveryReservedRefundAsync("unknown-complete");
+            var unknownCompleteTransfer = await RecordAsync(unknownCompleted, "Unknown",
+                $"BANK-UNKNOWN-C-{unknownCompleted.RefundId:N}",
+                "rf03-http-unknown-complete-transfer");
+            Assert.Equal(HttpStatusCode.OK,
+                (await ResolveAsync(unknownCompleted.RefundId, unknownCompleteTransfer, true,
+                    "rf03-http-unknown-complete")).StatusCode);
+
+            var unknownReleased = await SeedRecoveryReservedRefundAsync("unknown-release");
+            var unknownReleaseTransfer = await RecordAsync(unknownReleased, "Unknown",
+                $"BANK-UNKNOWN-R-{unknownReleased.RefundId:N}",
+                "rf03-http-unknown-release-transfer");
+            Assert.Equal(HttpStatusCode.OK,
+                (await ResolveAsync(unknownReleased.RefundId, unknownReleaseTransfer, false,
+                    "rf03-http-unknown-release")).StatusCode);
+
+            const string duplicateBankReference = "RF03-HTTP-DUPLICATE-BANK";
+            var duplicateWinner = await SeedRecoveryReservedRefundAsync("duplicate-winner");
+            _ = await RecordAsync(duplicateWinner, "Succeeded", duplicateBankReference,
+                "rf03-http-duplicate-winner");
+            var duplicateLoser = await SeedRecoveryReservedRefundAsync("duplicate-loser");
+            using var duplicateRequest = new HttpRequestMessage(HttpMethod.Post,
+                $"/api/v1/admin/refunds/{duplicateLoser.RefundId}/transfer-attempts")
+            {
+                Content = JsonContent.Create(new
+                {
+                    expectedVersion = duplicateLoser.Version,
+                    bankReference = duplicateBankReference,
+                    evidenceReference = "evidence://rf03-http-duplicate",
+                    reportedOutcome = "Succeeded",
+                }),
+            };
+            duplicateRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+            duplicateRequest.Headers.Add("Idempotency-Key", "rf03-http-duplicate-loser");
+            await AssertStandardizedErrorAsync(await admin.SendAsync(duplicateRequest),
+                HttpStatusCode.Conflict, "TRANSFER_REFERENCE_CONFLICT");
         }
     }
 
@@ -5897,6 +6171,69 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         }
 
         Assert.Fail("Expected an OpenAPI nullable schema.");
+    }
+
+    private async Task<(Guid RefundId, long Version)> SeedRecoveryReservedRefundAsync(
+        string suffix)
+    {
+        var now = DateTimeOffset.UtcNow.AddMinutes(-2);
+        var ownerId = Guid.NewGuid();
+        var reviewerId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var lotId = Guid.NewGuid();
+        var refundId = Guid.NewGuid();
+        var reserveOperationId = Guid.NewGuid();
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        context.Users.AddRange(
+            User.CreateFromGoogle(ownerId, $"RF03 Owner {suffix}", null, null, now.AddDays(-10)),
+            User.CreateFromGoogle(reviewerId, $"RF03 Reviewer {suffix}", null, null,
+                now.AddDays(-10)));
+        var order = PaymentOrder.CreateTopUp(orderId, ownerId, $"ZENO-{orderId:N}",
+            100_000, 10_000, $"rf03-http-order-{suffix}-{orderId:N}",
+            new string('a', 64), now.AddMinutes(-10), now.AddMinutes(10));
+        order.FulfillTopUp(now);
+        var lot = PaidCoinLot.Create(lotId, ownerId, orderId, 10_000, now);
+        lot.Reserve(10_000);
+        var wallet = WalletAccount.Create(ownerId, now);
+        wallet.CreditPaid(10_000, now);
+        wallet.ReservePaid(10_000, now.AddSeconds(2));
+        var credit = WalletOperation.Create(Guid.NewGuid(), ownerId,
+            WalletOperationTypes.TopUpCredit, WalletOperationSourceTypes.PaymentOrder,
+            orderId, null, now);
+        var reserve = WalletOperation.Create(reserveOperationId, ownerId,
+            WalletOperationTypes.RefundReserve, WalletOperationSourceTypes.RefundRequest,
+            refundId, null, now.AddSeconds(2));
+        var refund = RefundRequest.Create(refundId, orderId, ownerId, "Duplicate transfer",
+            100_000, 10_000, $"rf03-http-refund-{suffix}", new string('b', 64), "v1", now);
+        refund.BeginReview(reviewerId, now.AddSeconds(1));
+        refund.ReserveRecovery(reviewerId, "Original lot verified", refund.Version,
+            now.AddSeconds(2));
+        var protectedRecipient = _factory.Services.GetRequiredService<IRefundRecipientProtector>()
+            .Protect("0123456789", "NGUYEN VAN A");
+        context.PaymentOrders.Add(order);
+        context.PaidCoinLots.Add(lot);
+        context.Wallets.Add(wallet);
+        context.WalletOperations.AddRange(credit, reserve);
+        context.WalletEntries.AddRange(
+            WalletEntry.Create(Guid.NewGuid(), credit, WalletCoinTypes.Paid,
+                WalletBuckets.Available, 10_000, 1, now),
+            WalletEntry.Create(Guid.NewGuid(), reserve, WalletCoinTypes.Paid,
+                WalletBuckets.Available, -10_000, 1, now.AddSeconds(2)),
+            WalletEntry.Create(Guid.NewGuid(), reserve, WalletCoinTypes.Paid,
+                WalletBuckets.Reserved, 10_000, 2, now.AddSeconds(2)));
+        context.RefundRequests.Add(refund);
+        context.RefundRecipients.Add(RefundRecipient.Create(Guid.NewGuid(), refundId, "VCB",
+            protectedRecipient.AccountNumberCiphertext,
+            protectedRecipient.AccountHolderCiphertext,
+            "6789", "******6789", "N*** V*** A***",
+            protectedRecipient.EncryptionKeyVersion, now));
+        context.CoinReservations.Add(CoinReservation.Create(Guid.NewGuid(), refundId, ownerId,
+            lotId, reserveOperationId, reviewerId, $"rf03-http-approval-{suffix}",
+            new string('c', 64), 10_000, refund.Version, reviewerId,
+            refund.ReviewedAt!.Value, "Original lot verified", now.AddSeconds(2)));
+        await context.SaveChangesAsync();
+        return (refundId, refund.Version);
     }
 
     private async Task SeedWalletEntriesAsync(Guid ownerUserId, int ownerEntryCount)

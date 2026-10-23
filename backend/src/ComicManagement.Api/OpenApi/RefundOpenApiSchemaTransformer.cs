@@ -25,6 +25,21 @@ public sealed class RefundOpenApiSchemaTransformer : IOpenApiSchemaTransformer
             schema.Required.Add("accountNumber");
             schema.Required.Add("accountHolder");
         }
+        else if (context.JsonTypeInfo.Type == typeof(RecordRefundTransferRequest))
+        {
+            schema.Required ??= new HashSet<string>(StringComparer.Ordinal);
+            schema.Required.Add("expectedVersion");
+            schema.Required.Add("bankReference");
+            schema.Required.Add("evidenceReference");
+            schema.Required.Add("reportedOutcome");
+        }
+        else if (context.JsonTypeInfo.Type == typeof(ResolveRefundTransferRequest))
+        {
+            schema.Required ??= new HashSet<string>(StringComparer.Ordinal);
+            schema.Required.Add("expectedVersion");
+            schema.Required.Add("transferRecordId");
+            schema.Required.Add("confirmationNote");
+        }
 
         return Task.CompletedTask;
     }
