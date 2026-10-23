@@ -31,6 +31,9 @@ internal sealed class NoOpRefundApprovalCriticalSectionObserver :
 
 internal interface IRefundPayoutCriticalSectionObserver
 {
+    Task AfterTransferRecordPreparedAsync(Guid refundRequestId, string bankReference,
+        CancellationToken cancellationToken);
+
     Task AfterFinancialLocksAcquiredAsync(Guid refundRequestId,
         CancellationToken cancellationToken);
 }
@@ -38,6 +41,9 @@ internal interface IRefundPayoutCriticalSectionObserver
 internal sealed class NoOpRefundPayoutCriticalSectionObserver :
     IRefundPayoutCriticalSectionObserver
 {
+    public Task AfterTransferRecordPreparedAsync(Guid refundRequestId, string bankReference,
+        CancellationToken cancellationToken) => Task.CompletedTask;
+
     public Task AfterFinancialLocksAcquiredAsync(Guid refundRequestId,
         CancellationToken cancellationToken) => Task.CompletedTask;
 }

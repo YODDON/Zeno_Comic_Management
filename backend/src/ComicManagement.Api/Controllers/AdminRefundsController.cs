@@ -96,7 +96,7 @@ public sealed class AdminRefundsController(RefundAdministrationWorkflow workflow
         string idempotencyKey,
         CancellationToken cancellationToken) => ToResponse(await workflow.RecordTransferAsync(
             refundId, ActorId(), request.ExpectedVersion, request.BankReference,
-            request.EvidenceReference, request.ReportedOutcome.ToString(), idempotencyKey,
+            request.EvidenceReference, request.ReportedOutcome?.ToString(), idempotencyKey,
             HttpContext.TraceIdentifier, cancellationToken));
 
     [HttpPost("{refundId:guid}/complete")]
@@ -162,6 +162,9 @@ public sealed class AdminRefundsController(RefundAdministrationWorkflow workflow
             RefundAdministrationOutcome.IdempotencyConflict => Conflict(Problem(
                 409, "IDEMPOTENCY_CONFLICT", "Idempotency conflict",
                 "The Idempotency-Key was already used with a different approval request.")),
+            RefundAdministrationOutcome.TransferEvidenceConflict => Conflict(Problem(
+                409, "TRANSFER_REFERENCE_CONFLICT", "Transfer evidence conflict",
+                "The bank transfer reference is already associated with another refund.")),
             RefundAdministrationOutcome.RecoveryInsufficient => UnprocessableEntity(Problem(
                 422, "REFUND_RECOVERY_INSUFFICIENT", "Recovery is insufficient",
                 "The exact original Paid Coin lot is no longer fully recoverable.")),
@@ -247,7 +250,7 @@ public sealed class RecordRefundTransferRequest
     public string EvidenceReference { get; init; } = string.Empty;
 
     [Required]
-    public RefundTransferReportedOutcome ReportedOutcome { get; init; }
+    public RefundTransferReportedOutcome? ReportedOutcome { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

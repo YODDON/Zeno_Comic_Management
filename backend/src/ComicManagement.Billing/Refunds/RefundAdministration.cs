@@ -11,6 +11,7 @@ public enum RefundAdministrationOutcome
     IntegrityConflict,
     IdempotencyConflict,
     TransferNotVerified,
+    TransferEvidenceConflict,
 }
 
 public sealed record RefundAdministrationState(

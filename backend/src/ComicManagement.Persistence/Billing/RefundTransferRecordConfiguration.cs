@@ -16,9 +16,17 @@ internal sealed class RefundTransferRecordConfiguration :
             table.HasCheckConstraint("ck_refund_transfer_records_amount", "amount_vnd > 0");
             table.HasCheckConstraint("ck_refund_transfer_records_status",
                 "status IN ('ReportedSucceeded','ReportedFailed','NeedsReconciliation','VerifiedSucceeded','VerifiedFailed')");
+            table.HasCheckConstraint("ck_refund_transfer_records_evidence",
+                "length(btrim(bank_reference)) > 0 AND bank_reference = btrim(bank_reference) " +
+                "AND length(btrim(evidence_reference)) > 0 AND evidence_reference = btrim(evidence_reference) " +
+                "AND length(btrim(idempotency_key)) > 0 AND idempotency_key = btrim(idempotency_key) " +
+                "AND request_fingerprint ~ '^[0-9a-f]{64}$'");
             table.HasCheckConstraint("ck_refund_transfer_records_verification",
                 "(status IN ('ReportedSucceeded','ReportedFailed','NeedsReconciliation') AND verified_by IS NULL AND verified_at IS NULL AND confirmation_note IS NULL AND verification_idempotency_key IS NULL AND verification_fingerprint IS NULL AND resolution_operation_id IS NULL) OR " +
-                "(status IN ('VerifiedSucceeded','VerifiedFailed') AND verified_by IS NOT NULL AND verified_at IS NOT NULL AND confirmation_note IS NOT NULL AND verification_idempotency_key IS NOT NULL AND verification_fingerprint IS NOT NULL AND resolution_operation_id IS NOT NULL)");
+                "(status IN ('VerifiedSucceeded','VerifiedFailed') AND verified_by IS NOT NULL AND verified_at IS NOT NULL AND verified_at >= recorded_at " +
+                "AND length(btrim(confirmation_note)) > 0 AND confirmation_note = btrim(confirmation_note) " +
+                "AND length(btrim(verification_idempotency_key)) > 0 AND verification_idempotency_key = btrim(verification_idempotency_key) " +
+                "AND verification_fingerprint ~ '^[0-9a-f]{64}$' AND resolution_operation_id IS NOT NULL)");
         });
 
         builder.HasKey(item => item.Id).HasName("pk_refund_transfer_records");

@@ -7,6 +7,7 @@ using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Reservations;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
 
 namespace ComicManagement.Persistence;
 
@@ -72,8 +73,19 @@ internal sealed partial class RefundAdministrationStore
         dbContext.RefundTransferRecords.Add(transfer);
         AddPayoutAudit(command.ActorId, "Billing.RefundTransferRecorded", request,
             command.CorrelationId, serverNow, transfer.Id, null);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        await payoutObserver.AfterTransferRecordPreparedAsync(
+            request.Id, transfer.BankReference, cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (IsUniqueViolation(
+                   exception, "ux_refund_transfer_records_bank_reference"))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return Result(RefundAdministrationOutcome.TransferEvidenceConflict);
+        }
         return Result(RefundAdministrationOutcome.Succeeded, request, reservation.Id,
             reservation.WalletOperationId, transfer.Id, transfer.Status);
     }
@@ -239,8 +251,17 @@ internal sealed partial class RefundAdministrationStore
         AddPayoutAudit(command.ActorId,
             command.Succeeded ? "Billing.RefundCompleted" : "Billing.RefundReservationReleased",
             request, command.CorrelationId, serverNow, transfer.Id, operation.Id);
-        await dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        try
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (IsUniqueViolation(
+                   exception, "ux_refund_transfer_records_verify_idempotency"))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return Result(RefundAdministrationOutcome.IdempotencyConflict);
+        }
         return Result(RefundAdministrationOutcome.Succeeded, request, reservation.Id,
             reservation.WalletOperationId, transfer.Id, transfer.Status, operation.Id);
     }
@@ -284,6 +305,13 @@ internal sealed partial class RefundAdministrationStore
         command.Parameters.Add(parameter);
         await command.ExecuteScalarAsync(cancellationToken);
     }
+
+    private static bool IsUniqueViolation(DbUpdateException exception, string constraintName) =>
+        exception.InnerException is PostgresException
+        {
+            SqlState: PostgresErrorCodes.UniqueViolation,
+            ConstraintName: var actualConstraint,
+        } && string.Equals(actualConstraint, constraintName, StringComparison.Ordinal);
 
     private void AddPayoutAudit(Guid actorId, string action, RefundRequest request,
         string correlationId, DateTimeOffset occurredAt, Guid transferId, Guid? operationId) =>

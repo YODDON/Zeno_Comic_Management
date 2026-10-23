@@ -7,6 +7,7 @@ using ComicManagement.Persistence;
 using ComicManagement.Identity.Users;
 using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Ledger;
+using ComicManagement.Wallet.Reservations;
 using ComicManagement.Shared.Time;
 using WalletAccount = ComicManagement.Wallet.Accounts.Wallet;
 using Microsoft.EntityFrameworkCore;
@@ -580,6 +581,112 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.Equal(PostgreSqlTimestamp.Normalize(reviewedAt),
             preserved.ApprovalResultReviewedAt);
         Assert.Equal("Verified legacy approval", preserved.ApprovalResultDecisionNote);
+
+        await migrator.MigrateAsync(RF03Migration);
+        context.ChangeTracker.Clear();
+        var migratedRefund = await context.RefundRequests.SingleAsync(item => item.Id == refundId);
+        var migratedReservation = await context.CoinReservations.AsNoTracking()
+            .SingleAsync(item => item.Id == reservationId);
+        var migratedLot = await context.PaidCoinLots.AsNoTracking()
+            .SingleAsync(item => item.Id == lotId);
+        var migratedWallet = await context.Wallets.AsNoTracking()
+            .SingleAsync(item => item.UserId == userId);
+        Assert.Equal(RefundRequestStatuses.RecoveryReserved, migratedRefund.Status);
+        Assert.Equal(CoinReservationStatuses.Reserved, migratedReservation.Status);
+        Assert.Equal(10_000, migratedLot.ReservedCoins);
+        Assert.Equal(10_000, migratedWallet.PaidReserved);
+
+        var transferAt = reviewedAt.AddMinutes(1);
+        migratedRefund.RecordTransferAttempt(RefundTransferReportedOutcomes.Succeeded, transferAt);
+        context.RefundTransferRecords.Add(RefundTransferRecord.Create(
+            Guid.NewGuid(), refundId, userId, "RF03-UPGRADE-BANK-REFERENCE", 95_000,
+            "evidence://rf03-upgrade", RefundTransferReportedOutcomes.Succeeded,
+            userId, transferAt, "rf03-upgrade-transfer", new string('d', 64)));
+        await context.SaveChangesAsync();
+        Assert.Equal(RefundRequestStatuses.TransferPending, migratedRefund.Status);
+        Assert.Equal(1, await context.RefundTransferRecords.CountAsync());
+    }
+
+    [Fact]
+    public async Task RF03_migration_rejects_incompatible_existing_payout_state_and_rolls_back()
+    {
+        await using var serviceProvider = new ServiceCollection()
+            .AddPersistence(_postgres.GetConnectionString())
+            .BuildServiceProvider(validateScopes: true);
+        await using var scope = serviceProvider.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var migrator = context.GetService<IMigrator>();
+
+        // Reuse the RF02 upgrade seed above by first migrating all RF02 schema, then create a
+        // lifecycle state that RF02 allowed but RF03 cannot safely infer transfer evidence for.
+        await migrator.MigrateAsync(RF02HardeningMigration);
+        var now = DateTimeOffset.UtcNow.AddDays(-1);
+        var userId = Guid.NewGuid();
+        var orderId = Guid.NewGuid();
+        var lotId = Guid.NewGuid();
+        var refundId = Guid.NewGuid();
+        var operationId = Guid.NewGuid();
+        context.Users.Add(User.CreateFromGoogle(
+            userId, "RF03 Incompatible Upgrade User", null, null, now.AddDays(-10)));
+        var order = PaymentOrder.CreateTopUp(
+            orderId, userId, $"ZENO-{orderId:N}", 100_000, 10_000,
+            $"rf03-incompatible-{orderId:N}", new string('a', 64),
+            now.AddMinutes(-10), now.AddMinutes(10));
+        order.FulfillTopUp(now);
+        var wallet = WalletAccount.Create(userId, now);
+        wallet.CreditPaid(10_000, now);
+        wallet.ReservePaid(10_000, now.AddMinutes(1));
+        var credit = WalletOperation.Create(Guid.NewGuid(), userId,
+            WalletOperationTypes.TopUpCredit, WalletOperationSourceTypes.PaymentOrder,
+            orderId, null, now);
+        var reserve = WalletOperation.Create(operationId, userId,
+            WalletOperationTypes.RefundReserve, WalletOperationSourceTypes.RefundRequest,
+            refundId, null, now.AddMinutes(1));
+        var refund = RefundRequest.Create(refundId, orderId, userId, "Duplicate transfer",
+            100_000, 10_000, "rf03-incompatible-request", new string('b', 64), "v1", now);
+        refund.BeginReview(userId, now.AddSeconds(1));
+        refund.ReserveRecovery(userId, "Verified", refund.Version, now.AddMinutes(1));
+        var lot = PaidCoinLot.Create(lotId, userId, orderId, 10_000, now);
+        lot.Reserve(10_000);
+        context.PaymentOrders.Add(order);
+        context.Wallets.Add(wallet);
+        context.PaidCoinLots.Add(lot);
+        context.WalletOperations.AddRange(credit, reserve);
+        context.WalletEntries.AddRange(
+            WalletEntry.Create(Guid.NewGuid(), credit, WalletCoinTypes.Paid,
+                WalletBuckets.Available, 10_000, 1, now),
+            WalletEntry.Create(Guid.NewGuid(), reserve, WalletCoinTypes.Paid,
+                WalletBuckets.Available, -10_000, 1, now.AddMinutes(1)),
+            WalletEntry.Create(Guid.NewGuid(), reserve, WalletCoinTypes.Paid,
+                WalletBuckets.Reserved, 10_000, 2, now.AddMinutes(1)));
+        context.RefundRequests.Add(refund);
+        context.RefundRecipients.Add(RefundRecipient.Create(
+            Guid.NewGuid(), refundId, "VCB", [1], [2], "6789", "******6789",
+            "N*** V*** A***", "v1", now));
+        context.CoinReservations.Add(CoinReservation.Create(
+            Guid.NewGuid(), refundId, userId, lotId, operationId, userId,
+            "rf03-incompatible-approval", new string('c', 64), 10_000,
+            refund.Version, userId,
+            refund.ReviewedAt!.Value, "Verified", now.AddMinutes(1)));
+        await context.SaveChangesAsync();
+
+        await context.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE billing.refund_requests
+            SET status={RefundRequestStatuses.TransferPending}, version=version+1
+            WHERE id={refundId};
+            """);
+        context.ChangeTracker.Clear();
+
+        var exception = await Assert.ThrowsAsync<PostgresException>(
+            () => migrator.MigrateAsync(RF03Migration));
+        Assert.Equal(PostgresErrorCodes.CheckViolation, exception.SqlState);
+        Assert.Contains("RF03_PRECONDITION", exception.MessageText, StringComparison.Ordinal);
+        Assert.DoesNotContain(RF03Migration, await context.Database.GetAppliedMigrationsAsync());
+        Assert.False(await TableExists(context, "billing.refund_transfer_records"));
+        Assert.True(await ConstraintIsValidated(context, "billing", "refund_requests",
+            "ck_refund_requests_review_lifecycle"));
+        Assert.Equal(RefundRequestStatuses.TransferPending,
+            (await context.RefundRequests.AsNoTracking().SingleAsync(item => item.Id == refundId)).Status);
     }
 
     [Fact]
