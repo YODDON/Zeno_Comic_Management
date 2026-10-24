@@ -2,6 +2,7 @@ import { Bookmark, BookOpen, ChevronLeft, ChevronRight, LockKeyhole } from "luci
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ComicCover } from "@/features/catalog/ComicCover";
+import { CommentSection } from "@/features/comments/CommentSection";
 import { useChaptersQuery, useComicQuery } from "@/features/catalog/use-catalog";
 import {
   useFollowComic,
@@ -130,6 +131,7 @@ export function ComicDetailPage() {
           </nav>
         ) : null}
       </section>
+      <CommentSection target={{ comicId: detail.id }} />
     </article>
   );
 }

@@ -2,6 +2,7 @@ import { createBrowserRouter } from "react-router-dom";
 import { AdminLayout } from "@/app/layouts/AdminLayout";
 import { UserLayout } from "@/app/layouts/UserLayout";
 import { AdminFoundationPage } from "@/pages/AdminFoundationPage";
+import { AdminCommentsPage } from "@/pages/AdminCommentsPage";
 import { CatalogPage } from "@/pages/CatalogPage";
 import { ComicDetailPage } from "@/pages/ComicDetailPage";
 import { HomePage } from "@/pages/HomePage";
@@ -49,6 +50,7 @@ export const router = createBrowserRouter([
     element: <AdminLayout />,
     children: [
       { index: true, element: <AdminFoundationPage /> },
+      { path: "comments", element: <AdminCommentsPage /> },
       { path: "*", element: <NotFoundPage admin /> },
     ],
   },

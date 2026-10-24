@@ -21,6 +21,7 @@ using ComicManagement.Missions.Administration;
 using ComicManagement.Missions.Processing;
 using ComicManagement.Missions.Queries;
 using ComicManagement.Interaction.Ratings;
+using ComicManagement.Interaction.Comments;
 using ComicManagement.Shared.Persistence;
 
 namespace ComicManagement.Persistence;
@@ -50,6 +51,8 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<IComicRatingStore, ComicRatingStore>();
         services.TryAddSingleton<IComicRatingReadObserver, NoOpComicRatingReadObserver>();
         services.TryAddScoped<ComicRatingHandler>();
+        services.TryAddScoped<ICommentStore, CommentStore>();
+        services.TryAddScoped<CommentHandler>();
         services.TryAddScoped<IChapterAccessProjectionStore, ChapterAccessProjectionStore>();
         services.TryAddScoped<ChapterAccessHandler>();
         services.TryAddScoped<IChapterUnlockQuoteStore, ChapterUnlockQuoteStore>();
