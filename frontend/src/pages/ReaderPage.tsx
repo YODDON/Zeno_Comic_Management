@@ -3,6 +3,7 @@ import { ArrowLeft, BookOpen, CheckCircle2, CircleAlert, LockKeyhole, RefreshCw 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useProfileQuery } from "@/features/profile/use-profile";
+import { CommentSection } from "@/features/comments/CommentSection";
 import {
   createReadingSession,
   getChapterAccess,
@@ -358,6 +359,7 @@ function ReaderContent({
           <p>Tiến độ và điều kiện hoàn thành chỉ được ghi nhận sau xác minh của máy chủ.</p>
           <div><Button asChild="link"><Link to="/library">Về Tủ truyện</Link></Button><Button asChild="link" variant="outline"><Link to="/comics">Khám phá truyện khác</Link></Button></div>
         </section>
+        <CommentSection target={{ chapterId }} />
       </div>
     </div>
   );

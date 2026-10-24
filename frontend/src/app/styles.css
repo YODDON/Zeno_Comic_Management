@@ -1639,3 +1639,18 @@ svg {
     transition-duration: 0.01ms !important;
   }
 }
+.comment-section { margin-block: 3rem; display: grid; gap: 1rem; }
+.comment-section form, .comment-card { display: grid; gap: .75rem; }
+.comment-section textarea { width: 100%; min-height: 6rem; resize: vertical; border: 1px solid var(--border); border-radius: .75rem; padding: .8rem; background: var(--surface); color: var(--text); }
+.comment-list, .comment-replies ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; }
+.comment-card { border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; background: var(--surface); }
+.comment-card header, .comment-actions, .comment-pagination { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.comment-card header { justify-content: space-between; }
+.comment-card time { color: var(--muted-foreground); font-size: .85rem; }
+.comment-replies { margin-left: 1.5rem; border-left: 2px solid var(--border); padding-left: 1rem; }
+.admin-comment-toolbar { align-items: center; display: flex; gap: .75rem; margin: 1rem 0; }
+.admin-comment-toolbar select { background: var(--surface); border: 1px solid var(--border); border-radius: .5rem; min-height: 2.75rem; padding: 0 .75rem; }
+.admin-comment-list { display: grid; gap: 1rem; list-style: none; margin: 0; padding: 0; }
+.admin-comment-card { background: var(--surface); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; }
+.admin-comment-card header { display: flex; gap: 1rem; justify-content: space-between; }
+.comment-pagination { justify-content: center; }

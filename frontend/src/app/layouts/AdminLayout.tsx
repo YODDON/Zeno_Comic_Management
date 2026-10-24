@@ -1,10 +1,11 @@
-import { LayoutDashboard, Menu, X } from "lucide-react";
+import { LayoutDashboard, Menu, MessageSquareWarning, X } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { Button } from "@/shared/ui/Button";
 
 const adminNavigation = [
   { to: "/admin", label: "Tổng quan", icon: LayoutDashboard, end: true },
+  { to: "/admin/comments", label: "Bình luận", icon: MessageSquareWarning },
 ];
 
 export function AdminLayout() {

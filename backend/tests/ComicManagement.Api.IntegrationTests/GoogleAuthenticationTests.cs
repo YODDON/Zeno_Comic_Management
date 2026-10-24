@@ -14,6 +14,7 @@ using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Identity.Users;
+using ComicManagement.Interaction.Comments;
 using ComicManagement.Identity.Events;
 using ComicManagement.Missions.Administration;
 using ComicManagement.Missions.Definitions;
@@ -6610,6 +6611,357 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 }
             }
         }
+    }
+
+    [Fact]
+    public async Task Comments_http_flow_enforces_reply_depth_ownership_moderation_and_audit()
+    {
+        var (comicId, _) = await SeedPublicRatingComicAsync(_factory.Services, "in02-comments");
+        _factory.TokenEndpoint.SetProfile(
+            $"in02-owner-{comicId:N}",
+            "IN02 Owner",
+            $"in02-owner-{comicId:N}@example.com",
+            null);
+        using var owner = CreateClient();
+        await CompleteLoginAsync(owner, await BeginLoginAsync(owner, $"/comics/in02-comments-{comicId:N}"));
+        var ownerProfile = await owner.GetFromJsonAsync<JsonElement>("/api/v1/me");
+        var ownerId = ownerProfile.GetProperty("id").GetGuid();
+        var ownerCsrf = Assert.Single((await owner.GetAsync("/api/v1/me")).Headers.GetValues("X-CSRF-TOKEN"));
+
+        async Task<HttpResponseMessage> OwnerMutationAsync(HttpMethod method, string path, object body)
+        {
+            var request = new HttpRequestMessage(method, path) { Content = JsonContent.Create(body) };
+            request.Headers.Add("X-CSRF-TOKEN", ownerCsrf);
+            return await owner.SendAsync(request);
+        }
+
+        var createdResponse = await OwnerMutationAsync(
+            HttpMethod.Post,
+            "/api/v1/comments",
+            new { comicId, body = "  Bình luận gốc  " });
+        Assert.Equal(HttpStatusCode.Created, createdResponse.StatusCode);
+        var root = await createdResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var rootId = root.GetProperty("id").GetGuid();
+        Assert.Equal("Bình luận gốc", root.GetProperty("body").GetString());
+        Assert.Equal(ownerId, root.GetProperty("userId").GetGuid());
+
+        var replyResponse = await OwnerMutationAsync(
+            HttpMethod.Post,
+            "/api/v1/comments",
+            new { comicId, parentId = rootId, body = "Phản hồi" });
+        Assert.Equal(HttpStatusCode.Created, replyResponse.StatusCode);
+        var reply = await replyResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var replyId = reply.GetProperty("id").GetGuid();
+
+        await AssertStandardizedErrorAsync(
+            await OwnerMutationAsync(
+                HttpMethod.Post,
+                "/api/v1/comments",
+                new { comicId, parentId = replyId, body = "Không cho reply cấp hai" }),
+            HttpStatusCode.UnprocessableEntity,
+            "COMMENT_PARENT_INVALID");
+
+        await AssertStandardizedErrorAsync(
+            await OwnerMutationAsync(
+                HttpMethod.Post,
+                "/api/v1/comments",
+                new { comicId, body = "unexpected", price = 123 }),
+            HttpStatusCode.BadRequest,
+            "VALIDATION_FAILED");
+
+        var publicPage = await owner.GetFromJsonAsync<JsonElement>($"/api/v1/comics/{comicId}/comments?page=1");
+        Assert.Equal(20, publicPage.GetProperty("pageSize").GetInt32());
+        Assert.Equal(1, publicPage.GetProperty("totalItems").GetInt32());
+        Assert.Equal(1, publicPage.GetProperty("items")[0].GetProperty("replyCount").GetInt32());
+        Assert.Single((await owner.GetFromJsonAsync<JsonElement>($"/api/v1/comments/{rootId}/replies?page=1"))
+            .GetProperty("items").EnumerateArray());
+
+        _factory.TokenEndpoint.SetProfile(
+            $"in02-other-{comicId:N}",
+            "IN02 Other",
+            $"in02-other-{comicId:N}@example.com",
+            null);
+        using var other = CreateClient();
+        await CompleteLoginAsync(other, await BeginLoginAsync(other, "/"));
+        var otherProfileResponse = await other.GetAsync("/api/v1/me");
+        var otherCsrf = Assert.Single(otherProfileResponse.Headers.GetValues("X-CSRF-TOKEN"));
+        using (var forbidden = new HttpRequestMessage(HttpMethod.Patch, $"/api/v1/comments/{rootId}")
+               {
+                   Content = JsonContent.Create(new { body = "chiếm quyền", expectedVersion = 1 }),
+               })
+        {
+            forbidden.Headers.Add("X-CSRF-TOKEN", otherCsrf);
+            await AssertStandardizedErrorAsync(
+                await other.SendAsync(forbidden),
+                HttpStatusCode.Forbidden,
+                "FORBIDDEN");
+        }
+
+        var ownerEdit = await OwnerMutationAsync(
+            HttpMethod.Patch,
+            $"/api/v1/comments/{rootId}",
+            new { body = "Bình luận đã sửa", expectedVersion = 1 });
+        Assert.Equal(HttpStatusCode.OK, ownerEdit.StatusCode);
+        Assert.Equal(2, (await ownerEdit.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("version").GetInt64());
+        await AssertStandardizedErrorAsync(
+            await OwnerMutationAsync(
+                HttpMethod.Patch,
+                $"/api/v1/comments/{rootId}",
+                new { body = "Stale", expectedVersion = 1 }),
+            HttpStatusCode.Conflict,
+            "CONCURRENCY_CONFLICT");
+
+        var deleteCandidate = await OwnerMutationAsync(
+            HttpMethod.Post,
+            "/api/v1/comments",
+            new { comicId, body = "Bình luận sẽ xóa" });
+        var deleteCandidateId = (await deleteCandidate.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        var ownerDelete = await OwnerMutationAsync(
+            HttpMethod.Delete,
+            $"/api/v1/comments/{deleteCandidateId}",
+            new { expectedVersion = 1 });
+        Assert.Equal(HttpStatusCode.OK, ownerDelete.StatusCode);
+        Assert.Equal("Deleted", (await ownerDelete.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("status").GetString());
+
+        var (admin, adminCsrf) = await CreateAdminClientAsync($"in02-admin-{comicId:N}");
+        using (admin)
+        {
+            var moderationPage = await admin.GetFromJsonAsync<JsonElement>("/api/v1/admin/comments?page=1");
+            var replyContext = moderationPage.GetProperty("items").EnumerateArray()
+                .Single(item => item.GetProperty("id").GetGuid() == replyId);
+            Assert.Equal("IN01 Race Comic", replyContext.GetProperty("targetTitle").GetString());
+            Assert.Equal("Bình luận đã sửa", replyContext.GetProperty("parentBody").GetString());
+            Assert.Equal("IN02 Owner", replyContext.GetProperty("parentAuthorDisplayName").GetString());
+
+            async Task<JsonElement> ModerateAsync(string action, long version)
+            {
+                using var request = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"/api/v1/admin/comments/{rootId}/{action}")
+                {
+                    Content = JsonContent.Create(new { expectedVersion = version, reason = $"IN02 {action}" }),
+                };
+                request.Headers.Add("X-CSRF-TOKEN", adminCsrf);
+                var response = await admin.SendAsync(request);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                return await response.Content.ReadFromJsonAsync<JsonElement>();
+            }
+
+            var hidden = await ModerateAsync("hide", 2);
+            Assert.Equal("Hidden", hidden.GetProperty("status").GetString());
+            Assert.Empty((await owner.GetFromJsonAsync<JsonElement>($"/api/v1/comics/{comicId}/comments"))
+                .GetProperty("items").EnumerateArray());
+            var restored = await ModerateAsync("restore", 3);
+            Assert.Equal("Visible", restored.GetProperty("status").GetString());
+            var deleted = await ModerateAsync("delete", 4);
+            Assert.Equal("Deleted", deleted.GetProperty("status").GetString());
+
+            using var restoreDeleted = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"/api/v1/admin/comments/{rootId}/restore")
+            {
+                Content = JsonContent.Create(new { expectedVersion = 5, reason = "Không được phục hồi deleted" }),
+            };
+            restoreDeleted.Headers.Add("X-CSRF-TOKEN", adminCsrf);
+            await AssertStandardizedErrorAsync(
+                await admin.SendAsync(restoreDeleted),
+                HttpStatusCode.Conflict,
+                "COMMENT_STATE_CONFLICT");
+        }
+
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var actions = await context.AuditLogs
+            .Where(entry => entry.TargetId == rootId)
+            .Select(entry => entry.Action)
+            .ToListAsync();
+        Assert.Equal(
+            ["Interaction.CommentHidden", "Interaction.CommentRestored", "Interaction.CommentDeleted"],
+            actions);
+    }
+
+    [Fact]
+    public async Task Comment_mutations_require_auth_csrf_and_are_rate_limited_per_principal()
+    {
+        using var anonymous = CreateClient();
+        Assert.Equal(
+            HttpStatusCode.Unauthorized,
+            (await anonymous.PostAsJsonAsync("/api/v1/comments", new { comicId = Guid.NewGuid(), body = "x" })).StatusCode);
+        await AssertStandardizedErrorAsync(
+            await anonymous.GetAsync("/api/v1/admin/comments"),
+            HttpStatusCode.Unauthorized,
+            "AUTH_REQUIRED");
+
+        _factory.TokenEndpoint.SetProfile(
+            $"in02-rate-{Guid.NewGuid():N}",
+            "IN02 Rate User",
+            null,
+            null);
+        using var user = CreateClient();
+        await CompleteLoginAsync(user, await BeginLoginAsync(user, "/"));
+        var me = await user.GetAsync("/api/v1/me");
+        var csrf = Assert.Single(me.Headers.GetValues("X-CSRF-TOKEN"));
+        await AssertStandardizedErrorAsync(
+            await user.GetAsync("/api/v1/admin/comments"),
+            HttpStatusCode.Forbidden,
+            "FORBIDDEN");
+
+        var missingCsrf = await user.PostAsJsonAsync(
+            "/api/v1/comments",
+            new { comicId = Guid.NewGuid(), body = "x" });
+        await AssertStandardizedErrorAsync(missingCsrf, HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+
+        // The rejected CSRF request above already consumed one of this endpoint's
+        // twenty middleware-level permits for the authenticated principal.
+        for (var attempt = 1; attempt <= 20; attempt++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/comments")
+            {
+                Content = JsonContent.Create(new { comicId = Guid.NewGuid(), body = "x" }),
+            };
+            request.Headers.Add("X-CSRF-TOKEN", csrf);
+            var response = await user.SendAsync(request);
+            if (attempt <= 19)
+            {
+                Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            }
+            else
+            {
+                await AssertStandardizedErrorAsync(response, HttpStatusCode.TooManyRequests, "RATE_LIMITED");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Comment_openapi_contract_declares_pagination_body_constraints_and_standard_errors()
+    {
+        using var client = CreateClient();
+        using var document = JsonDocument.Parse(await client.GetStringAsync("/openapi/v1.json"));
+        var root = document.RootElement;
+        var paths = root.GetProperty("paths");
+        foreach (var path in new[]
+                 {
+                     "/api/v1/comics/{comicId}/comments",
+                     "/api/v1/chapters/{chapterId}/comments",
+                     "/api/v1/comments/{commentId}/replies",
+                 })
+        {
+            var get = paths.GetProperty(path).GetProperty("get");
+            var page = FindOpenApiParameter(get, "page").GetProperty("schema");
+            Assert.Equal(1, page.GetProperty("minimum").GetInt32());
+            Assert.Equal(100000, page.GetProperty("maximum").GetInt32());
+            Assert.Equal(1, page.GetProperty("default").GetInt32());
+            AssertCommentResponses(root, get, ["200", "400", "404"]);
+        }
+
+        var create = paths.GetProperty("/api/v1/comments").GetProperty("post");
+        var createSchema = ResolveOpenApiSchema(root, create.GetProperty("requestBody")
+            .GetProperty("content").GetProperty("application/json").GetProperty("schema"));
+        var body = ResolveOpenApiSchema(root, createSchema.GetProperty("properties").GetProperty("body"));
+        Assert.Equal(1, body.GetProperty("minLength").GetInt32());
+        Assert.Equal(2000, body.GetProperty("maxLength").GetInt32());
+        AssertCommentResponses(root, create, ["201", "400", "401", "403", "404", "409", "422", "429"]);
+
+        var commentPath = paths.GetProperty("/api/v1/comments/{commentId}");
+        AssertCommentResponses(root, commentPath.GetProperty("patch"), ["200", "400", "401", "403", "404", "409", "429"]);
+        AssertCommentResponses(root, commentPath.GetProperty("delete"), ["200", "400", "401", "403", "404", "409", "429"]);
+
+        var adminList = paths.GetProperty("/api/v1/admin/comments").GetProperty("get");
+        AssertCommentResponses(root, adminList, ["200", "400", "401", "403"]);
+        var adminPage = ResolveResponseSchema(root, adminList, "200");
+        var adminItem = ResolveOpenApiSchema(root,
+            ResolveOpenApiSchema(root, adminPage.GetProperty("properties").GetProperty("items"))
+                .GetProperty("items"));
+        foreach (var property in new[] { "targetTitle", "targetSlug", "parentBody", "parentAuthorDisplayName" })
+            Assert.True(adminItem.GetProperty("properties").TryGetProperty(property, out _), $"Missing Admin context property {property}.");
+        foreach (var action in new[] { "hide", "delete", "restore" })
+        {
+            var operation = paths.GetProperty($"/api/v1/admin/comments/{{commentId}}/{action}").GetProperty("post");
+            AssertCommentResponses(root, operation, ["200", "400", "401", "403", "404", "409", "429"]);
+        }
+
+        static void AssertCommentResponses(JsonElement documentRoot, JsonElement operation, string[] statuses)
+        {
+            foreach (var status in statuses)
+            {
+                Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _), $"Missing response {status}.");
+                if (status is "200" or "201") continue;
+                var error = ResolveResponseSchema(documentRoot, operation, status);
+                foreach (var property in new[] { "errorCode", "message", "traceId" })
+                    Assert.True(error.GetProperty("properties").TryGetProperty(property, out _));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Comment_http_validation_and_unavailable_targets_fail_closed_with_standard_errors()
+    {
+        var (comicId, _) = await SeedPublicRatingComicAsync(_factory.Services, "in02-negative");
+        _factory.TokenEndpoint.SetProfile($"in02-negative-{comicId:N}", "IN02 Negative", null, null);
+        using var user = CreateClient();
+        await CompleteLoginAsync(user, await BeginLoginAsync(user, "/"));
+        var csrf = Assert.Single((await user.GetAsync("/api/v1/me")).Headers.GetValues("X-CSRF-TOKEN"));
+
+        async Task<HttpResponseMessage> SendJsonAsync(HttpMethod method, string path, string json)
+        {
+            using var request = new HttpRequestMessage(method, path)
+            {
+                Content = new StringContent(json, Encoding.UTF8, "application/json"),
+            };
+            request.Headers.Add("X-CSRF-TOKEN", csrf);
+            return await user.SendAsync(request);
+        }
+
+        foreach (var json in new[]
+                 {
+                     JsonSerializer.Serialize(new { comicId }),
+                     JsonSerializer.Serialize(new { comicId, body = (string?)null }),
+                     JsonSerializer.Serialize(new { comicId, body = "   " }),
+                     JsonSerializer.Serialize(new { comicId, body = new string('x', Comment.MaximumBodyLength + 1) }),
+                     "{",
+                 })
+            await AssertStandardizedErrorAsync(
+                await SendJsonAsync(HttpMethod.Post, "/api/v1/comments", json),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+
+        var created = await SendJsonAsync(
+            HttpMethod.Post,
+            "/api/v1/comments",
+            JsonSerializer.Serialize(new { comicId, body = "Owner mutation" }));
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var commentId = (await created.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetGuid();
+        foreach (var json in new[] { "{}", "{\"expectedVersion\":0}", "{\"expectedVersion\":-1}", "{" })
+            await AssertStandardizedErrorAsync(
+                await SendJsonAsync(HttpMethod.Delete, $"/api/v1/comments/{commentId}", json),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+
+        await HideComicAsync(_factory.Services, comicId);
+        await AssertStandardizedErrorAsync(
+            await SendJsonAsync(
+                HttpMethod.Post,
+                "/api/v1/comments",
+                JsonSerializer.Serialize(new { comicId, body = "Hidden target" })),
+            HttpStatusCode.NotFound,
+            "RESOURCE_NOT_FOUND");
+
+        var (chapterComicId, _) = await SeedPublicRatingComicAsync(_factory.Services, "in02-chapter-negative");
+        Guid chapterId;
+        await using (var scope = _factory.Services.CreateAsyncScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            chapterId = await context.Chapters.Where(chapter => chapter.ComicId == chapterComicId).Select(chapter => chapter.Id).SingleAsync();
+            await context.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE catalog.chapter_pages SET asset_status = {ChapterPageAssetStatuses.Pending}, width = 0, height = 0 WHERE chapter_id = {chapterId}");
+        }
+        await AssertStandardizedErrorAsync(
+            await SendJsonAsync(
+                HttpMethod.Post,
+                "/api/v1/comments",
+                JsonSerializer.Serialize(new { chapterId, body = "Not ready" })),
+            HttpStatusCode.NotFound,
+            "RESOURCE_NOT_FOUND");
     }
 
     private HttpClient CreateClient() => _factory.CreateClient(
