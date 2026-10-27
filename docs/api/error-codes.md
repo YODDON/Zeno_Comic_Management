@@ -11,6 +11,7 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 404 | READING_SESSION_UNAVAILABLE | Session or its unpublished resource is unavailable without leaking private metadata |
 | 404 | MISSION_NOT_FOUND | Admin Mission identifier does not exist |
 | 409 | CONCURRENCY_CONFLICT | Reload version; retry consciously |
+| 409 | COMMENT_STATE_CONFLICT | Comment lifecycle does not allow edit/delete/moderation transition; Deleted cannot be restored |
 | 409 | READING_SEQUENCE_CONFLICT | Heartbeat sequence is stale, has a gap, or reuses a sequence with another payload |
 | 409 | READING_SESSION_EXPIRED | Absolute 30-minute session expiry has been reached |
 | 409 | SLUG_CONFLICT | Choose another unique comic slug |
@@ -31,7 +32,8 @@ All errors use ProblemDetails (`type,title,status,detail,errorCode,message,trace
 | 422 | REFUND_RECOVERY_INSUFFICIENT | Exact original lot not fully unspent/unreserved |
 | 422 | REFUND_TRANSFER_NOT_VERIFIED | Reported transfer outcome/evidence does not support completion or release; reservation remains held |
 | 422 | PUBLICATION_PRECONDITION_FAILED | Must have valid chapter/pages |
-| 429 | RATE_LIMITED | Honor Retry-After; includes the 20/minute/Admin Mission mutation policy |
+| 422 | COMMENT_PARENT_INVALID | Reply parent must be a visible root comment on the same Comic/Chapter target |
+| 429 | RATE_LIMITED | Honor Retry-After; includes documented User/Admin mutation policies |
 | 503 | PROVIDER_UNAVAILABLE | Do not assume money failed/paid |
 
 Reading session creation/update may return `404 READING_SESSION_UNAVAILABLE` without exposing unpublished content, `403 FORBIDDEN` for a known but unauthorized Chapter, or `409 READING_SESSION_EXPIRED`. A successful non-qualifying `/qualify` response uses `qualified:false` with `reasonCode` equal to `SESSION_EXPIRED`, `PROGRESS_THRESHOLD_NOT_MET`, or `ACTIVE_DURATION_THRESHOLD_NOT_MET`; these are result reasons, not ProblemDetails errors.
@@ -39,6 +41,8 @@ Reading session creation/update may return `404 READING_SESSION_UNAVAILABLE` wit
 Library routes use `401 AUTH_REQUIRED`/`403 FORBIDDEN` for authentication/role failures. PUT Follow returns `404 RESOURCE_NOT_FOUND` when the Comic is not currently public and valid without disclosing draft metadata. Invalid Library cursor/limit or an empty identifier returns `400 VALIDATION_FAILED`; idempotent PUT replay and DELETE unfollow are successful responses rather than conflict errors. Follow-status returns only the current User's ownership state and no Comic metadata.
 
 Comic Rating GET/PUT/DELETE use the same non-disclosing `404 RESOURCE_NOT_FOUND` public-Catalog predicate. Stars outside `1..5` return `400 VALIDATION_FAILED`; anonymous mutation returns `401 AUTH_REQUIRED`, insufficient role returns `403 FORBIDDEN`, and deleting an absent current-User rating is a successful idempotent response.
+
+Comment reads and creates use the shared public-Catalog predicate and return non-disclosing `404 RESOURCE_NOT_FOUND` for hidden/unpublished/invalid targets. Owner-only edit/delete returns `403 FORBIDDEN` for another User. Reply depth/target mismatch returns `422 COMMENT_PARENT_INVALID`; stale versions return `409 CONCURRENCY_CONFLICT`; invalid lifecycle transitions return `409 COMMENT_STATE_CONFLICT`.
 
 ### State enums (separate concerns)
 

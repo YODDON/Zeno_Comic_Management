@@ -55,6 +55,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261023081149_AddComicRatings";
     private const string A01Migration =
         "20261024113949_AddAdminEditorsAndFeatured";
+    private const string IN02Migration =
+        "20261023163331_AddComments";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -93,6 +95,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         RF02HardeningMigration,
         RF03Migration,
         IN01Migration,
+        IN02Migration,
         A01Migration,
     ];
 
@@ -154,6 +157,14 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "billing.refund_transfer_records"));
         Assert.True(await TableExists(context, "reading.comic_follows"));
         Assert.True(await TableExists(context, "interaction.comic_ratings"));
+        Assert.True(await TableExists(context, "interaction.comments"));
+        Assert.True(await IndexExists(context, "interaction", "ix_comments_comic_parent_created_id"));
+        Assert.True(await IndexExists(context, "interaction", "ix_comments_chapter_parent_created_id"));
+        Assert.True(await IndexExists(context, "interaction", "ix_comments_parent_created_id"));
+        Assert.True(await IndexExists(context, "interaction", "ix_comments_created_id"));
+        Assert.True(await IndexExists(context, "interaction", "ix_comments_status_created_id"));
+        Assert.False(await IndexExists(context, "interaction", "ix_comments_status_updated_id"));
+        Assert.True(await IndexExists(context, "interaction", "ix_comments_user_id"));
         Assert.True(await TableExists(context, "billing.payment_orders"));
         Assert.True(await TableExists(context, "billing.provider_transactions"));
         Assert.True(await TableExists(context, "billing.webhook_deliveries"));

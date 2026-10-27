@@ -2,6 +2,7 @@ import { createBrowserRouter } from "react-router-dom";
 import { AdminLayout } from "@/app/layouts/AdminLayout";
 import { UserLayout } from "@/app/layouts/UserLayout";
 import { AdminFoundationPage } from "@/pages/AdminFoundationPage";
+import { AdminCommentsPage } from "@/pages/AdminCommentsPage";
 import { CatalogPage } from "@/pages/CatalogPage";
 import { ComicDetailPage } from "@/pages/ComicDetailPage";
 import { HomePage } from "@/pages/HomePage";
@@ -49,6 +50,7 @@ export const router = createBrowserRouter([
       { path: "authors", element: <AdminTaxonomyPage kind="authors" title="Tác giả" /> },
       { path: "translation-groups", element: <AdminTaxonomyPage kind="translation-groups" title="Nhóm dịch" /> },
       { path: "featured", element: <AdminFeaturedPage /> },
+      { path: "comments", element: <AdminCommentsPage /> },
       { path: "*", element: <NotFoundPage admin /> },
     ],
   },

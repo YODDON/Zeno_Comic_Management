@@ -5,6 +5,7 @@ using ComicManagement.Api.OpenApi;
 using ComicManagement.Api.Reading;
 using ComicManagement.Api.Membership;
 using ComicManagement.Api.Missions;
+using ComicManagement.Api.Interaction;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
@@ -129,6 +130,7 @@ builder.Services.AddBillingRateLimiting();
 builder.Services.AddMembershipRateLimiting();
 builder.Services.AddMissionRateLimiting();
 builder.Services.AddCatalogRateLimiting();
+builder.Services.AddInteractionRateLimiting();
 builder.Services.Configure<OutboxOptions>(
     builder.Configuration.GetSection(OutboxOptions.SectionName));
 builder.Services.AddOutboxWorker();

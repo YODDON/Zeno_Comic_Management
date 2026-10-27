@@ -25,7 +25,8 @@
 | User | GET/POST | `/api/v1/refunds`, `/api/v1/refunds/eligibility` | Billing |
 | User | GET | `/api/v1/refunds/{id}` | Billing |
 | Public/User | GET/PUT/DELETE | `/api/v1/comics/{comicId}/rating` | Interaction (IN01 implemented) |
-| User | GET/POST/PATCH | Comments endpoints defined in Interaction vertical slice | Interaction |
+| Public/User | GET/POST/PATCH/DELETE | `/api/v1/comics/{comicId}/comments`, `/api/v1/chapters/{chapterId}/comments`, `/api/v1/comments/{commentId}/replies`, `/api/v1/comments`, `/api/v1/comments/{commentId}` | Interaction (IN02 implemented) |
+| Admin | GET/POST | `/api/v1/admin/comments`, `/api/v1/admin/comments/{commentId}/hide`, `/delete`, `/restore` | Interaction moderation (IN02 implemented) |
 | Admin | POST | `/api/v1/admin/comics/{comicId}/publish`, `/api/v1/admin/comics/{comicId}/hide`, `/api/v1/admin/chapters/{chapterId}/publish`, `/api/v1/admin/chapters/{chapterId}/hide` | Catalog |
 | Admin | PATCH | `/api/v1/admin/comics/{comicId}/slug` | Catalog |
 | Admin | GET/POST/PATCH | `/api/v1/admin/comics`, `/api/v1/admin/chapters` | Catalog (A01 implemented) |

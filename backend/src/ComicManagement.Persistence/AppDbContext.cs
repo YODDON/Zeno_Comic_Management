@@ -21,6 +21,7 @@ using ComicManagement.Missions.Receipts;
 using ComicManagement.Missions.Rewards;
 using ComicManagement.Interaction.Ratings;
 using ComicManagement.Catalog.Featured;
+using ComicManagement.Interaction.Comments;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions.Infrastructure;
@@ -119,6 +120,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<MissionDailyCounter> MissionDailyCounters => Set<MissionDailyCounter>();
 
     internal DbSet<ComicRating> ComicRatings => Set<ComicRating>();
+
+    internal DbSet<Comment> Comments => Set<Comment>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {

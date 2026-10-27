@@ -1236,6 +1236,94 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Interaction.Comments.Comment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)")
+                        .HasColumnName("body");
+
+                    b.Property<Guid?>("ChapterId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("chapter_id");
+
+                    b.Property<Guid?>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("ParentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("parent_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_comments");
+
+                    b.HasIndex("UserId")
+                        .HasDatabaseName("ix_comments_user_id");
+
+                    b.HasIndex("ParentId", "CreatedAt", "Id")
+                        .HasDatabaseName("ix_comments_parent_created_id");
+
+                    b.HasIndex("CreatedAt", "Id")
+                        .IsDescending()
+                        .HasDatabaseName("ix_comments_created_id");
+
+                    b.HasIndex("Status", "CreatedAt", "Id")
+                        .IsDescending(false, true, true)
+                        .HasDatabaseName("ix_comments_status_created_id");
+
+                    b.HasIndex("ChapterId", "ParentId", "CreatedAt", "Id")
+                        .HasDatabaseName("ix_comments_chapter_parent_created_id");
+
+                    b.HasIndex("ComicId", "ParentId", "CreatedAt", "Id")
+                        .HasDatabaseName("ix_comments_comic_parent_created_id");
+
+                    b.ToTable("comments", "interaction", t =>
+                        {
+                            t.HasCheckConstraint("ck_comments_body_not_blank", "length(btrim(body)) > 0");
+
+                            t.HasCheckConstraint("ck_comments_exactly_one_target", "(comic_id IS NULL) <> (chapter_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_comments_parent_not_self", "parent_id IS NULL OR parent_id <> id");
+
+                            t.HasCheckConstraint("ck_comments_status", "status IN ('Visible','Hidden','Deleted')");
+
+                            t.HasCheckConstraint("ck_comments_target_not_empty", "(comic_id IS NULL OR comic_id <> '00000000-0000-0000-0000-000000000000') AND (chapter_id IS NULL OR chapter_id <> '00000000-0000-0000-0000-000000000000')");
+
+                            t.HasCheckConstraint("ck_comments_timestamps", "updated_at >= created_at");
+
+                            t.HasCheckConstraint("ck_comments_version", "version >= 1");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Interaction.Ratings.ComicRating", b =>
                 {
                     b.Property<Guid>("UserId")
@@ -3032,6 +3120,34 @@ namespace ComicManagement.Persistence.Migrations
                         .HasConstraintName("fk_google_identities_users_user_id");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("ComicManagement.Interaction.Comments.Comment", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Chapters.Chapter", null)
+                        .WithMany()
+                        .HasForeignKey("ChapterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_comments_chapters");
+
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_comments_comics");
+
+                    b.HasOne("ComicManagement.Interaction.Comments.Comment", null)
+                        .WithMany()
+                        .HasForeignKey("ParentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .HasConstraintName("fk_comments_parent");
+
+                    b.HasOne("ComicManagement.Identity.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_comments_users");
                 });
 
             modelBuilder.Entity("ComicManagement.Interaction.Ratings.ComicRating", b =>
