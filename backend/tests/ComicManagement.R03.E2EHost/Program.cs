@@ -5,6 +5,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Encodings.Web;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
+using ComicManagement.Catalog.Media;
 using ComicManagement.Identity.Users;
 using ComicManagement.Persistence;
 using ComicManagement.Reading.Access;
@@ -101,6 +102,12 @@ internal static class Program
             "r03-reader@example.test",
             null,
             createdAt);
+        var admin = User.CreateFromGoogle(
+            R03E2EData.AdminId,
+            "A01 E2E Admin",
+            "a01-admin@example.test",
+            null,
+            createdAt);
         var comic = Comic.Create(
             R03E2EData.ComicId,
             R03E2EData.ComicSlug,
@@ -133,11 +140,13 @@ internal static class Program
         chapter.Publish(true, chapter.Version, createdAt.AddMinutes(1));
         comic.Publish(true, comic.Version, createdAt.AddMinutes(2));
 
-        dbContext.Set<User>().Add(user);
+        dbContext.Set<User>().AddRange(user, admin);
         dbContext.Set<Comic>().Add(comic);
         dbContext.Set<Chapter>().Add(chapter);
         dbContext.Set<ChapterPage>().AddRange(firstPage, secondPage);
         await dbContext.SaveChangesAsync();
+        await dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"UPDATE identity.users SET role = 'Admin' WHERE id = {R03E2EData.AdminId}");
     }
 
     private static ChapterPage CreateReadyPage(
@@ -242,7 +251,9 @@ internal sealed class R03E2EApplicationFactory(
 
             services.RemoveAll<IHostedService>();
             services.RemoveAll<IChapterPageContentProvider>();
+            services.RemoveAll<IChapterPageAssetStore>();
             services.AddSingleton<IChapterPageContentProvider, R03E2EChapterPageContentProvider>();
+            services.AddSingleton<IChapterPageAssetStore, A01E2EChapterPageAssetStore>();
             services.AddSingleton(State);
             services.PostConfigure<AntiforgeryOptions>(options =>
             {
@@ -264,6 +275,7 @@ internal sealed class R03E2EApplicationFactory(
 internal static class R03E2EData
 {
     internal static readonly Guid UserId = Guid.Parse("a713606c-d008-4f76-a6e7-d83829303001");
+    internal static readonly Guid AdminId = Guid.Parse("a713606c-d008-4f76-a6e7-d8382930a001");
     internal static readonly Guid ComicId = Guid.Parse("4ee1fdae-79bb-4839-a271-68cac1630301");
     internal static readonly Guid ChapterId = Guid.Parse("2744b2b6-f009-4122-b574-1dad21740301");
     internal static readonly Guid FirstPageId = Guid.Parse("8d62666a-23d2-4f56-818d-7af1843f0301");
@@ -303,7 +315,7 @@ internal sealed class R03E2EAuthenticationHandler(
     {
         if (!Request.Headers.TryGetValue(HeaderName, out var values) ||
             !Guid.TryParse(values.SingleOrDefault(), out var userId) ||
-            userId != R03E2EData.UserId)
+            userId != R03E2EData.UserId && userId != R03E2EData.AdminId)
         {
             return Task.FromResult(AuthenticateResult.NoResult());
         }
@@ -311,9 +323,9 @@ internal sealed class R03E2EAuthenticationHandler(
         var claims = new[]
         {
             new Claim(ClaimTypes.NameIdentifier, userId.ToString()),
-            new Claim(ClaimTypes.Name, "R03 E2E Reader"),
-            new Claim(ClaimTypes.Email, "r03-reader@example.test"),
-            new Claim(ClaimTypes.Role, IdentityRoles.User),
+            new Claim(ClaimTypes.Name, userId == R03E2EData.AdminId ? "A01 E2E Admin" : "R03 E2E Reader"),
+            new Claim(ClaimTypes.Email, userId == R03E2EData.AdminId ? "a01-admin@example.test" : "r03-reader@example.test"),
+            new Claim(ClaimTypes.Role, userId == R03E2EData.AdminId ? IdentityRoles.Admin : IdentityRoles.User),
             new Claim("comic_management:status", UserStatuses.Active),
             new Claim("comic_management:version", "1"),
         };
@@ -325,6 +337,26 @@ internal sealed class R03E2EAuthenticationHandler(
         var ticket = new AuthenticationTicket(principal, SchemeName);
         return Task.FromResult(AuthenticateResult.Success(ticket));
     }
+}
+
+internal sealed class A01E2EChapterPageAssetStore : IChapterPageAssetStore
+{
+    public void ValidateUpload(ChapterPageAssetUpload upload)
+    {
+        if (upload.ContentLength > 10_485_760)
+            throw new ArgumentException("The test upload is too large.", nameof(upload));
+    }
+
+    public string GetPublicId(Guid chapterId, Guid pageId) =>
+        $"a01-e2e/{chapterId:N}/{pageId:N}";
+
+    public Task<ChapterPageAsset> UploadAsync(
+        ChapterPageAssetUpload upload,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new ChapterPageAsset(GetPublicId(upload.ChapterId, upload.PageId), 800, 1_200));
+
+    public Task DeleteAsync(string publicId, CancellationToken cancellationToken = default) =>
+        Task.CompletedTask;
 }
 
 internal sealed class R03E2EChapterPageContentProvider : IChapterPageContentProvider

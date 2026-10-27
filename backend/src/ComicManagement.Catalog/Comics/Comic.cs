@@ -152,6 +152,78 @@ public sealed class Comic
         Touch(changedAt);
     }
 
+    public void UpdateMetadata(
+        string title,
+        string description,
+        string seriesStatus,
+        string? coverAssetId,
+        long defaultPriceCoins,
+        bool defaultVipEligible,
+        long expectedVersion,
+        DateTimeOffset changedAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(title);
+        ArgumentNullException.ThrowIfNull(description);
+        if (!ComicSeriesStatuses.IsDefined(seriesStatus))
+        {
+            throw new ArgumentOutOfRangeException(nameof(seriesStatus));
+        }
+
+        if (coverAssetId is not null && string.IsNullOrWhiteSpace(coverAssetId))
+        {
+            throw new ArgumentException("Cover asset ID cannot be blank.", nameof(coverAssetId));
+        }
+
+        if (defaultPriceCoins < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(defaultPriceCoins));
+        }
+
+        EnsureUtc(changedAt, nameof(changedAt));
+        Title = title.Trim();
+        Description = description.Trim();
+        SeriesStatus = seriesStatus;
+        CoverAssetId = coverAssetId?.Trim();
+        DefaultPriceCoins = defaultPriceCoins;
+        DefaultVipEligible = defaultVipEligible;
+        Touch(changedAt);
+    }
+
+    public void UpdateEditorState(
+        string slug,
+        string title,
+        string description,
+        string seriesStatus,
+        string? coverAssetId,
+        long defaultPriceCoins,
+        bool defaultVipEligible,
+        long expectedVersion,
+        DateTimeOffset changedAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        EnsureUtc(changedAt, nameof(changedAt));
+        ValidateSlug(slug);
+        ArgumentException.ThrowIfNullOrWhiteSpace(title);
+        ArgumentNullException.ThrowIfNull(description);
+        if (!ComicSeriesStatuses.IsDefined(seriesStatus)) throw new ArgumentOutOfRangeException(nameof(seriesStatus));
+        if (coverAssetId is not null && string.IsNullOrWhiteSpace(coverAssetId))
+            throw new ArgumentException("Cover asset ID cannot be blank.", nameof(coverAssetId));
+        if (defaultPriceCoins < 0) throw new ArgumentOutOfRangeException(nameof(defaultPriceCoins));
+        if (!string.Equals(Slug, slug, StringComparison.Ordinal) && FirstPublishedAt is not null)
+            throw new CatalogRuleViolationException(CatalogRuleViolation.SlugLocked,
+                "A comic slug cannot change after its first publication.");
+
+        Slug = slug;
+        Title = title.Trim();
+        Description = description.Trim();
+        SeriesStatus = seriesStatus;
+        CoverAssetId = coverAssetId?.Trim();
+        DefaultPriceCoins = defaultPriceCoins;
+        DefaultVipEligible = defaultVipEligible;
+        Touch(changedAt);
+    }
+
     public static bool IsValidSlug(string? slug) =>
         !string.IsNullOrWhiteSpace(slug) && slug.Length <= MaximumSlugLength;
 

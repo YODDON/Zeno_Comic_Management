@@ -20,6 +20,7 @@ using ComicManagement.Missions.Progress;
 using ComicManagement.Missions.Receipts;
 using ComicManagement.Missions.Rewards;
 using ComicManagement.Interaction.Ratings;
+using ComicManagement.Catalog.Featured;
 using ComicManagement.Interaction.Comments;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions;
@@ -51,6 +52,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     internal DbSet<ComicAuthor> ComicAuthors => Set<ComicAuthor>();
 
     internal DbSet<ComicTranslationGroup> ComicTranslationGroups => Set<ComicTranslationGroup>();
+
+    internal DbSet<FeaturedComic> FeaturedComics => Set<FeaturedComic>();
+
+    internal DbSet<FeaturedConfiguration> FeaturedConfigurations => Set<FeaturedConfiguration>();
 
     internal DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
 

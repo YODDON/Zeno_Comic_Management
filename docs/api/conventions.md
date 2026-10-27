@@ -21,6 +21,8 @@ RF03 transfer-attempt, complete and release commands use the same Admin mutation
 
 Admin Mission mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. The limit covers definition creation, revision append, activation and deactivation; read-only Mission routes do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
+Admin Catalog mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. Comic/Chapter metadata, publication, taxonomy, Chapter-page and Featured mutations consume this shared policy; read-only editor queries do not. Rejection uses standardized `429 RATE_LIMITED`.
+
 Comment create/edit/delete and Admin hide/delete/restore share the Interaction fixed-window mutation policy of 20 requests/minute/authenticated principal, partitioned by the server-authenticated User/Admin ID after authentication. Public/Admin comment reads do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
 ## Pagination

@@ -969,6 +969,54 @@ namespace ComicManagement.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ComicManagement.Catalog.Featured.FeaturedComic", b =>
+                {
+                    b.Property<Guid>("ComicId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("comic_id");
+
+                    b.Property<int>("DisplayOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("display_order");
+
+                    b.HasKey("ComicId")
+                        .HasName("pk_featured_comics");
+
+                    b.HasIndex("DisplayOrder")
+                        .IsUnique()
+                        .HasDatabaseName("ux_featured_comics_display_order");
+
+                    b.ToTable("featured_comics", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_featured_comics_display_order", "display_order BETWEEN 1 AND 5");
+                        });
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Featured.FeaturedConfiguration", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id")
+                        .HasName("pk_featured_configuration");
+
+                    b.ToTable("featured_configuration", "catalog", t =>
+                        {
+                            t.HasCheckConstraint("ck_featured_configuration_singleton", "id = 1");
+
+                            t.HasCheckConstraint("ck_featured_configuration_version", "version >= 1");
+                        });
+                });
+
             modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.Author", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2999,6 +3047,16 @@ namespace ComicManagement.Persistence.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_chapter_pages_chapters");
+                });
+
+            modelBuilder.Entity("ComicManagement.Catalog.Featured.FeaturedComic", b =>
+                {
+                    b.HasOne("ComicManagement.Catalog.Comics.Comic", null)
+                        .WithMany()
+                        .HasForeignKey("ComicId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_featured_comics_comics");
                 });
 
             modelBuilder.Entity("ComicManagement.Catalog.Taxonomy.ComicAuthor", b =>

@@ -1,0 +1,3 @@
+# Responsive & Accessibility Acceptance
+
+Mobile-first: comics grid two cols and larger screens four/five; Library Continue one column mobile, two desktop; Featured Admin reorder usable by keyboard/touch and clearly announces new order. Reader pages preserve aspect ratio with no layout shift; toolbar show/hide respects reduced motion where feasible. Forms have associated labels, error descriptions, focus management and visible submission state. Dialogs trap focus and restore focus on close. Avoid color-only status indications. Admin financial confirmations show amounts/lot and warning. Test desktop/mobile and keyboard workflows with Playwright and accessibility checks.

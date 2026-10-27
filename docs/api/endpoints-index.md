@@ -29,8 +29,10 @@
 | Admin | GET/POST | `/api/v1/admin/comments`, `/api/v1/admin/comments/{commentId}/hide`, `/delete`, `/restore` | Interaction moderation (IN02 implemented) |
 | Admin | POST | `/api/v1/admin/comics/{comicId}/publish`, `/api/v1/admin/comics/{comicId}/hide`, `/api/v1/admin/chapters/{chapterId}/publish`, `/api/v1/admin/chapters/{chapterId}/hide` | Catalog |
 | Admin | PATCH | `/api/v1/admin/comics/{comicId}/slug` | Catalog |
-| Admin | CRUD (proposed) | `/api/v1/admin/comics`, `/api/v1/admin/chapters`, `/api/v1/admin/genres`, etc. | Catalog |
-| Admin | GET/PUT | `/api/v1/admin/featured-comics` | Catalog |
+| Admin | GET/POST/PATCH | `/api/v1/admin/comics`, `/api/v1/admin/chapters` | Catalog (A01 implemented) |
+| Admin | GET/POST/PATCH/DELETE | `/api/v1/admin/taxonomy/{kind}`, `/api/v1/admin/taxonomy/{kind}/{id}` | Catalog (A01 implemented) |
+| Admin | GET/POST/PUT/DELETE | `/api/v1/admin/chapters/{chapterId}/pages...` manifest/append/reorder/replace/remove/preview | Catalog (A01 implemented) |
+| Admin/Public | GET/PUT, GET | `/api/v1/admin/featured`, `/api/v1/featured` | Catalog (A01 implemented) |
 | Admin | GET/PATCH | `/api/v1/admin/vip-plan` | Membership (V01 implemented) |
 | Admin | GET/POST | `/api/v1/admin/missions`, `/api/v1/admin/missions/{id}`, `/api/v1/admin/missions/{id}/revisions`, `/api/v1/admin/missions/{id}/activate`, `/api/v1/admin/missions/{id}/deactivate` | Missions (M01 implemented) |
 | Admin | POST review/approve/reject/transfer-attempts/complete/release | `/api/v1/admin/refunds/{id}/...` | Billing/Wallet workflow (RF03 implemented) |

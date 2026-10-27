@@ -137,6 +137,42 @@ public sealed class Chapter
         }
     }
 
+    public void UpdateMetadata(
+        string chapterLabel,
+        int sortOrder,
+        long? priceOverrideCoins,
+        bool? vipOverride,
+        long expectedVersion,
+        DateTimeOffset changedAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        ArgumentException.ThrowIfNullOrWhiteSpace(chapterLabel);
+        if (chapterLabel.Length > MaximumLabelLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(chapterLabel));
+        }
+
+        if (priceOverrideCoins < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(priceOverrideCoins));
+        }
+
+        EnsureUtc(changedAt, nameof(changedAt));
+        ChapterLabel = chapterLabel.Trim();
+        SortOrder = sortOrder;
+        PriceOverrideCoins = priceOverrideCoins;
+        VipOverride = vipOverride;
+        Touch(changedAt);
+    }
+
+    public void RecordPageMutation(bool hasValidPageAfterMutation, long expectedVersion, DateTimeOffset changedAt)
+    {
+        EnsureExpectedVersion(expectedVersion);
+        EnsureUtc(changedAt, nameof(changedAt));
+        EnsurePageMutationPreservesPublication(hasValidPageAfterMutation);
+        Touch(changedAt);
+    }
+
     private static void EnsureUtc(DateTimeOffset value, string parameterName)
     {
         if (value.Offset != TimeSpan.Zero)

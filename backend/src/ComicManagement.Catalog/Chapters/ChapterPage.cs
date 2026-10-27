@@ -94,4 +94,10 @@ public sealed class ChapterPage
         Width = width;
         Height = height;
     }
+
+    public void ChangeOrder(int pageOrder)
+    {
+        if (pageOrder < 1) throw new ArgumentOutOfRangeException(nameof(pageOrder));
+        PageOrder = pageOrder;
+    }
 }

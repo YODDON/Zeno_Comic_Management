@@ -10,6 +10,7 @@ using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Media;
 using ComicManagement.Catalog.Publishing;
+using ComicManagement.Catalog.Administration;
 using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
@@ -6614,6 +6615,94 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A01_admin_editor_requires_authorization_csrf_and_supports_create_read()
+    {
+        using var anonymous = CreateClient();
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anonymous.GetAsync("/api/v1/admin/comics")).StatusCode);
+
+        var (admin, csrf) = await CreateAdminClientAsync($"a01-admin-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            var payload = new
+            {
+                slug = $"a01-{Guid.NewGuid():N}", title = "A01 Comic", description = "Editor",
+                seriesStatus = "Ongoing", coverAssetId = (string?)null, defaultPriceCoins = 0,
+                defaultVipEligible = false, genreIds = Array.Empty<Guid>(),
+                authorIds = Array.Empty<Guid>(), translationGroupIds = Array.Empty<Guid>(),
+            };
+            Assert.Equal(HttpStatusCode.BadRequest,
+                (await admin.PostAsJsonAsync("/api/v1/admin/comics", payload)).StatusCode);
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/comics")
+            { Content = JsonContent.Create(payload) };
+            request.Headers.Add("X-CSRF-TOKEN", csrf);
+            var created = await admin.SendAsync(request);
+            Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+            var item = await created.Content.ReadFromJsonAsync<AdminComicItem>();
+            Assert.NotNull(item);
+            Assert.Equal("A01 Comic", item.Title);
+
+            using (var duplicateSlug = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/comics")
+                   { Content = JsonContent.Create(payload) })
+            {
+                duplicateSlug.Headers.Add("X-CSRF-TOKEN", csrf);
+                await AssertStandardizedErrorAsync(await admin.SendAsync(duplicateSlug),
+                    HttpStatusCode.Conflict, "SLUG_CONFLICT");
+            }
+            var page = await admin.GetFromJsonAsync<AdminCatalogPage<AdminComicItem>>("/api/v1/admin/comics");
+            Assert.Contains(page!.Items, comic => comic.Id == item.Id);
+            var searched = await admin.GetFromJsonAsync<AdminCatalogPage<AdminComicItem>>(
+                "/api/v1/admin/comics?search=A01&page=1&pageSize=30");
+            Assert.Contains(searched!.Items, comic => comic.Id == item.Id);
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/comics?pageSize=101"),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/comics?publicationStatus=Unknown"),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+
+            var invalidTaxonomyPayload = new
+            {
+                item.Slug, item.Title, item.Description, item.SeriesStatus, item.CoverAssetId,
+                item.DefaultPriceCoins, item.DefaultVipEligible, expectedVersion = item.Version,
+                genreIds = new[] { Guid.NewGuid() }, item.AuthorIds, item.TranslationGroupIds,
+            };
+            using var invalidTaxonomy = new HttpRequestMessage(HttpMethod.Patch, $"/api/v1/admin/comics/{item.Id}")
+            { Content = JsonContent.Create(invalidTaxonomyPayload) };
+            invalidTaxonomy.Headers.Add("X-CSRF-TOKEN", csrf);
+            Assert.Equal(HttpStatusCode.BadRequest, (await admin.SendAsync(invalidTaxonomy)).StatusCode);
+
+            using (var blankCover = new HttpRequestMessage(HttpMethod.Patch, $"/api/v1/admin/comics/{item.Id}")
+                   { Content = JsonContent.Create(new { item.Slug, item.Title, item.Description, item.SeriesStatus,
+                       coverAssetId = "   ", item.DefaultPriceCoins, item.DefaultVipEligible,
+                       expectedVersion = item.Version, item.GenreIds, item.AuthorIds, item.TranslationGroupIds }) })
+            {
+                blankCover.Headers.Add("X-CSRF-TOKEN", csrf);
+                await AssertStandardizedErrorAsync(await admin.SendAsync(blankCover),
+                    HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            }
+
+            using (var longTaxonomySlug = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/taxonomy/genres")
+                   { Content = JsonContent.Create(new { name = "Too long", slug = new string('a', 201) }) })
+            {
+                longTaxonomySlug.Headers.Add("X-CSRF-TOKEN", csrf);
+                await AssertStandardizedErrorAsync(await admin.SendAsync(longTaxonomySlug),
+                    HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            }
+
+            using var stale = new HttpRequestMessage(HttpMethod.Patch, $"/api/v1/admin/comics/{item.Id}")
+            { Content = JsonContent.Create(new { item.Slug, item.Title, item.Description, item.SeriesStatus,
+                item.CoverAssetId, item.DefaultPriceCoins, item.DefaultVipEligible, expectedVersion = 999L,
+                item.GenreIds, item.AuthorIds, item.TranslationGroupIds }) };
+            stale.Headers.Add("X-CSRF-TOKEN", csrf);
+            await AssertStandardizedErrorAsync(await admin.SendAsync(stale),
+                HttpStatusCode.Conflict, "CONCURRENCY_CONFLICT");
+        }
+    }
+
+    [Fact]
     public async Task Comments_http_flow_enforces_reply_depth_ownership_moderation_and_audit()
     {
         var (comicId, _) = await SeedPublicRatingComicAsync(_factory.Services, "in02-comments");
@@ -6833,6 +6922,153 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A01_admin_catalog_returns_standardized_forbidden_and_rate_limited_errors()
+    {
+        await using (var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(), _securityDirectory,
+            useInsufficientRoleTestAuthentication: true))
+        using (var client = CreateClient(factory))
+        {
+            await AssertStandardizedErrorAsync(await client.GetAsync("/api/v1/admin/comics"),
+                HttpStatusCode.Forbidden, "FORBIDDEN");
+        }
+
+        var (admin, csrf) = await CreateAdminClientAsync($"a01-rate-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            HttpResponseMessage? response = null;
+            for (var index = 0; index < 21; index++)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/taxonomy/not-a-kind")
+                { Content = JsonContent.Create(new { name = "Invalid", slug = "invalid" }) };
+                request.Headers.Add("X-CSRF-TOKEN", csrf);
+                response = await admin.SendAsync(request);
+                if (index < 20) Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            }
+            await AssertStandardizedErrorAsync(response!, HttpStatusCode.TooManyRequests, "RATE_LIMITED");
+        }
+    }
+
+    [Fact]
+    public async Task A01_chapter_page_http_workflow_appends_and_rejects_stale_version()
+    {
+        var (admin, csrf) = await CreateAdminClientAsync($"a01-pages-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            var comicPayload = new
+            {
+                slug = $"a01-pages-{Guid.NewGuid():N}", title = "Pages", description = "Page editor test",
+                seriesStatus = "Ongoing", coverAssetId = (string?)null, defaultPriceCoins = 0,
+                defaultVipEligible = false, genreIds = Array.Empty<Guid>(), authorIds = Array.Empty<Guid>(),
+                translationGroupIds = Array.Empty<Guid>(),
+            };
+            using var comicRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/comics")
+            { Content = JsonContent.Create(comicPayload) };
+            comicRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+            var comicResponse = await admin.SendAsync(comicRequest);
+            Assert.True(comicResponse.StatusCode == HttpStatusCode.Created,
+                $"Expected comic create, got {comicResponse.StatusCode}: {await comicResponse.Content.ReadAsStringAsync()}");
+            var comic = await comicResponse.Content.ReadFromJsonAsync<AdminComicItem>();
+            Assert.NotNull(comic);
+
+            using var chapterRequest = new HttpRequestMessage(HttpMethod.Post, "/api/v1/admin/chapters")
+            { Content = JsonContent.Create(new { comicId = comic.Id, chapterLabel = "1", sortOrder = 1,
+                priceOverrideCoins = (long?)null, vipOverride = (bool?)null, expectedVersion = (long?)null }) };
+            chapterRequest.Headers.Add("X-CSRF-TOKEN", csrf);
+            var chapterResponse = await admin.SendAsync(chapterRequest);
+            Assert.True(chapterResponse.StatusCode == HttpStatusCode.Created,
+                $"Expected chapter create, got {chapterResponse.StatusCode}: {await chapterResponse.Content.ReadAsStringAsync()}");
+            var chapter = await chapterResponse.Content.ReadFromJsonAsync<AdminChapterItem>();
+            Assert.NotNull(chapter);
+
+            using var upload = PageUploadRequest(chapter.Id, chapter.Version, csrf, "first.png", [1, 2, 3]);
+            var uploaded = await admin.SendAsync(upload);
+            Assert.Equal(HttpStatusCode.OK, uploaded.StatusCode);
+            var manifest = await uploaded.Content.ReadFromJsonAsync<AdminPageManifest>();
+            Assert.NotNull(manifest);
+            Assert.Equal(1, Assert.Single(manifest.Pages).PageOrder);
+
+            using var stale = PageUploadRequest(chapter.Id, chapter.Version, csrf, "stale.png", [4]);
+            var conflict = await admin.SendAsync(stale);
+            Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+            Assert.Equal("CONCURRENCY_CONFLICT",
+                (await conflict.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("errorCode").GetString());
+
+            using var invalidType = PageUploadRequest(chapter.Id, manifest.Version, csrf, "not-image.txt", [5], "text/plain");
+            await AssertStandardizedErrorAsync(await admin.SendAsync(invalidType),
+                HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+
+            using var invalid = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/admin/chapters/{chapter.Id}/pages")
+            { Content = new MultipartFormDataContent { { new StringContent(manifest.Version.ToString()), "expectedVersion" } } };
+            invalid.Headers.Add("X-CSRF-TOKEN", csrf);
+            Assert.Equal(HttpStatusCode.BadRequest, (await admin.SendAsync(invalid)).StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task A01_invalid_taxonomy_kind_is_standardized_validation_error()
+    {
+        var (admin, _) = await CreateAdminClientAsync($"a01-taxonomy-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            var response = await admin.GetAsync("/api/v1/admin/taxonomy/not-a-kind");
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var problem = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("VALIDATION_FAILED", problem.GetProperty("errorCode").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task A01_openapi_declares_multipart_versioning_and_standardized_errors()
+    {
+        using var client = CreateClient();
+        using var document = JsonDocument.Parse(await client.GetStringAsync("/openapi/v1.json"));
+        var operation = document.RootElement.GetProperty("paths")
+            .GetProperty("/api/v1/admin/chapters/{chapterId}/pages").GetProperty("post");
+        var multipart = ResolveOpenApiSchema(document.RootElement,
+            operation.GetProperty("requestBody").GetProperty("content")
+                .GetProperty("multipart/form-data").GetProperty("schema"));
+        Assert.True(multipart.GetProperty("properties").TryGetProperty("expectedVersion", out _));
+        Assert.True(multipart.GetProperty("properties").TryGetProperty("files", out var files));
+        Assert.Equal("array", files.GetProperty("type").GetString());
+
+        foreach (var status in new[] { "400", "401", "403", "404", "409", "422", "429", "503" })
+        {
+            Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _), $"Missing {status}");
+            var schema = ResolveResponseSchema(document.RootElement, operation, status);
+            foreach (var property in new[] { "errorCode", "message", "traceId" })
+                Assert.True(schema.GetProperty("properties").TryGetProperty(property, out _));
+        }
+
+        var comicList = document.RootElement.GetProperty("paths")
+            .GetProperty("/api/v1/admin/comics").GetProperty("get");
+        var listParameters = comicList.GetProperty("parameters").EnumerateArray().ToArray();
+        var pageSize = Assert.Single(listParameters, parameter =>
+            parameter.GetProperty("name").GetString() == "pageSize").GetProperty("schema");
+        Assert.Equal(1, pageSize.GetProperty("minimum").GetInt32());
+        Assert.Equal(100, pageSize.GetProperty("maximum").GetInt32());
+        Assert.True(comicList.GetProperty("responses").TryGetProperty("400", out _));
+
+        foreach (var (path, method, statuses) in new[]
+        {
+            ("/api/v1/admin/chapters/{chapterId}/pages/order", "put", new[] { "400", "401", "403", "404", "409", "422", "429" }),
+            ("/api/v1/admin/chapters/{chapterId}/pages/{pageId}/content", "put", new[] { "400", "401", "403", "404", "409", "429", "503" }),
+            ("/api/v1/admin/chapters/{chapterId}/pages/{pageId}", "delete", new[] { "400", "401", "403", "404", "409", "422", "429" }),
+        })
+        {
+            var pageOperation = document.RootElement.GetProperty("paths").GetProperty(path).GetProperty(method);
+            foreach (var status in statuses)
+            {
+                Assert.True(pageOperation.GetProperty("responses").TryGetProperty(status, out _),
+                    $"Missing {method.ToUpperInvariant()} {path} response {status}");
+                var schema = ResolveResponseSchema(document.RootElement, pageOperation, status);
+                foreach (var property in new[] { "errorCode", "message", "traceId" })
+                    Assert.True(schema.GetProperty("properties").TryGetProperty(property, out _));
+            }
+        }
+    }
+
+    [Fact]
     public async Task Comment_openapi_contract_declares_pagination_body_constraints_and_standard_errors()
     {
         using var client = CreateClient();
@@ -7000,6 +7236,21 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             await BeginLoginAsync(adminClient, "/admin/missions"));
         var profile = await adminClient.GetAsync("/api/v1/me");
         return (adminClient, Assert.Single(profile.Headers.GetValues("X-CSRF-TOKEN")));
+    }
+
+    private static HttpRequestMessage PageUploadRequest(
+        Guid chapterId, long expectedVersion, string csrf, string fileName, byte[] bytes,
+        string contentType = "image/png")
+    {
+        var content = new MultipartFormDataContent
+        {
+            { new StringContent(expectedVersion.ToString(System.Globalization.CultureInfo.InvariantCulture)), "expectedVersion" },
+            { new ByteArrayContent(bytes) { Headers = { ContentType = new(contentType) } }, "files", fileName },
+        };
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/admin/chapters/{chapterId}/pages")
+        { Content = content };
+        request.Headers.Add("X-CSRF-TOKEN", csrf);
+        return request;
     }
 
     private static HttpRequestMessage CreateMissionRequest(string code, string csrf)
@@ -7486,6 +7737,8 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
                 services.RemoveAll<IChapterPageContentProvider>();
                 services.AddSingleton<IChapterPageContentProvider, FakeChapterPageContentProvider>();
+                services.RemoveAll<IChapterPageAssetStore>();
+                services.AddSingleton<IChapterPageAssetStore, FakeAdminChapterPageAssetStore>();
 
                 if (useInsufficientRoleTestAuthentication)
                 {
@@ -7603,6 +7856,15 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             CancellationToken cancellationToken = default) =>
             Task.FromResult<ChapterPageContent?>(
                 new ChapterPageContent([1, 2, 3], "image/webp"));
+    }
+
+    private sealed class FakeAdminChapterPageAssetStore : IChapterPageAssetStore
+    {
+        public void ValidateUpload(ChapterPageAssetUpload upload) { }
+        public string GetPublicId(Guid chapterId, Guid pageId) => $"test-pages/{chapterId:N}/{pageId:N}";
+        public Task<ChapterPageAsset> UploadAsync(ChapterPageAssetUpload upload, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ChapterPageAsset(GetPublicId(upload.ChapterId, upload.PageId), 800, 1200));
+        public Task DeleteAsync(string publicId, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
 
     private sealed class AlwaysConflictIdentityStore : IGoogleIdentityStore

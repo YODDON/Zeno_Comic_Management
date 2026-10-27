@@ -23,6 +23,8 @@ using ComicManagement.Missions.Queries;
 using ComicManagement.Interaction.Ratings;
 using ComicManagement.Interaction.Comments;
 using ComicManagement.Shared.Persistence;
+using ComicManagement.Catalog.Administration;
+using ComicManagement.Catalog.Featured;
 
 namespace ComicManagement.Persistence;
 
@@ -44,8 +46,17 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<IUserProfileStore, UserProfileStore>();
         services.TryAddScoped<ISessionStore, SessionStore>();
         services.TryAddScoped<IChapterPageUploadStore, ChapterPageUploadStore>();
+        services.TryAddScoped<UploadChapterPageHandler>();
         services.TryAddScoped<ICatalogPublicationStore, CatalogPublicationStore>();
         services.TryAddScoped<CatalogPublicationHandler>();
+        services.TryAddScoped<ICatalogAdministrationStore, CatalogAdministrationStore>();
+        services.TryAddSingleton<ICatalogAdministrationCriticalSectionObserver, NoOpCatalogAdministrationCriticalSectionObserver>();
+        services.TryAddScoped<CatalogAdministrationHandler>();
+        services.TryAddScoped<IAdminChapterPageService, AdminChapterPageService>();
+        services.TryAddSingleton<IAdminChapterPageCriticalSectionObserver,
+            NoOpAdminChapterPageCriticalSectionObserver>();
+        services.TryAddScoped<IFeaturedCatalogStore, FeaturedCatalogStore>();
+        services.TryAddSingleton<IFeaturedCatalogCriticalSectionObserver, NoOpFeaturedCatalogCriticalSectionObserver>();
         services.TryAddScoped<IPublicCatalogStore, PublicCatalogStore>();
         services.TryAddScoped<PublicCatalogHandler>();
         services.TryAddScoped<IComicRatingStore, ComicRatingStore>();
