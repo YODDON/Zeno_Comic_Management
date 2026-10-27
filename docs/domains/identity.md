@@ -9,6 +9,8 @@ Google OAuth only; users default role User; Admin provisioned outside web UI thr
 ## HTTP
 `GET /api/v1/me` session profile; `PATCH /api/v1/me` updates only displayName with trim/length validation, updates header query; OAuth auth/callback/logout provider-specific routes. Do not supply change-password or change-email routes. Admin Users list/detail, enable/disable with audit; no Admin promote/demote UI/API command.
 
+A03 Admin user reads are paged, no-store and scoped to Admin authorization. Detail combines read-only Wallet/VIP/access/payment projections without exposing provider identity or secrets. Enable/disable locks the User, checks `expectedVersion`, samples PostgreSQL time, changes only `status`, increments `User.Version` and appends a redacted audit row in one transaction. Existing sessions are rejected on their next request because cookie validation compares the persisted status/version. Mutations are limited to 20/minute/Admin. There is no role or Wallet mutation endpoint.
+
 ## Controls
 Secure HttpOnly SameSite cookie, anti-CSRF for mutations, persisted Data Protection keys, OAuth state/nonce validation, session revocation/logout, issuer/audience verification and exact Google `sub` binding. Admin first-account provisioning documented in Operations, with least privilege.
 

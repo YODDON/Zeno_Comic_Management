@@ -26,6 +26,7 @@ using ComicManagement.Shared.Persistence;
 using ComicManagement.Catalog.Administration;
 using ComicManagement.Catalog.Featured;
 using ComicManagement.Administration.Finance;
+using ComicManagement.Identity.Administration;
 
 namespace ComicManagement.Persistence;
 
@@ -45,6 +46,8 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddSingleton<IClock, SystemClock>();
         services.TryAddScoped<IGoogleIdentityStore, GoogleIdentityStore>();
         services.TryAddScoped<IUserProfileStore, UserProfileStore>();
+        services.TryAddScoped<IUserAdministrationStore, UserAdministrationStore>();
+        services.TryAddScoped<UserAdministrationHandler>();
         services.TryAddScoped<ISessionStore, SessionStore>();
         services.TryAddScoped<IChapterPageUploadStore, ChapterPageUploadStore>();
         services.TryAddScoped<UploadChapterPageHandler>();
@@ -110,6 +113,8 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddSingleton<IMissionActivationCriticalSectionObserver,
             NoOpMissionActivationCriticalSectionObserver>();
         services.TryAddScoped<MissionAdministrationHandler>();
+        services.TryAddScoped<IMissionRewardAdministrationStore, MissionRewardAdministrationStore>();
+        services.TryAddScoped<MissionRewardAdministrationHandler>();
         services.TryAddScoped<MissionActionReceiptRecorder>();
         services.TryAddScoped<IMissionReceiptProcessingStore, MissionReceiptProcessingStore>();
         services.TryAddSingleton<IMissionReceiptCriticalSectionObserver,

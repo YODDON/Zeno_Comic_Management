@@ -99,6 +99,25 @@ public sealed class User
         return false;
     }
 
+    public bool ChangeStatus(string status, DateTimeOffset updatedAt)
+    {
+        if (status is not (UserStatuses.Active or UserStatuses.Disabled))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status));
+        }
+
+        EnsureUtc(updatedAt, nameof(updatedAt));
+        if (string.Equals(Status, status, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        Status = status;
+        UpdatedAt = updatedAt;
+        Version = checked(Version + 1);
+        return true;
+    }
+
     private static void ValidateDisplayName(string displayName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(displayName);

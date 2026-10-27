@@ -10,6 +10,8 @@ All Admin endpoints have server role checks; first Admin provision out-of-band, 
 ## Settings
 Reading 90%/15s thresholds may be exposed as typed settings with session policy snapshot if product later enables editing; fixed cap 300 Bonus/day is read-only, no Admin override. VIP 720h/20% fixed MVP, price editable for *new orders* and snapshotted. SePay/Cloudinary secrets never in UI.
 
+A03 implements Benefits and Users without adding undocumented settings: Mission revision/activation UI reuses the M01/M02 APIs and exposes a read-only, paged reward-decision report (`Granted|DeniedDailyCap`); VIP edits only future-order price; Users supports versioned enable/disable with read-only Wallet/membership/access/payment context. Admin query caches include the authenticated Admin ID. The Settings screen is intentionally read-only for Reading thresholds, Mission cap/timezone and provider verification state; no generic typed-setting write API is introduced.
+
 ## Featured
 Up to five Published Comics, drag-drop reorder and keyboard alternative; save atomic with configuration version; public result excludes Comic if later Hidden. Audit admin mutating commands; immutable audit entries redacted of sensitive data.
 

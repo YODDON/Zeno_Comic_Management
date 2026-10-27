@@ -80,7 +80,7 @@ button {
 .admin-workspace label { display:grid; gap:.4rem; font-weight:650; }
 .admin-workspace input,.admin-workspace textarea,.admin-workspace select { width:100%; border:1px solid var(--border-strong); border-radius:.55rem; background:var(--surface); color:var(--text); padding:.7rem; font:inherit; }
 .admin-workspace textarea { min-height:8rem; resize:vertical; }
-.admin-workspace ol li { display:flex; align-items:center; gap:.6rem; margin:.5rem 0; padding:.75rem; border:1px solid var(--border); border-radius:.65rem; }
+.admin-workspace ol li { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; margin:.5rem 0; padding:.75rem; border:1px solid var(--border); border-radius:.65rem; }
 .admin-actions { display:flex; flex-wrap:wrap; align-items:center; gap:.75rem; margin-top:1rem; }
 .admin-page-list { list-style:none; padding:0; }
 .admin-page-list li { flex-wrap:wrap; }
@@ -1701,3 +1701,8 @@ svg {
 .finance-timeline { display: grid; gap: .75rem; padding-left: 1.25rem; }
 .coin-positive { color: var(--success); font-weight: 700; }
 .coin-negative { color: var(--danger); font-weight: 700; }
+.admin-editor-stack { display: grid; gap: 1.25rem; }
+.admin-form-grid, .settings-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
+.admin-field-wide { grid-column: 1 / -1; }
+.settings-grid article { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1.25rem; }
+.settings-grid dl > div { display: flex; justify-content: space-between; gap: 1rem; padding-block: .45rem; }

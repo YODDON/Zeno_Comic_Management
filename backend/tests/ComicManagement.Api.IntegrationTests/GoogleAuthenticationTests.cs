@@ -15,6 +15,7 @@ using ComicManagement.Persistence;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Identity.Users;
+using ComicManagement.Identity.Administration;
 using ComicManagement.Interaction.Comments;
 using ComicManagement.Identity.Events;
 using ComicManagement.Missions.Administration;
@@ -36,6 +37,7 @@ using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Events;
 using ComicManagement.Billing.Refunds;
 using ComicManagement.Api.Billing;
+using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Controllers;
 using ComicManagement.Membership.Events;
 using ComicManagement.Membership.Memberships;
@@ -7314,6 +7316,260 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
                 .GetProperty("properties").GetProperty("status")));
     }
 
+    [Fact]
+    public async Task A03_admin_users_enforces_auth_csrf_version_and_revokes_disabled_session()
+    {
+        var subject = $"a03-user-{Guid.NewGuid():N}";
+        _factory.TokenEndpoint.SetProfile(subject, "A03 Reader", "a03-reader@example.test", null);
+        using var reader = CreateClient();
+        await CompleteLoginAsync(reader, await BeginLoginAsync(reader, "/"));
+        var readerProfile = await (await reader.GetAsync("/api/v1/me"))
+            .Content.ReadFromJsonAsync<MeResponse>();
+
+        var (admin, csrf) = await CreateAdminClientAsync($"a03-admin-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            using var anonymous = CreateClient();
+            Assert.Equal(HttpStatusCode.Unauthorized,
+                (await anonymous.GetAsync("/api/v1/admin/users")).StatusCode);
+            Assert.Equal(HttpStatusCode.Forbidden,
+                (await reader.GetAsync("/api/v1/admin/users")).StatusCode);
+
+            var invalidFilter = await admin.GetAsync("/api/v1/admin/users?status=1");
+            Assert.Equal(HttpStatusCode.BadRequest, invalidFilter.StatusCode);
+            Assert.Equal("VALIDATION_FAILED",
+                (await invalidFilter.Content.ReadFromJsonAsync<ApiErrorResponse>())!.ErrorCode);
+
+            var page = await (await admin.GetAsync("/api/v1/admin/users?search=a03-reader@example.test&status=Active"))
+                .Content.ReadFromJsonAsync<AdminUserPage>();
+            var target = Assert.Single(page!.Items);
+            Assert.Equal(readerProfile!.Id, target.Id);
+
+            var missingCsrf = await admin.PostAsJsonAsync(
+                $"/api/v1/admin/users/{target.Id}/disable",
+                new { expectedVersion = target.Version });
+            Assert.Equal(HttpStatusCode.BadRequest, missingCsrf.StatusCode);
+            Assert.Equal("VALIDATION_FAILED", (await missingCsrf.Content.ReadFromJsonAsync<ApiErrorResponse>())!.ErrorCode);
+
+            var disable = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/admin/users/{target.Id}/disable")
+            {
+                Content = JsonContent.Create(new { expectedVersion = target.Version }),
+            };
+            disable.Headers.Add("X-CSRF-TOKEN", csrf);
+            var disabled = await admin.SendAsync(disable);
+            Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+            var detail = await disabled.Content.ReadFromJsonAsync<AdminUserDetail>();
+            Assert.Equal(UserStatuses.Disabled, detail!.User.Status);
+
+            var stale = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/admin/users/{target.Id}/enable")
+            {
+                Content = JsonContent.Create(new { expectedVersion = target.Version }),
+            };
+            stale.Headers.Add("X-CSRF-TOKEN", csrf);
+            var conflict = await admin.SendAsync(stale);
+            Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+            Assert.Equal("CONCURRENCY_CONFLICT", (await conflict.Content.ReadFromJsonAsync<ApiErrorResponse>())!.ErrorCode);
+        }
+
+        var rejectedSession = await reader.GetAsync("/api/v1/me");
+        Assert.Equal(HttpStatusCode.Forbidden, rejectedSession.StatusCode);
+    }
+
+    [Fact]
+    public async Task A03_paged_queries_reject_unsupported_offsets_without_returning_500()
+    {
+        var (admin, _) = await CreateAdminClientAsync($"a03-pagination-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            foreach (var path in new[]
+            {
+                "/api/v1/admin/users?page=1&pageSize=30",
+                "/api/v1/admin/users?page=100000&pageSize=100",
+                "/api/v1/admin/users?page=21474837&pageSize=100",
+                $"/api/v1/admin/users?page={int.MaxValue}&pageSize=1",
+                "/api/v1/admin/mission-rewards?page=1&pageSize=30",
+                "/api/v1/admin/mission-rewards?page=21474837&pageSize=100",
+                $"/api/v1/admin/mission-rewards?page={int.MaxValue}&pageSize=1",
+            })
+            {
+                using var response = await admin.GetAsync(path);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            }
+
+            foreach (var path in new[]
+            {
+                $"/api/v1/admin/users?page={int.MaxValue}&pageSize=100",
+                $"/api/v1/admin/mission-rewards?page={int.MaxValue}&pageSize=100",
+            })
+            {
+                using var response = await admin.GetAsync(path);
+                await AssertStandardizedErrorAsync(
+                    response,
+                    HttpStatusCode.BadRequest,
+                    "VALIDATION_FAILED");
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A03_user_mutation_rate_limit_is_twenty_per_authenticated_admin()
+    {
+        var subject = $"a03-rate-user-{Guid.NewGuid():N}";
+        _factory.TokenEndpoint.SetProfile(subject, "A03 Rate Reader", null, null);
+        using var reader = CreateClient();
+        await CompleteLoginAsync(reader, await BeginLoginAsync(reader, "/"));
+        var readerProfile = await (await reader.GetAsync("/api/v1/me"))
+            .Content.ReadFromJsonAsync<MeResponse>();
+
+        var (adminA, csrfA) = await CreateAdminClientAsync($"a03-rate-admin-a-{Guid.NewGuid():N}");
+        var (adminB, csrfB) = await CreateAdminClientAsync($"a03-rate-admin-b-{Guid.NewGuid():N}");
+        using (adminA)
+        using (adminB)
+        {
+            var version = (await (await adminA.GetAsync($"/api/v1/admin/users/{readerProfile!.Id}"))
+                .Content.ReadFromJsonAsync<AdminUserDetail>())!.User.Version;
+
+            for (var attempt = 1; attempt <= 20; attempt++)
+            {
+                var action = attempt % 2 == 1 ? "disable" : "enable";
+                using var response = await SendAdminJsonAsync(
+                    adminA,
+                    HttpMethod.Post,
+                    $"/api/v1/admin/users/{readerProfile.Id}/{action}",
+                    new { expectedVersion = version },
+                    csrfA);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                version = (await response.Content.ReadFromJsonAsync<AdminUserDetail>())!.User.Version;
+            }
+
+            using (var limited = await SendAdminJsonAsync(
+                adminA,
+                HttpMethod.Post,
+                $"/api/v1/admin/users/{readerProfile.Id}/disable",
+                new { expectedVersion = version },
+                csrfA))
+            {
+                await AssertStandardizedErrorAsync(
+                    limited,
+                    HttpStatusCode.TooManyRequests,
+                    "RATE_LIMITED");
+            }
+
+            using var independent = await SendAdminJsonAsync(
+                adminB,
+                HttpMethod.Post,
+                $"/api/v1/admin/users/{readerProfile.Id}/disable",
+                new { expectedVersion = version },
+                csrfB);
+            Assert.Equal(HttpStatusCode.OK, independent.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task A03_vip_plan_mutation_rate_limit_is_twenty_per_authenticated_admin()
+    {
+        var (adminA, csrfA) = await CreateAdminClientAsync($"a03-vip-rate-a-{Guid.NewGuid():N}");
+        var (adminB, csrfB) = await CreateAdminClientAsync($"a03-vip-rate-b-{Guid.NewGuid():N}");
+        using (adminA)
+        using (adminB)
+        {
+            var plan = await (await adminA.GetAsync("/api/v1/admin/vip-plan"))
+                .Content.ReadFromJsonAsync<VipPlanResponse>();
+            Assert.NotNull(plan);
+
+            for (var attempt = 1; attempt <= 20; attempt++)
+            {
+                using var response = await SendAdminJsonAsync(
+                    adminA,
+                    HttpMethod.Patch,
+                    "/api/v1/admin/vip-plan",
+                    new { priceVnd = plan!.PriceVnd + 1, expectedVersion = plan.Version },
+                    csrfA);
+                Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+                plan = await response.Content.ReadFromJsonAsync<VipPlanResponse>();
+            }
+
+            using (var limited = await SendAdminJsonAsync(
+                adminA,
+                HttpMethod.Patch,
+                "/api/v1/admin/vip-plan",
+                new { priceVnd = plan!.PriceVnd + 1, expectedVersion = plan.Version },
+                csrfA))
+            {
+                await AssertStandardizedErrorAsync(
+                    limited,
+                    HttpStatusCode.TooManyRequests,
+                    "RATE_LIMITED");
+            }
+
+            using var independent = await SendAdminJsonAsync(
+                adminB,
+                HttpMethod.Patch,
+                "/api/v1/admin/vip-plan",
+                new { priceVnd = plan!.PriceVnd + 1, expectedVersion = plan.Version },
+                csrfB);
+            Assert.Equal(HttpStatusCode.OK, independent.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task A03_OpenApi_contains_closed_user_contract_and_admin_errors()
+    {
+        using var client = CreateClient();
+        using var document = JsonDocument.Parse(await client.GetStringAsync("/openapi/v1.json"));
+        var root = document.RootElement;
+        var paths = root.GetProperty("paths");
+        var list = paths.GetProperty("/api/v1/admin/users").GetProperty("get");
+        Assert.Equal(
+            new[] { "Active", "Disabled" },
+            GetOpenApiEnumValues(root, FindOpenApiParameter(list, "status").GetProperty("schema")));
+        foreach (var status in new[] { "200", "400", "401", "403" })
+        {
+            Assert.True(list.GetProperty("responses").TryGetProperty(status, out _));
+        }
+
+        var schema = root.GetProperty("components").GetProperty("schemas")
+            .GetProperty("AdminUserListItem").GetProperty("properties");
+        Assert.Equal(new[] { "User", "Admin" }, GetOpenApiEnumValues(root, schema.GetProperty("role")));
+        Assert.Equal(new[] { "Active", "Disabled" }, GetOpenApiEnumValues(root, schema.GetProperty("status")));
+        var paymentSchema = root.GetProperty("components").GetProperty("schemas")
+            .GetProperty("AdminUserPaymentSummary").GetProperty("properties");
+        Assert.Equal(new[] { "Pending", "Expired", "Succeeded" },
+            GetOpenApiEnumValues(root, paymentSchema.GetProperty("status")));
+        Assert.Equal(new[] { "TopUp", "VipPurchase" },
+            GetOpenApiEnumValues(root, paymentSchema.GetProperty("orderType")));
+
+        foreach (var action in new[] { "disable", "enable" })
+        {
+            var operation = paths.GetProperty($"/api/v1/admin/users/{{userId}}/{action}").GetProperty("post");
+            foreach (var status in new[] { "200", "400", "401", "403", "404", "409", "429" })
+            {
+                Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _));
+            }
+        }
+
+        var rewards = paths.GetProperty("/api/v1/admin/mission-rewards").GetProperty("get");
+        Assert.Equal(
+            new[] { "Granted", "DeniedDailyCap" },
+            GetOpenApiEnumValues(root, FindOpenApiParameter(rewards, "outcome").GetProperty("schema")));
+        foreach (var status in new[] { "200", "400", "401", "403" })
+        {
+            Assert.True(rewards.GetProperty("responses").TryGetProperty(status, out _));
+        }
+        var rewardSchema = root.GetProperty("components").GetProperty("schemas")
+            .GetProperty("AdminMissionRewardItem").GetProperty("properties");
+        Assert.Equal(
+            new[] { "Granted", "DeniedDailyCap" },
+            GetOpenApiEnumValues(root, rewardSchema.GetProperty("outcome")));
+
+        var errorSchema = root.GetProperty("components").GetProperty("schemas")
+            .GetProperty("ApiErrorResponse").GetProperty("properties");
+        foreach (var property in new[] { "errorCode", "message", "traceId" })
+        {
+            Assert.True(errorSchema.TryGetProperty(property, out _));
+        }
+    }
+
     private HttpClient CreateClient() => _factory.CreateClient(
         new WebApplicationFactoryClientOptions
         {
@@ -7350,6 +7606,21 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             await BeginLoginAsync(adminClient, "/admin/missions"));
         var profile = await adminClient.GetAsync("/api/v1/me");
         return (adminClient, Assert.Single(profile.Headers.GetValues("X-CSRF-TOKEN")));
+    }
+
+    private static async Task<HttpResponseMessage> SendAdminJsonAsync(
+        HttpClient client,
+        HttpMethod method,
+        string path,
+        object body,
+        string csrf)
+    {
+        using var request = new HttpRequestMessage(method, path)
+        {
+            Content = JsonContent.Create(body),
+        };
+        request.Headers.Add("X-CSRF-TOKEN", csrf);
+        return await client.SendAsync(request);
     }
 
     private static HttpRequestMessage PageUploadRequest(
