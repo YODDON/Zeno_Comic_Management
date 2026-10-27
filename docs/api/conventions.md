@@ -21,6 +21,8 @@ RF03 transfer-attempt, complete and release commands use the same Admin mutation
 
 Admin Mission mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. The limit covers definition creation, revision append, activation and deactivation; read-only Mission routes do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
+Admin Catalog mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. Comic/Chapter metadata, publication, taxonomy, Chapter-page and Featured mutations consume this shared policy; read-only editor queries do not. Rejection uses standardized `429 RATE_LIMITED`.
+
 ## Pagination
 Public Comic list uses deterministic `(update_sort_at DESC,id DESC)` keyset pagination. Public Chapter list uses one-based `page`, a fixed page size of 30, deterministic `(sort_order,id)` ordering, and response `{items,page,pageSize,totalItems,totalPages}`. Public callers cannot override Chapter page size. A future Admin listing may expose configurable `pageSize`, default 30 and maximum 100. Sorts remain stable on ties.
 

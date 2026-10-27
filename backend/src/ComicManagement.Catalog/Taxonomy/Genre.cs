@@ -36,4 +36,10 @@ public sealed class Genre
             Name = name,
         };
     }
+    public void Update(string slug, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(slug); ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (slug.Length > MaximumSlugLength) throw new ArgumentOutOfRangeException(nameof(slug));
+        Slug = slug.Trim(); Name = name.Trim();
+    }
 }

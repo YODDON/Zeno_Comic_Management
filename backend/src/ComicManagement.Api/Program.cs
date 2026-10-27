@@ -1,4 +1,5 @@
 using ComicManagement.Api.Authentication;
+using ComicManagement.Api.Catalog;
 using ComicManagement.Api.Billing;
 using ComicManagement.Api.OpenApi;
 using ComicManagement.Api.Reading;
@@ -127,6 +128,7 @@ builder.Services.AddReadingRateLimiting(builder.Configuration);
 builder.Services.AddBillingRateLimiting();
 builder.Services.AddMembershipRateLimiting();
 builder.Services.AddMissionRateLimiting();
+builder.Services.AddCatalogRateLimiting();
 builder.Services.Configure<OutboxOptions>(
     builder.Configuration.GetSection(OutboxOptions.SectionName));
 builder.Services.AddOutboxWorker();

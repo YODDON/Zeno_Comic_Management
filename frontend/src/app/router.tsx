@@ -10,6 +10,10 @@ import { NotFoundPage } from "@/pages/NotFoundPage";
 import { ProfilePage } from "@/pages/ProfilePage";
 import { ReaderPage } from "@/pages/ReaderPage";
 import { RoutePlaceholderPage } from "@/pages/RoutePlaceholderPage";
+import { AdminComicsPage } from "@/pages/AdminComicsPage";
+import { AdminChaptersPage } from "@/pages/AdminChaptersPage";
+import { AdminTaxonomyPage } from "@/pages/AdminTaxonomyPage";
+import { AdminFeaturedPage } from "@/pages/AdminFeaturedPage";
 
 export const router = createBrowserRouter([
   {
@@ -23,23 +27,13 @@ export const router = createBrowserRouter([
       { path: "profile", element: <ProfilePage /> },
       {
         path: "wallet",
-        element: (
-          <RoutePlaceholderPage
-            eyebrow="Ví"
-            title="Ví sẽ xuất hiện ở đây"
-            description="Liên kết hồ sơ đã sẵn sàng; số dư và lịch sử giao dịch thuộc các task Wallet sau I03."
-          />
-        ),
+        element: <RoutePlaceholderPage eyebrow="Ví" title="Ví sẽ xuất hiện ở đây"
+          description="Liên kết hồ sơ đã sẵn sàng; số dư và lịch sử giao dịch thuộc các task Wallet." />,
       },
       {
         path: "vip",
-        element: (
-          <RoutePlaceholderPage
-            eyebrow="VIP"
-            title="Gói VIP sẽ xuất hiện ở đây"
-            description="Liên kết hồ sơ đã sẵn sàng; checkout và quyền lợi VIP không được triển khai trong I03."
-          />
-        ),
+        element: <RoutePlaceholderPage eyebrow="VIP" title="Gói VIP sẽ xuất hiện ở đây"
+          description="Liên kết hồ sơ đã sẵn sàng; checkout và quyền lợi VIP thuộc task Membership." />,
       },
       { path: "*", element: <NotFoundPage /> },
     ],
@@ -49,6 +43,12 @@ export const router = createBrowserRouter([
     element: <AdminLayout />,
     children: [
       { index: true, element: <AdminFoundationPage /> },
+      { path: "comics", element: <AdminComicsPage /> },
+      { path: "chapters", element: <AdminChaptersPage /> },
+      { path: "genres", element: <AdminTaxonomyPage kind="genres" title="Thể loại" /> },
+      { path: "authors", element: <AdminTaxonomyPage kind="authors" title="Tác giả" /> },
+      { path: "translation-groups", element: <AdminTaxonomyPage kind="translation-groups" title="Nhóm dịch" /> },
+      { path: "featured", element: <AdminFeaturedPage /> },
       { path: "*", element: <NotFoundPage admin /> },
     ],
   },

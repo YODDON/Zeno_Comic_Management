@@ -1,0 +1,5 @@
+# EF Core Migration Strategy
+
+Single `AppDbContext` in Persistence; one migrations assembly and ordered stream covering all schemas. Entity configuration grouped by owning module/schema. Migration review checklist: PK/FK (including cross-schema), indexes, unique/partial indexes, CHECK constraints, correct nullability and `timestamptz`, idempotency, ledger triggers or application permissions preventing edits, and seed only safe stable data (VIP plan initial 29,000 VND; not secrets).
+
+Never auto-drop financial tables or issue destructive changes without audited backup/migration/rollback plan. Run migrator as controlled single step before API goes ready; don't let multiple pods concurrently migrate. Test migrations from clean DB and previous snapshot using PostgreSQL (not SQLite/InMemory), validate reverse compatibility and backup restore. Reorder constraints may require temporary order slots or deferrable constraints. Ensure table/column names match `physical-erd.md`, not legacy `depleted_coins`.

@@ -25,4 +25,5 @@ public sealed class Author
             Name = name,
         };
     }
+    public void Update(string name) { ArgumentException.ThrowIfNullOrWhiteSpace(name); Name = name.Trim(); }
 }

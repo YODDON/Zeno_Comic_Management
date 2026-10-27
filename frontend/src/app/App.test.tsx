@@ -3,6 +3,7 @@ import { App } from "@/app/App";
 import { router } from "@/app/router";
 
 describe("application shell", () => {
+  afterEach(() => vi.unstubAllGlobals());
   it("renders the Vietnamese user shell", async () => {
     await router.navigate("/");
 
@@ -17,6 +18,14 @@ describe("application shell", () => {
   });
 
   it("renders the light-only admin shell without fake metrics", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json({
+      id: "11111111-1111-4111-8111-111111111111",
+      displayName: "Admin",
+      email: "admin@example.test",
+      avatarUrl: null,
+      role: "Admin",
+      status: "Active",
+    }, { headers: { "X-CSRF-TOKEN": "app-test-csrf" } }))));
     await router.navigate("/admin");
 
     render(<App />);

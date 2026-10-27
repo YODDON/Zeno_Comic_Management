@@ -53,6 +53,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261022150731_AddRefundManualPayout";
     private const string IN01Migration =
         "20261023081149_AddComicRatings";
+    private const string A01Migration =
+        "20261024113949_AddAdminEditorsAndFeatured";
 
     private static readonly string[] ExpectedMigrations =
     [
@@ -91,6 +93,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         RF02HardeningMigration,
         RF03Migration,
         IN01Migration,
+        A01Migration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -136,6 +139,9 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         Assert.True(await TableExists(context, "catalog.comic_translation_groups"));
         Assert.True(await TableExists(context, "catalog.chapters"));
         Assert.True(await TableExists(context, "catalog.chapter_pages"));
+        Assert.True(await TableExists(context, "catalog.featured_comics"));
+        Assert.True(await TableExists(context, "catalog.featured_configuration"));
+        Assert.True(await IndexExists(context, "catalog", "ux_featured_comics_display_order"));
         Assert.True(await TableExists(context, "administration.audit_logs"));
         Assert.True(await TableExists(context, "reading.reading_sessions"));
         Assert.True(await TableExists(context, "reading.chapter_unlock_quotes"));
