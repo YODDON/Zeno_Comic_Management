@@ -35,8 +35,10 @@ builder.Services.AddOpenApi(options =>
 {
     options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>();
     options.AddOperationTransformer<SePayWebhookOpenApiOperationTransformer>();
+    options.AddOperationTransformer<AdminFinanceOpenApiTransformer>();
     options.AddSchemaTransformer<TopUpAmountOpenApiSchemaTransformer>();
     options.AddSchemaTransformer<RefundOpenApiSchemaTransformer>();
+    options.AddSchemaTransformer<AdminFinanceOpenApiTransformer>();
 });
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);

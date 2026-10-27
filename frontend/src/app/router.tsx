@@ -15,6 +15,9 @@ import { AdminComicsPage } from "@/pages/AdminComicsPage";
 import { AdminChaptersPage } from "@/pages/AdminChaptersPage";
 import { AdminTaxonomyPage } from "@/pages/AdminTaxonomyPage";
 import { AdminFeaturedPage } from "@/pages/AdminFeaturedPage";
+import { AdminPaymentsPage } from "@/pages/AdminPaymentsPage";
+import { AdminLedgerPage } from "@/pages/AdminLedgerPage";
+import { AdminRefundsPage } from "@/pages/AdminRefundsPage";
 
 export const router = createBrowserRouter([
   {
@@ -51,6 +54,9 @@ export const router = createBrowserRouter([
       { path: "translation-groups", element: <AdminTaxonomyPage kind="translation-groups" title="Nhóm dịch" /> },
       { path: "featured", element: <AdminFeaturedPage /> },
       { path: "comments", element: <AdminCommentsPage /> },
+      { path: "payments", element: <AdminPaymentsPage /> },
+      { path: "ledger", element: <AdminLedgerPage /> },
+      { path: "refunds", element: <AdminRefundsPage /> },
       { path: "*", element: <NotFoundPage admin /> },
     ],
   },

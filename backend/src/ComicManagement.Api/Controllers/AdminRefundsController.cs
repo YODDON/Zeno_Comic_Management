@@ -5,6 +5,7 @@ using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Authorization;
 using ComicManagement.Api.Billing;
 using ComicManagement.Api.Serialization;
+using ComicManagement.Administration.Finance;
 using ComicManagement.Billing.Refunds;
 using ComicManagement.Workflows.Billing;
 using Microsoft.AspNetCore.Authorization;
@@ -17,8 +18,53 @@ namespace ComicManagement.Api.Controllers;
 [Route("api/v1/admin/refunds")]
 [Authorize(Policy = AuthorizationPolicies.Admin)]
 [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
-public sealed class AdminRefundsController(RefundAdministrationWorkflow workflow) : ControllerBase
+public sealed class AdminRefundsController(
+    RefundAdministrationWorkflow workflow,
+    FinanceAdministrationQueryHandler queries) : ControllerBase
 {
+    [HttpGet]
+    [ProducesResponseType<AdminFinancePage<AdminRefundListItem>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<AdminFinancePage<AdminRefundListItem>>> List(
+        [FromQuery, StringLength(FinanceAdministrationQueryHandler.MaximumSearchLength)] string? search,
+        [FromQuery] string? status,
+        [FromQuery, Range(1, int.MaxValue)] int page = 1,
+        [FromQuery, Range(1, FinanceAdministrationQueryHandler.MaximumPageSize)] int pageSize =
+            FinanceAdministrationQueryHandler.DefaultPageSize,
+        CancellationToken cancellationToken = default)
+    {
+        Response.Headers.CacheControl = "no-store";
+        var result = await queries.ListRefundsAsync(search, status, page, pageSize, cancellationToken);
+        return result.Outcome == FinanceAdministrationQueryOutcome.Succeeded && result.Value is not null
+            ? Ok(result.Value)
+            : BadRequest(Problem(400, "VALIDATION_FAILED", "Validation failed",
+                "The refund list criteria are invalid."));
+    }
+
+    [HttpGet("{refundId:guid}")]
+    [ProducesResponseType<AdminRefundDetail>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<AdminRefundDetail>> Get(
+        Guid refundId,
+        CancellationToken cancellationToken = default)
+    {
+        Response.Headers.CacheControl = "no-store";
+        var result = await queries.GetRefundAsync(refundId, cancellationToken);
+        return result.Outcome switch
+        {
+            FinanceAdministrationQueryOutcome.Succeeded when result.Value is not null => Ok(result.Value),
+            FinanceAdministrationQueryOutcome.NotFound => NotFound(Problem(
+                404, "RESOURCE_NOT_FOUND", "Resource not found", "The refund request was not found.")),
+            _ => BadRequest(Problem(
+                400, "VALIDATION_FAILED", "Validation failed", "The refund identifier is invalid.")),
+        };
+    }
+
     [HttpPost("{refundId:guid}/review")]
     [ProducesResponseType<AdminRefundResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]

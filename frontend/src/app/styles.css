@@ -1676,3 +1676,28 @@ svg {
 .admin-comment-card { background: var(--surface); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; }
 .admin-comment-card header { display: flex; gap: 1rem; justify-content: space-between; }
 .comment-pagination { justify-content: center; }
+
+.finance-page { display: grid; gap: 1.25rem; }
+.finance-filters { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
+.finance-filters label, .refund-actions label { display: grid; gap: .35rem; font-weight: 600; }
+.admin-table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); }
+.admin-data-table { width: 100%; border-collapse: collapse; min-width: 52rem; }
+.admin-data-table th, .admin-data-table td { padding: .8rem .9rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.admin-data-table th { color: var(--muted-foreground); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+.admin-data-table small { display: block; color: var(--muted-foreground); margin-top: .25rem; max-width: 22rem; overflow-wrap: anywhere; }
+.table-link { color: var(--accent); text-decoration: underline; font-weight: 700; background: transparent; border: 0; cursor: pointer; padding: 0; }
+.status-badge { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: .2rem .55rem; font-size: .78rem; font-weight: 700; }
+.status-succeeded, .status-completed { color: var(--success); }
+.status-expired, .status-rejected, .status-reservationreleased { color: var(--muted-foreground); }
+.status-needsreconciliation, .status-transferpending { color: var(--warning); }
+.finance-detail { border: 1px solid var(--border); border-radius: 1rem; padding: 1rem; background: var(--surface-raised); display: grid; gap: 1rem; }
+.finance-detail-heading { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.finance-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; margin: 0; }
+.finance-summary div, .lot-grid span { padding: .75rem; background: var(--surface); border: 1px solid var(--border); border-radius: .75rem; }
+.finance-summary dt { color: var(--muted-foreground); font-size: .8rem; }
+.finance-summary dd { margin: .25rem 0 0; overflow-wrap: anywhere; }
+.lot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: .5rem; }
+.refund-actions, .refund-actions form { display: grid; gap: .75rem; max-width: 46rem; }
+.finance-timeline { display: grid; gap: .75rem; padding-left: 1.25rem; }
+.coin-positive { color: var(--success); font-weight: 700; }
+.coin-negative { color: var(--danger); font-weight: 700; }

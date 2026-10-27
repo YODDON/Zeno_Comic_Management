@@ -12,3 +12,6 @@ Reading 90%/15s thresholds may be exposed as typed settings with session policy 
 
 ## Featured
 Up to five Published Comics, drag-drop reorder and keyboard alternative; save atomic with configuration version; public result excludes Comic if later Hidden. Audit admin mutating commands; immutable audit entries redacted of sensitive data.
+
+## Finance workspace
+A02 exposes read-only PaymentOrder/provider evidence and immutable Wallet ledger projections plus the RF02/RF03 refund workspace. Finance reads are Admin-only, no-store and paged; refund detail is a repeatable-read view of the request, masked recipient, exact original PaidCoinLot, reservation, transfer evidence and redacted audit history. It never returns recipient plaintext/ciphertext or request fingerprints. Public finance filter/status values are closed string enums in OpenAPI and invalid/numeric values fail validation. Payment reconciliation display uses deterministic `(verified_at DESC,id DESC)` ordering. UI finance caches are scoped to the authenticated Admin ID and refund evidence form state resets when the selected refund changes. UI actions call the existing audited RF02/RF03 commands and must distinguish recording reported transfer evidence from independently confirming Complete/Release. No direct Wallet adjustment is available.
