@@ -14,6 +14,8 @@ KPIs and charts separating verified VND TopUp/VIP/refunds, Paid/Bonus source, re
 ## Finance
 Payments/search/detail/reconciliation; read-only Wallet ledger. Refund workspace shows original order amount/fee/net, **exact original PaidCoinLot** granted/spent/refunded/reserved/available, Admin approve/reject and audit timeline, manual transfer reference/evidence, ambiguity/hard failure states. Confirm Completed only from verified operator evidence; not automatically by clicking transfer action.
 
+A02 implements `/admin/payments`, `/admin/ledger` and `/admin/refunds` with server-side filters and 30-item pagination. Payment detail exposes only safe provider evidence. Finance queries are keyed by authenticated Admin identity, and changing the selected refund clears every local note/reference/outcome field before another command can be submitted. Refund recipient fields remain masked; every approve/reject/transfer/complete/release action has explicit pending/error feedback, and financial decisions require confirmation. `NeedsReconciliation` visibly retains its reservation until an explicit Complete or Release decision.
+
 ## Missions / VIP / Users
 Mission list + dedicated editor with Fixed/Daily/Weekly/Event, source action, target/reward/repeat, revisions/effective windows; reward history/DeniedDailyCap. VIP plan price edit for future orders; show 720h and 20% as fixed read-only. Users searchable Active/Disabled, detail access/wallet/membership/payments; no direct wallet balance edits and no Admin role edit UI.
 

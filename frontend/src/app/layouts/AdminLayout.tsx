@@ -1,4 +1,4 @@
-import { BookOpen, Layers, LayoutDashboard, Menu, MessageSquareWarning, Star, Tags, Users, X } from "lucide-react";
+import { BookOpen, CircleDollarSign, Coins, HandCoins, Layers, LayoutDashboard, Menu, MessageSquareWarning, Star, Tags, Users, X } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Outlet } from "react-router-dom";
@@ -13,6 +13,9 @@ const adminNavigation = [
   { to: "/admin/authors", label: "Tác giả", icon: Users },
   { to: "/admin/translation-groups", label: "Nhóm dịch", icon: Users },
   { to: "/admin/featured", label: "Nổi bật", icon: Star },
+  { to: "/admin/payments", label: "Thanh toán", icon: CircleDollarSign },
+  { to: "/admin/ledger", label: "Sổ cái", icon: Coins },
+  { to: "/admin/refunds", label: "Hoàn tiền", icon: HandCoins },
   { to: "/admin/comments", label: "Bình luận", icon: MessageSquareWarning },
 ];
 

@@ -6,9 +6,12 @@ using System.Text.Encodings.Web;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Media;
+using ComicManagement.Billing.Payments;
+using ComicManagement.Billing.Refunds;
 using ComicManagement.Identity.Users;
 using ComicManagement.Persistence;
 using ComicManagement.Reading.Access;
+using ComicManagement.Wallet.Lots;
 using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authorization;
@@ -136,6 +139,45 @@ internal static class Program
             chapter.Id,
             2,
             createdAt);
+        var topUpOrder = PaymentOrder.CreateTopUp(
+            R03E2EData.A02PaymentOrderId,
+            user.Id,
+            "A02-E2E-TOPUP",
+            100_000,
+            10_000,
+            "a02-e2e-order",
+            new string('a', 64),
+            createdAt,
+            createdAt.AddMinutes(30));
+        topUpOrder.FulfillTopUp(createdAt.AddMinutes(1));
+        var paidCoinLot = PaidCoinLot.Create(
+            R03E2EData.A02PaidCoinLotId,
+            user.Id,
+            topUpOrder.Id,
+            10_000,
+            createdAt.AddMinutes(1));
+        var refund = RefundRequest.Create(
+            R03E2EData.A02RefundId,
+            topUpOrder.Id,
+            user.Id,
+            "A02 real integration refund",
+            100_000,
+            10_000,
+            "a02-e2e-refund",
+            new string('b', 64),
+            "v1",
+            createdAt.AddMinutes(2));
+        var recipient = RefundRecipient.Create(
+            R03E2EData.A02RefundRecipientId,
+            refund.Id,
+            "VCB",
+            [1, 2, 3],
+            [4, 5, 6],
+            "6789",
+            "******6789",
+            "A*** R***",
+            "v1",
+            createdAt.AddMinutes(2));
 
         chapter.Publish(true, chapter.Version, createdAt.AddMinutes(1));
         comic.Publish(true, comic.Version, createdAt.AddMinutes(2));
@@ -144,6 +186,10 @@ internal static class Program
         dbContext.Set<Comic>().Add(comic);
         dbContext.Set<Chapter>().Add(chapter);
         dbContext.Set<ChapterPage>().AddRange(firstPage, secondPage);
+        dbContext.Set<PaymentOrder>().Add(topUpOrder);
+        dbContext.Set<PaidCoinLot>().Add(paidCoinLot);
+        dbContext.Set<RefundRequest>().Add(refund);
+        dbContext.Set<RefundRecipient>().Add(recipient);
         await dbContext.SaveChangesAsync();
         await dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"UPDATE identity.users SET role = 'Admin' WHERE id = {R03E2EData.AdminId}");
@@ -276,6 +322,10 @@ internal static class R03E2EData
 {
     internal static readonly Guid UserId = Guid.Parse("a713606c-d008-4f76-a6e7-d83829303001");
     internal static readonly Guid AdminId = Guid.Parse("a713606c-d008-4f76-a6e7-d8382930a001");
+    internal static readonly Guid A02PaymentOrderId = Guid.Parse("a0200000-0000-4000-8000-000000000001");
+    internal static readonly Guid A02PaidCoinLotId = Guid.Parse("a0200000-0000-4000-8000-000000000002");
+    internal static readonly Guid A02RefundId = Guid.Parse("a0200000-0000-4000-8000-000000000003");
+    internal static readonly Guid A02RefundRecipientId = Guid.Parse("a0200000-0000-4000-8000-000000000004");
     internal static readonly Guid ComicId = Guid.Parse("4ee1fdae-79bb-4839-a271-68cac1630301");
     internal static readonly Guid ChapterId = Guid.Parse("2744b2b6-f009-4122-b574-1dad21740301");
     internal static readonly Guid FirstPageId = Guid.Parse("8d62666a-23d2-4f56-818d-7af1843f0301");

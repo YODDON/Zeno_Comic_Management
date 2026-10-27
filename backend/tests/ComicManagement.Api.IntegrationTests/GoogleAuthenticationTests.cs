@@ -7200,6 +7200,120 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
             "RESOURCE_NOT_FOUND");
     }
 
+    [Fact]
+    public async Task A02_admin_finance_reads_enforce_authorization_and_validation()
+    {
+        using var anonymous = CreateClient();
+        foreach (var path in new[] { "/api/v1/admin/payments", "/api/v1/admin/ledger", "/api/v1/admin/refunds" })
+            await AssertStandardizedErrorAsync(await anonymous.GetAsync(path),
+                HttpStatusCode.Unauthorized, "AUTH_REQUIRED");
+
+        await using (var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(), _securityDirectory,
+            useInsufficientRoleTestAuthentication: true))
+        using (var user = CreateClient(factory))
+        {
+            await AssertStandardizedErrorAsync(await user.GetAsync("/api/v1/admin/payments"),
+                HttpStatusCode.Forbidden, "FORBIDDEN");
+        }
+
+        var (admin, _) = await CreateAdminClientAsync($"a02-admin-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/payments?status=Unknown"),
+                HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/payments?status=1"),
+                HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            Assert.Equal(HttpStatusCode.OK,
+                (await admin.GetAsync("/api/v1/admin/payments?status=Pending&type=TopUp")).StatusCode);
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/refunds?status=1"),
+                HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            Assert.Equal(HttpStatusCode.OK,
+                (await admin.GetAsync("/api/v1/admin/ledger?operationType=RefundReserve")).StatusCode);
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/ledger?pageSize=101"),
+                HttpStatusCode.BadRequest, "VALIDATION_FAILED");
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync($"/api/v1/admin/refunds/{Guid.NewGuid()}"),
+                HttpStatusCode.NotFound, "RESOURCE_NOT_FOUND");
+        }
+    }
+
+    [Fact]
+    public async Task A02_openapi_declares_finance_pagination_safe_schemas_and_standard_errors()
+    {
+        using var client = CreateClient();
+        using var document = JsonDocument.Parse(await client.GetStringAsync("/openapi/v1.json"));
+        var root = document.RootElement;
+        foreach (var path in new[] { "/api/v1/admin/payments", "/api/v1/admin/ledger", "/api/v1/admin/refunds" })
+        {
+            var operation = root.GetProperty("paths").GetProperty(path).GetProperty("get");
+            var pageSize = FindOpenApiParameter(operation, "pageSize").GetProperty("schema");
+            Assert.Equal(1, pageSize.GetProperty("minimum").GetInt32());
+            Assert.Equal(100, pageSize.GetProperty("maximum").GetInt32());
+            foreach (var status in new[] { "200", "400", "401", "403" })
+            {
+                Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _), $"{path}:{status}");
+                if (status == "200") continue;
+                var error = ResolveResponseSchema(root, operation, status);
+                foreach (var property in new[] { "errorCode", "message", "traceId" })
+                    Assert.True(error.GetProperty("properties").TryGetProperty(property, out _), $"{path}:{status}:{property}");
+            }
+        }
+
+        foreach (var path in new[] { "/api/v1/admin/payments/{paymentId}", "/api/v1/admin/refunds/{refundId}" })
+        {
+            var operation = root.GetProperty("paths").GetProperty(path).GetProperty("get");
+            foreach (var status in new[] { "200", "400", "401", "403", "404" })
+                Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _), $"{path}:{status}");
+        }
+
+        var refundDetail = ResolveResponseSchema(root,
+            root.GetProperty("paths").GetProperty("/api/v1/admin/refunds/{refundId}").GetProperty("get"), "200");
+        var serialized = refundDetail.GetRawText();
+        Assert.Contains("accountNumberMasked", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("accountNumberEncrypted", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("requestFingerprint", serialized, StringComparison.Ordinal);
+
+        Assert.Equal(
+            new[] { "Pending", "Expired", "Succeeded" },
+            GetOpenApiEnumValues(root, FindOpenApiParameter(
+                root.GetProperty("paths").GetProperty("/api/v1/admin/payments").GetProperty("get"),
+                "status").GetProperty("schema")));
+        Assert.Equal(
+            new[] { "TopUp", "VipPurchase" },
+            GetOpenApiEnumValues(root, FindOpenApiParameter(
+                root.GetProperty("paths").GetProperty("/api/v1/admin/payments").GetProperty("get"),
+                "type").GetProperty("schema")));
+        Assert.Equal(
+            new[] { "TopUpCredit", "ChapterUnlock", "MissionReward", "RefundReserve", "RefundComplete", "RefundRelease" },
+            GetOpenApiEnumValues(root, FindOpenApiParameter(
+                root.GetProperty("paths").GetProperty("/api/v1/admin/ledger").GetProperty("get"),
+                "operationType").GetProperty("schema")));
+        Assert.Equal(
+            new[] { "Requested", "UnderReview", "RecoveryReserved", "TransferPending", "Completed", "Rejected", "NeedsReconciliation", "ReservationReleased" },
+            GetOpenApiEnumValues(root, FindOpenApiParameter(
+                root.GetProperty("paths").GetProperty("/api/v1/admin/refunds").GetProperty("get"),
+                "status").GetProperty("schema")));
+
+        var schemas = root.GetProperty("components").GetProperty("schemas");
+        Assert.Equal(new[] { "Pending", "Expired", "Succeeded" },
+            GetOpenApiEnumValues(root, schemas.GetProperty("AdminPaymentListItem")
+                .GetProperty("properties").GetProperty("orderStatus")));
+        Assert.Equal(new[] { "TopUp", "VipPurchase" },
+            GetOpenApiEnumValues(root, schemas.GetProperty("AdminPaymentListItem")
+                .GetProperty("properties").GetProperty("orderType")));
+        Assert.Equal(new[] { "TopUpCredit", "ChapterUnlock", "MissionReward", "RefundReserve", "RefundComplete", "RefundRelease" },
+            GetOpenApiEnumValues(root, schemas.GetProperty("AdminLedgerItem")
+                .GetProperty("properties").GetProperty("operationType")));
+        Assert.Equal(new[] { "Requested", "UnderReview", "RecoveryReserved", "TransferPending", "Completed", "Rejected", "NeedsReconciliation", "ReservationReleased" },
+            GetOpenApiEnumValues(root, schemas.GetProperty("AdminRefundListItem")
+                .GetProperty("properties").GetProperty("status")));
+    }
+
     private HttpClient CreateClient() => _factory.CreateClient(
         new WebApplicationFactoryClientOptions
         {
