@@ -7275,7 +7275,10 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         var refundDetail = ResolveResponseSchema(root,
             root.GetProperty("paths").GetProperty("/api/v1/admin/refunds/{refundId}").GetProperty("get"), "200");
-        var serialized = refundDetail.GetRawText();
+        var recipient = ResolveOpenApiSchema(
+            root,
+            refundDetail.GetProperty("properties").GetProperty("recipient"));
+        var serialized = recipient.GetRawText();
         Assert.Contains("accountNumberMasked", serialized, StringComparison.Ordinal);
         Assert.DoesNotContain("accountNumberEncrypted", serialized, StringComparison.Ordinal);
         Assert.DoesNotContain("requestFingerprint", serialized, StringComparison.Ordinal);
