@@ -6,6 +6,7 @@ using ComicManagement.Api.Reading;
 using ComicManagement.Api.Membership;
 using ComicManagement.Api.Missions;
 using ComicManagement.Api.Interaction;
+using ComicManagement.Api.Identity;
 using ComicManagement.Identity.Authentication;
 using ComicManagement.Identity.Profiles;
 using ComicManagement.Persistence;
@@ -36,9 +37,11 @@ builder.Services.AddOpenApi(options =>
     options.AddOperationTransformer<PublicCatalogOpenApiOperationTransformer>();
     options.AddOperationTransformer<SePayWebhookOpenApiOperationTransformer>();
     options.AddOperationTransformer<AdminFinanceOpenApiTransformer>();
+    options.AddOperationTransformer<AdminUsersOpenApiTransformer>();
     options.AddSchemaTransformer<TopUpAmountOpenApiSchemaTransformer>();
     options.AddSchemaTransformer<RefundOpenApiSchemaTransformer>();
     options.AddSchemaTransformer<AdminFinanceOpenApiTransformer>();
+    options.AddSchemaTransformer<AdminUsersOpenApiTransformer>();
 });
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
@@ -133,6 +136,7 @@ builder.Services.AddMembershipRateLimiting();
 builder.Services.AddMissionRateLimiting();
 builder.Services.AddCatalogRateLimiting();
 builder.Services.AddInteractionRateLimiting();
+builder.Services.AddAdminIdentityRateLimiting();
 builder.Services.Configure<OutboxOptions>(
     builder.Configuration.GetSection(OutboxOptions.SectionName));
 builder.Services.AddOutboxWorker();

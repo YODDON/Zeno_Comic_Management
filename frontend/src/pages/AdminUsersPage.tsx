@@ -1,0 +1,30 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { adminPlatformApi, adminPlatformKeys, type AdminUserDetail } from "@/features/admin-platform/admin-platform-api";
+import { useProfileQuery } from "@/features/profile/use-profile";
+import { ApiErrorState, EmptyState, LoadingState, SuccessState } from "@/shared/ui/AsyncState";
+import { Button } from "@/shared/ui/Button";
+
+const money = new Intl.NumberFormat("vi-VN");
+export function AdminUsersPage() {
+  const profile = useProfileQuery(); const viewer = profile.data?.id; const client = useQueryClient();
+  const [search, setSearch] = useState(""); const [status, setStatus] = useState(""); const [page, setPage] = useState(1); const [selected, setSelected] = useState<string | null>(null);
+  const criteria = { search, status, page };
+  const users = useQuery({ queryKey: adminPlatformKeys.users(viewer ?? "unresolved", criteria), queryFn: () => adminPlatformApi.users(criteria), enabled: Boolean(viewer) });
+  const detail = useQuery({ queryKey: adminPlatformKeys.user(viewer ?? "unresolved", selected), queryFn: () => adminPlatformApi.user(selected!), enabled: Boolean(viewer && selected) });
+  const mutation = useMutation({ mutationFn: ({ detail: current, status: next }: { detail: AdminUserDetail; status: "Active" | "Disabled" }) => adminPlatformApi.changeUserStatus(current.user.id, next, current.user.version), onSuccess: async (value) => { client.setQueryData(adminPlatformKeys.user(viewer!, value.user.id), value); await client.invalidateQueries({ queryKey: ["admin", "platform", viewer, "users"] }); } });
+  return <section className="admin-workspace finance-page"><header><p className="eyebrow">Danh tính</p><h1>Người dùng</h1><p>Chỉ bật/tắt tài khoản. Không đổi role và không điều chỉnh trực tiếp Wallet.</p></header>
+    <div className="finance-filters"><label>Tìm tên hoặc email<input maxLength={200} value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} /></label><label>Trạng thái<select value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}><option value="">Tất cả</option><option>Active</option><option>Disabled</option></select></label></div>
+    {users.isPending ? <LoadingState title="Đang tải người dùng" /> : null}{users.isError ? <ApiErrorState error={users.error} onRetry={() => void users.refetch()} /> : null}{users.data?.items.length === 0 ? <EmptyState title="Không có người dùng" description="Không có tài khoản phù hợp bộ lọc." /> : null}
+    {users.data?.items.length ? <div className="admin-table-scroll"><table className="admin-data-table"><thead><tr><th>Người dùng</th><th>Role</th><th>Trạng thái</th><th>Cập nhật</th></tr></thead><tbody>{users.data.items.map((user) => <tr key={user.id}><td><button className="table-link" onClick={() => { setSelected(user.id); mutation.reset(); }}>{user.displayName}</button><small>{user.email ?? "—"}</small></td><td>{user.role}</td><td><span className={`status-badge status-${user.status.toLowerCase()}`}>{user.status}</span></td><td>{new Date(user.updatedAt).toLocaleString("vi-VN")}</td></tr>)}</tbody></table></div> : null}
+    {users.data && users.data.totalPages > 1 ? <nav className="admin-actions" aria-label="Phân trang người dùng"><Button disabled={page <= 1} onClick={() => setPage((x) => x - 1)} variant="outline">Trang trước</Button><span>Trang {page}/{users.data.totalPages}</span><Button disabled={page >= users.data.totalPages} onClick={() => setPage((x) => x + 1)} variant="outline">Trang sau</Button></nav> : null}
+    {selected ? <aside className="finance-detail" aria-label="Chi tiết người dùng"><div className="finance-detail-heading"><h2>Hồ sơ người dùng</h2><Button onClick={() => setSelected(null)} variant="ghost">Đóng</Button></div>{detail.isPending ? <LoadingState title="Đang tải hồ sơ" /> : null}{detail.isError ? <ApiErrorState error={detail.error} onRetry={() => void detail.refetch()} /> : null}{detail.data ? <UserWorkspace detail={detail.data} disabled={mutation.isPending} onChange={(next) => { if (window.confirm(`${next === "Disabled" ? "Tắt" : "Bật"} tài khoản ${detail.data.user.displayName}?`)) mutation.mutate({ detail: detail.data, status: next }); }} /> : null}{mutation.isError ? <ApiErrorState error={mutation.error} onRetry={() => mutation.reset()} /> : null}{mutation.isSuccess ? <SuccessState title="Đã cập nhật tài khoản" description="Session cũ sẽ bị từ chối bởi status/version validation." /> : null}</aside> : null}
+  </section>;
+}
+
+function UserWorkspace({ detail, disabled, onChange }: { detail: AdminUserDetail; disabled: boolean; onChange: (status: "Active" | "Disabled") => void }) {
+  const user = detail.user;
+  return <><dl className="finance-summary"><div><dt>Danh tính</dt><dd>{user.displayName}<small>{user.email ?? "—"}</small></dd></div><div><dt>Role</dt><dd>{user.role} (chỉ đọc)</dd></div><div><dt>Wallet</dt><dd>{money.format(detail.wallet.totalAvailable)} available<small>Paid reserved: {money.format(detail.wallet.paidReserved)}</small></dd></div><div><dt>VIP</dt><dd>{detail.membership.isActive ? "Active" : "Inactive"}<small>{detail.membership.expiresAt ? new Date(detail.membership.expiresAt).toLocaleString("vi-VN") : "Chưa có"}</small></dd></div><div><dt>Quyền đọc</dt><dd>{detail.access.unlockedChapterCount} chapter đã mở<small>{detail.access.followedComicCount} truyện đang theo dõi</small></dd></div></dl>
+    <Button disabled={disabled} onClick={() => onChange(user.status === "Active" ? "Disabled" : "Active")} variant={user.status === "Active" ? "outline" : "primary"}>{user.status === "Active" ? "Tắt tài khoản" : "Bật tài khoản"}</Button>
+    <h3>Thanh toán gần đây</h3>{detail.recentPayments.length === 0 ? <p>Chưa có PaymentOrder.</p> : <ul className="finance-timeline">{detail.recentPayments.map((payment) => <li key={payment.paymentId}><strong>{payment.orderCode}</strong> · {payment.orderType} · {payment.status}<br />{money.format(payment.amountVnd)} VND · {new Date(payment.createdAt).toLocaleString("vi-VN")}</li>)}</ul>}</>;
+}

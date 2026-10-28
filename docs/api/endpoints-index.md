@@ -35,6 +35,8 @@
 | Admin/Public | GET/PUT, GET | `/api/v1/admin/featured`, `/api/v1/featured` | Catalog (A01 implemented) |
 | Admin | GET/PATCH | `/api/v1/admin/vip-plan` | Membership (V01 implemented) |
 | Admin | GET/POST | `/api/v1/admin/missions`, `/api/v1/admin/missions/{id}`, `/api/v1/admin/missions/{id}/revisions`, `/api/v1/admin/missions/{id}/activate`, `/api/v1/admin/missions/{id}/deactivate` | Missions (M01 implemented) |
+| Admin | GET | `/api/v1/admin/mission-rewards` | Missions/Administration (A03) |
+| Admin | GET/POST | `/api/v1/admin/users`, `/api/v1/admin/users/{id}`, `/api/v1/admin/users/{id}/{enable|disable}` | Identity/Administration (A03) |
 | Admin | POST review/approve/reject/transfer-attempts/complete/release | `/api/v1/admin/refunds/{id}/...` | Billing/Wallet workflow (RF03 implemented) |
 | Admin | GET | `/api/v1/admin/payments`, `/api/v1/admin/payments/{id}`, `/api/v1/admin/ledger`, `/api/v1/admin/refunds`, `/api/v1/admin/refunds/{id}` | Billing/Wallet/Admin (A02 implemented) |
 | Admin | GET | `/api/v1/admin/audit-logs`, `/api/v1/admin/dashboard` | Administration (future A04) |

@@ -21,12 +21,16 @@ RF03 transfer-attempt, complete and release commands use the same Admin mutation
 
 Admin Mission mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. The limit covers definition creation, revision append, activation and deactivation; read-only Mission routes do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
+Admin VIP-plan price mutations and Admin User enable/disable mutations are each fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by server-authenticated Admin user ID after authentication. Their read endpoints do not consume mutation permits; rejection uses standardized `429 RATE_LIMITED`.
+
 Admin Catalog mutations are fixed-window limited to 20 requests/minute/authenticated Admin, partitioned by the server-authenticated Admin user ID after authentication. Comic/Chapter metadata, publication, taxonomy, Chapter-page and Featured mutations consume this shared policy; read-only editor queries do not. Rejection uses standardized `429 RATE_LIMITED`.
 
 Comment create/edit/delete and Admin hide/delete/restore share the Interaction fixed-window mutation policy of 20 requests/minute/authenticated principal, partitioned by the server-authenticated User/Admin ID after authentication. Public/Admin comment reads do not consume it. Rejection uses standardized `429 RATE_LIMITED`.
 
 ## Pagination
 Public Comic list uses deterministic `(update_sort_at DESC,id DESC)` keyset pagination. Public Chapter list uses one-based `page`, a fixed page size of 30, deterministic `(sort_order,id)` ordering, and response `{items,page,pageSize,totalItems,totalPages}`. Public callers cannot override Chapter page size. A future Admin listing may expose configurable `pageSize`, default 30 and maximum 100. Sorts remain stable on ties.
+
+Offset-paged Admin endpoints calculate `(page - 1) * pageSize` in 64-bit arithmetic and support only offsets through `Int32.MaxValue`, matching EF `Skip`. A page/page-size combination beyond that boundary returns standardized `400 VALIDATION_FAILED`; it must never overflow into a provider error or generic 500.
 
 ## Status
 Payment verification and fulfillment are separate states. Mis-matched/late provider payment is ReconciliationRequired, not automatically Failed/fulfilled. Mission `DeniedDailyCap` is successful processing but zero reward. Refund eligibility is snapshot until Admin approves under lock.

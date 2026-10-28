@@ -18,6 +18,10 @@ import { AdminFeaturedPage } from "@/pages/AdminFeaturedPage";
 import { AdminPaymentsPage } from "@/pages/AdminPaymentsPage";
 import { AdminLedgerPage } from "@/pages/AdminLedgerPage";
 import { AdminRefundsPage } from "@/pages/AdminRefundsPage";
+import { AdminMissionsPage } from "@/pages/AdminMissionsPage";
+import { AdminVipPage } from "@/pages/AdminVipPage";
+import { AdminUsersPage } from "@/pages/AdminUsersPage";
+import { AdminSettingsPage } from "@/pages/AdminSettingsPage";
 
 export const router = createBrowserRouter([
   {
@@ -57,6 +61,10 @@ export const router = createBrowserRouter([
       { path: "payments", element: <AdminPaymentsPage /> },
       { path: "ledger", element: <AdminLedgerPage /> },
       { path: "refunds", element: <AdminRefundsPage /> },
+      { path: "missions", element: <AdminMissionsPage /> },
+      { path: "vip", element: <AdminVipPage /> },
+      { path: "users", element: <AdminUsersPage /> },
+      { path: "settings", element: <AdminSettingsPage /> },
       { path: "*", element: <NotFoundPage admin /> },
     ],
   },

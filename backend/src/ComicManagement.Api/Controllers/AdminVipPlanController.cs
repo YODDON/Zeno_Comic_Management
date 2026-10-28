@@ -2,9 +2,11 @@ using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using ComicManagement.Api.Authentication;
 using ComicManagement.Api.Authorization;
+using ComicManagement.Api.Membership;
 using ComicManagement.Membership.Memberships;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace ComicManagement.Api.Controllers;
 
@@ -34,12 +36,14 @@ public sealed class AdminVipPlanController(VipMembershipHandler handler) : Contr
     }
 
     [HttpPatch]
+    [EnableRateLimiting(MembershipRateLimitConstants.AdminPlanMutationPolicy)]
     [ProducesResponseType<VipPlanResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status401Unauthorized)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status404NotFound)]
     [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status409Conflict)]
+    [ProducesResponseType<ApiErrorResponse>(StatusCodes.Status429TooManyRequests)]
     public async Task<ActionResult<VipPlanResponse>> Patch(
         UpdateVipPlanPriceRequest request,
         CancellationToken cancellationToken)

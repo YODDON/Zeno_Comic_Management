@@ -16,8 +16,12 @@ Payments/search/detail/reconciliation; read-only Wallet ledger. Refund workspace
 
 A02 implements `/admin/payments`, `/admin/ledger` and `/admin/refunds` with server-side filters and 30-item pagination. Payment detail exposes only safe provider evidence. Finance queries are keyed by authenticated Admin identity, and changing the selected refund clears every local note/reference/outcome field before another command can be submitted. Refund recipient fields remain masked; every approve/reject/transfer/complete/release action has explicit pending/error feedback, and financial decisions require confirmation. `NeedsReconciliation` visibly retains its reservation until an explicit Complete or Release decision.
 
+A03 Mission reward history uses server-side 30-item pagination with Previous/Next controls, total item/page feedback, and keeps the selected page through loading, errors and retry. Mission definition inputs follow the domain limits: name at most 200 characters and description at most 2,000 characters.
+
 ## Missions / VIP / Users
 Mission list + dedicated editor with Fixed/Daily/Weekly/Event, source action, target/reward/repeat, revisions/effective windows; reward history/DeniedDailyCap. VIP plan price edit for future orders; show 720h and 20% as fixed read-only. Users searchable Active/Disabled, detail access/wallet/membership/payments; no direct wallet balance edits and no Admin role edit UI.
+
+A03 Mission activation always submits the currently displayed Mission version and selected immutable revision. VIP price mutation shows pending/error/success and never edits duration/discount. User enable/disable requires confirmation, submits `expectedVersion`, and explains session invalidation. Mission/VIP/User query keys include authenticated Admin identity so cached administrative data is not reused across an identity switch.
 
 ## Moderation / Settings / Audit
 Admin Hide/Delete/Restore Hidden comment, context view and audit. Typed Settings for approved configurable values; 300 daily Bonus cap fixed read-only; SePay secrets unavailable in UI. Read-only append-only audit filtering time/actor/action/target; redact bank details/secrets.
