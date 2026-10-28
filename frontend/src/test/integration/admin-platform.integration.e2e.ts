@@ -6,7 +6,7 @@ test("configures Mission and VIP and version-controls a User through real ASP.NE
   await page.setExtraHTTPHeaders({ "X-R03-E2E-User": adminId });
 
   await page.goto("/admin/missions");
-  await page.getByText("Tạo MissionDefinition").click();
+  await page.getByText("Tạo MissionDefinition", { exact: true }).click();
   await page.getByLabel("Mã").fill("A03_E2E_LOGIN");
   await page.getByLabel("Tên").fill("A03 đăng nhập");
   const createResponse = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/admin/missions");

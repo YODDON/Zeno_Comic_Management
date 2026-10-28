@@ -485,6 +485,7 @@ svg {
 .admin-sidebar {
   display: none;
   flex-direction: column;
+  overflow-y: auto;
   border-right: 1px solid var(--border);
   background: var(--surface);
   padding: 1.5rem 1rem;
@@ -1707,3 +1708,12 @@ svg {
 .admin-field-wide { grid-column: 1 / -1; }
 .settings-grid article { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1.25rem; }
 .settings-grid dl > div { display: flex; justify-content: space-between; gap: 1rem; padding-block: .45rem; }
+.dashboard-page, .audit-page { display: grid; gap: 1.25rem; }
+.dashboard-range { color: var(--muted-foreground); margin: 0; }
+.dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 1rem; }
+.dashboard-metric { border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); padding: 1rem; }
+.dashboard-metric h2 { color: var(--muted-foreground); font-size: .85rem; margin: 0 0 .5rem; }
+.dashboard-metric strong { display: block; font-size: 1.45rem; }
+.dashboard-metric p { color: var(--muted-foreground); margin: .35rem 0 0; }
+.admin-data-table caption { padding: .75rem; text-align: left; font-weight: 700; }
+.audit-json { margin: 0; max-width: 32rem; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .78rem; }

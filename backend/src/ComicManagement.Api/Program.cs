@@ -38,6 +38,7 @@ builder.Services.AddOpenApi(options =>
     options.AddOperationTransformer<SePayWebhookOpenApiOperationTransformer>();
     options.AddOperationTransformer<AdminFinanceOpenApiTransformer>();
     options.AddOperationTransformer<AdminUsersOpenApiTransformer>();
+    options.AddOperationTransformer<AdminReportingOpenApiTransformer>();
     options.AddSchemaTransformer<TopUpAmountOpenApiSchemaTransformer>();
     options.AddSchemaTransformer<RefundOpenApiSchemaTransformer>();
     options.AddSchemaTransformer<AdminFinanceOpenApiTransformer>();

@@ -51,7 +51,7 @@
 - `missions.daily_counters`: composite PK `(user_id,local_date)`, `granted_total bigint CHECK BETWEEN 0 AND 300`, `version`.
 
 ## Admin and infrastructure
-- `administration.audit_logs`: `id uuid PK`, `actor_id`, `action`, `target_type`, `target_id`, `correlation_id`, `occurred_at`, `redacted_changes jsonb`; append-only database trigger; indexes `(target_type,target_id,occurred_at)` and `(actor_id,occurred_at)`.
+- `administration.audit_logs`: `id uuid PK`, `actor_id`, `action`, `target_type`, `target_id`, `correlation_id`, `occurred_at`, `redacted_changes jsonb`; append-only database trigger; indexes `(target_type,target_id,occurred_at)`, `(actor_id,occurred_at)` and descending `(occurred_at,id)`. A04 adds the last index because every Audit request filters by the leading date range and orders by `(occurred_at DESC,id DESC)`; the existing actor/target-leading indexes cannot support the unfiltered timeline.
 - `administration.typed_settings`: `key varchar(100) PK`, `value_json jsonb`, `version`, `updated_at`; fixed policies (e.g. 300 cap) not writable.
 - `infrastructure.outbox_messages`: `id uuid PK`, `event_type`, `payload jsonb`, `occurred_at`, `available_at`, `status`, `attempt_count`, `locked_until NULL`, `last_error_redacted NULL`; index `(status,available_at)`. An event with no registered consumer is deferred as Pending without consuming the retry budget, so a later task can register the real consumer without losing earlier integration events.
 - `infrastructure.processed_messages`: composite PK `(consumer,message_id)`, `processed_at`.

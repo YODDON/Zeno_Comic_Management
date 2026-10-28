@@ -22,6 +22,7 @@ import { AdminMissionsPage } from "@/pages/AdminMissionsPage";
 import { AdminVipPage } from "@/pages/AdminVipPage";
 import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminSettingsPage } from "@/pages/AdminSettingsPage";
+import { AdminAuditPage } from "@/pages/AdminAuditPage";
 
 export const router = createBrowserRouter([
   {
@@ -65,6 +66,7 @@ export const router = createBrowserRouter([
       { path: "vip", element: <AdminVipPage /> },
       { path: "users", element: <AdminUsersPage /> },
       { path: "settings", element: <AdminSettingsPage /> },
+      { path: "audit", element: <AdminAuditPage /> },
       { path: "*", element: <NotFoundPage admin /> },
     ],
   },

@@ -1,4 +1,4 @@
-import { BadgePercent, BookOpen, CircleDollarSign, Coins, HandCoins, Layers, LayoutDashboard, Menu, MessageSquareWarning, Settings, Sparkles, Star, Tags, Users, X } from "lucide-react";
+import { BadgePercent, BookOpen, CircleDollarSign, ClipboardList, Coins, HandCoins, Layers, LayoutDashboard, Menu, MessageSquareWarning, Settings, Sparkles, Star, Tags, Users, X } from "lucide-react";
 import { useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink, Outlet } from "react-router-dom";
@@ -21,6 +21,7 @@ const adminNavigation = [
   { to: "/admin/users", label: "Người dùng", icon: Users },
   { to: "/admin/comments", label: "Bình luận", icon: MessageSquareWarning },
   { to: "/admin/settings", label: "Cài đặt", icon: Settings },
+  { to: "/admin/audit", label: "Audit log", icon: ClipboardList },
 ];
 
 export function AdminLayout() {

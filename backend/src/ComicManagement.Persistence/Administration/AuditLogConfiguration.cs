@@ -24,6 +24,9 @@ internal sealed class AuditLogConfiguration : IEntityTypeConfiguration<AuditLog>
             .HasDatabaseName("ix_audit_logs_target_occurred_at");
         builder.HasIndex(audit => new { audit.ActorId, audit.OccurredAt })
             .HasDatabaseName("ix_audit_logs_actor_occurred_at");
+        builder.HasIndex(audit => new { audit.OccurredAt, audit.Id })
+            .IsDescending()
+            .HasDatabaseName("ix_audit_logs_occurred_at_id");
 
         builder.Property(audit => audit.Id).HasColumnName("id").ValueGeneratedNever();
         builder.Property(audit => audit.ActorId).HasColumnName("actor_id");

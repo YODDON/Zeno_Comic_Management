@@ -27,6 +27,7 @@ using ComicManagement.Catalog.Administration;
 using ComicManagement.Catalog.Featured;
 using ComicManagement.Administration.Finance;
 using ComicManagement.Identity.Administration;
+using ComicManagement.Administration.Reporting;
 
 namespace ComicManagement.Persistence;
 
@@ -89,6 +90,10 @@ public static class PersistenceServiceCollectionExtensions
         services.TryAddScoped<IRefundAdministrationStore, RefundAdministrationStore>();
         services.TryAddScoped<IFinanceAdministrationQueryStore, FinanceAdministrationQueryStore>();
         services.TryAddScoped<FinanceAdministrationQueryHandler>();
+        services.TryAddScoped<IAdministrationReportingStore, AdministrationReportingStore>();
+        services.TryAddSingleton<IAdministrationReportingReadObserver,
+            NoOpAdministrationReportingReadObserver>();
+        services.TryAddScoped<AdministrationReportingHandler>();
         services.TryAddSingleton<IRefundRequestCriticalSectionObserver,
             NoOpRefundRequestCriticalSectionObserver>();
         services.TryAddSingleton<IRefundApprovalCriticalSectionObserver,
