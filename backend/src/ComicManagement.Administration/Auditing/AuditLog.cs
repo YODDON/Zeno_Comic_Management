@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 namespace ComicManagement.Administration.Auditing;
 
 public sealed class AuditLog
@@ -61,8 +59,7 @@ public sealed class AuditLog
             throw new ArgumentException("Timestamp must use the UTC offset.", nameof(occurredAt));
         }
 
-        ArgumentException.ThrowIfNullOrWhiteSpace(redactedChanges);
-        using var _ = JsonDocument.Parse(redactedChanges);
+        var safeChanges = AuditRedactionPolicy.CanonicalizeForPersistence(redactedChanges);
 
         return new AuditLog
         {
@@ -73,7 +70,7 @@ public sealed class AuditLog
             TargetId = targetId,
             CorrelationId = correlationId,
             OccurredAt = occurredAt,
-            RedactedChanges = redactedChanges,
+            RedactedChanges = safeChanges,
         };
     }
 

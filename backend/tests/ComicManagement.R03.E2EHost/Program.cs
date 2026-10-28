@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Encodings.Web;
 using ComicManagement.Catalog.Chapters;
+using ComicManagement.Administration.Auditing;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Media;
 using ComicManagement.Billing.Payments;
@@ -190,6 +191,15 @@ internal static class Program
         dbContext.Set<PaidCoinLot>().Add(paidCoinLot);
         dbContext.Set<RefundRequest>().Add(refund);
         dbContext.Set<RefundRecipient>().Add(recipient);
+        dbContext.Set<AuditLog>().Add(AuditLog.Create(
+            R03E2EData.A04AuditId,
+            admin.Id,
+            "Dashboard.SeedVerified",
+            "PaymentOrder",
+            topUpOrder.Id,
+            "a04-e2e-seed",
+            createdAt.AddMinutes(5),
+            "{\"status\":\"Succeeded\"}"));
         await dbContext.SaveChangesAsync();
         await dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"UPDATE identity.users SET role = 'Admin' WHERE id = {R03E2EData.AdminId}");
@@ -326,6 +336,7 @@ internal static class R03E2EData
     internal static readonly Guid A02PaidCoinLotId = Guid.Parse("a0200000-0000-4000-8000-000000000002");
     internal static readonly Guid A02RefundId = Guid.Parse("a0200000-0000-4000-8000-000000000003");
     internal static readonly Guid A02RefundRecipientId = Guid.Parse("a0200000-0000-4000-8000-000000000004");
+    internal static readonly Guid A04AuditId = Guid.Parse("a0400000-0000-4000-8000-000000000001");
     internal static readonly Guid ComicId = Guid.Parse("4ee1fdae-79bb-4839-a271-68cac1630301");
     internal static readonly Guid ChapterId = Guid.Parse("2744b2b6-f009-4122-b574-1dad21740301");
     internal static readonly Guid FirstPageId = Guid.Parse("8d62666a-23d2-4f56-818d-7af1843f0301");

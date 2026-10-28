@@ -55,6 +55,8 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         "20261023081149_AddComicRatings";
     private const string A01Migration =
         "20261024113949_AddAdminEditorsAndFeatured";
+    private const string A04Migration =
+        "20261028080430_AddAdminAuditOrderingIndex";
     private const string IN02Migration =
         "20261023163331_AddComments";
 
@@ -97,6 +99,7 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
         IN01Migration,
         IN02Migration,
         A01Migration,
+        A04Migration,
     ];
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:18.0-alpine3.22")
@@ -272,6 +275,19 @@ public sealed class AppDbContextMigrationTests : IAsyncLifetime
             "refund_recipients",
             "trg_refund_recipients_immutable"));
         Assert.False(context.Database.HasPendingModelChanges());
+        Assert.True(await IndexExists(
+            context,
+            "administration",
+            "ix_audit_logs_occurred_at_id"));
+        var auditOrderingIndex = await context.Database.SqlQueryRaw<string>(
+                "SELECT indexdef AS \"Value\" FROM pg_indexes " +
+                "WHERE schemaname = 'administration' " +
+                "AND indexname = 'ix_audit_logs_occurred_at_id'")
+            .SingleAsync();
+        Assert.Contains(
+            "(occurred_at DESC, id DESC)",
+            auditOrderingIndex,
+            StringComparison.OrdinalIgnoreCase);
         Assert.True(await IndexExists(
             context,
             "interaction",

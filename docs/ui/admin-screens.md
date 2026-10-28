@@ -11,6 +11,8 @@ Select up to 5 Published Comics, drag-drop order with keyboard/up/down controls,
 ## Dashboard
 KPIs and charts separating verified VND TopUp/VIP/refunds, Paid/Bonus source, reading and missions activity. Do not interpret coins as cash revenue. Date range and VN timezone explicit.
 
+A04 implements `/admin` with explicit gross TopUp/VIP, completed-refund original/fee/net, Paid/Bonus issuance, qualified sessions/distinct readers, Mission receipt/reward metrics and a Vietnam-local daily table. `/admin/audit` provides date/actor/action/target filters, 30/50/100 page sizes, deterministic pagination, loading/empty/error/retry states and renders only the server-redacted JSON representation. Both caches are scoped to the authenticated Admin identity.
+
 ## Finance
 Payments/search/detail/reconciliation; read-only Wallet ledger. Refund workspace shows original order amount/fee/net, **exact original PaidCoinLot** granted/spent/refunded/reserved/available, Admin approve/reject and audit timeline, manual transfer reference/evidence, ambiguity/hard failure states. Confirm Completed only from verified operator evidence; not automatically by clicking transfer action.
 

@@ -69,6 +69,10 @@ namespace ComicManagement.Persistence.Migrations
                     b.HasIndex("ActorId", "OccurredAt")
                         .HasDatabaseName("ix_audit_logs_actor_occurred_at");
 
+                    b.HasIndex("OccurredAt", "Id")
+                        .IsDescending()
+                        .HasDatabaseName("ix_audit_logs_occurred_at_id");
+
                     b.HasIndex("TargetType", "TargetId", "OccurredAt")
                         .HasDatabaseName("ix_audit_logs_target_occurred_at");
 

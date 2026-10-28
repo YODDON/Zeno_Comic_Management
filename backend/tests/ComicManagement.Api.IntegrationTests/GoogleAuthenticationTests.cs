@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using ComicManagement.Catalog.Browsing;
+using ComicManagement.Administration.Reporting;
 using ComicManagement.Catalog.Chapters;
 using ComicManagement.Catalog.Comics;
 using ComicManagement.Catalog.Media;
@@ -7570,6 +7571,172 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
         foreach (var property in new[] { "errorCode", "message", "traceId" })
         {
             Assert.True(errorSchema.TryGetProperty(property, out _));
+        }
+    }
+
+    [Fact]
+    public async Task A04_reporting_requires_Admin_and_validates_Vietnam_ranges_and_pagination()
+    {
+        using var anonymous = CreateClient();
+        await AssertStandardizedErrorAsync(
+            await anonymous.GetAsync("/api/v1/admin/dashboard"),
+            HttpStatusCode.Unauthorized,
+            "AUTH_REQUIRED");
+        await AssertStandardizedErrorAsync(
+            await anonymous.GetAsync("/api/v1/admin/audit"),
+            HttpStatusCode.Unauthorized,
+            "AUTH_REQUIRED");
+
+        await using (var factory = new AuthenticationApplicationFactory(
+            _postgres.GetConnectionString(), _securityDirectory,
+            useInsufficientRoleTestAuthentication: true))
+        using (var user = CreateClient(factory))
+        {
+            await AssertStandardizedErrorAsync(
+                await user.GetAsync("/api/v1/admin/dashboard"),
+                HttpStatusCode.Forbidden,
+                "FORBIDDEN");
+        }
+
+        var (admin, _) = await CreateAdminClientAsync($"a04-admin-{Guid.NewGuid():N}");
+        using (admin)
+        {
+            var dashboard = await admin.GetAsync(
+                "/api/v1/admin/dashboard?from=2026-10-01&to=2026-10-02");
+            Assert.Equal(HttpStatusCode.OK, dashboard.StatusCode);
+            Assert.Equal("no-store", dashboard.Headers.CacheControl?.ToString());
+            using var body = JsonDocument.Parse(await dashboard.Content.ReadAsStringAsync());
+            foreach (var property in new[]
+                     {
+                         "range", "revenue", "refunds", "coinsIssued", "reading", "missions", "dailySeries",
+                     })
+                Assert.True(body.RootElement.TryGetProperty(property, out _), property);
+
+            var audit = await admin.GetAsync(
+                "/api/v1/admin/audit?from=2026-10-01&to=2026-10-02&page=1&pageSize=30");
+            Assert.Equal(HttpStatusCode.OK, audit.StatusCode);
+            Assert.Equal("no-store", audit.Headers.CacheControl?.ToString());
+            using var auditBody = JsonDocument.Parse(await audit.Content.ReadAsStringAsync());
+            foreach (var property in new[] { "items", "page", "pageSize", "totalItems", "totalPages" })
+                Assert.True(auditBody.RootElement.TryGetProperty(property, out _), property);
+
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/dashboard?from=2026-10-02&to=2026-10-01"),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/dashboard?from=2024-01-01&to=2025-01-01"),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/audit?pageSize=101"),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync("/api/v1/admin/audit?page=2147483647&pageSize=100"),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+            await AssertStandardizedErrorAsync(
+                await admin.GetAsync($"/api/v1/admin/audit?actorId={Guid.Empty}"),
+                HttpStatusCode.BadRequest,
+                "VALIDATION_FAILED");
+        }
+    }
+
+    [Fact]
+    public async Task A04_OpenApi_declares_reporting_filters_pagination_and_standard_errors()
+    {
+        using var client = CreateClient();
+        using var document = JsonDocument.Parse(await client.GetStringAsync("/openapi/v1.json"));
+        var root = document.RootElement;
+        foreach (var path in new[] { "/api/v1/admin/dashboard", "/api/v1/admin/audit" })
+        {
+            var operation = root.GetProperty("paths").GetProperty(path).GetProperty("get");
+            foreach (var status in new[] { "200", "400", "401", "403" })
+            {
+                Assert.True(operation.GetProperty("responses").TryGetProperty(status, out _), $"{path}:{status}");
+                if (status == "200") continue;
+                var error = ResolveResponseSchema(root, operation, status);
+                foreach (var property in new[] { "errorCode", "message", "traceId" })
+                    Assert.True(error.GetProperty("properties").TryGetProperty(property, out _), $"{path}:{status}:{property}");
+            }
+            foreach (var dateParameter in new[] { "from", "to" })
+                Assert.Equal("date", FindOpenApiParameter(operation, dateParameter)
+                    .GetProperty("schema").GetProperty("format").GetString());
+        }
+
+        var audit = root.GetProperty("paths").GetProperty("/api/v1/admin/audit").GetProperty("get");
+        var page = FindOpenApiParameter(audit, "page");
+        Assert.Contains("(page - 1) * pageSize", page.GetProperty("description").GetString());
+        Assert.Contains("400 VALIDATION_FAILED", page.GetProperty("description").GetString());
+        var pageSize = FindOpenApiParameter(audit, "pageSize").GetProperty("schema");
+        Assert.Equal(1, pageSize.GetProperty("minimum").GetInt32());
+        Assert.Equal(100, pageSize.GetProperty("maximum").GetInt32());
+        foreach (var filter in new[] { "action", "targetType" })
+            Assert.Equal(AdministrationReportingHandler.MaximumFilterLength,
+                FindOpenApiParameter(audit, filter).GetProperty("schema").GetProperty("maxLength").GetInt32());
+
+        var item = root.GetProperty("components").GetProperty("schemas")
+            .GetProperty("AdminAuditItem").GetProperty("properties");
+        Assert.True(item.TryGetProperty("redactedChanges", out _));
+        Assert.False(item.TryGetProperty("correlationId", out _));
+    }
+
+    [Fact]
+    public async Task A04_audit_read_boundary_redacts_adversarial_legacy_payloads()
+    {
+        var subject = $"a04-redaction-{Guid.NewGuid():N}";
+        var (admin, _) = await CreateAdminClientAsync(subject);
+        using (admin)
+        {
+            Guid actorId;
+            await using (var scope = _factory.Services.CreateAsyncScope())
+            {
+                var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                actorId = await context.GoogleIdentities
+                    .Where(identity => identity.GoogleSubject == subject)
+                    .Select(identity => identity.UserId)
+                    .SingleAsync();
+                var auditId = Guid.NewGuid();
+                var targetId = Guid.NewGuid();
+                var payload =
+                    "{\"status\":\"Succeeded\",\"accountNumber\":\"0123456789\"," +
+                    "\"CipherText\":\"protected-cipher\",\"Password\":\"password-value\"," +
+                    "\"nested\":{\"Api-Key\":\"secret-key\"," +
+                    "\"AccessToken\":\"access-token-value\",\"safe\":true}," +
+                    "\"items\":[{\"recipientAccountHolder\":\"NGUYEN VAN A\"," +
+                    "\"providerPayload\":\"raw-provider-data\"," +
+                    "\"rawFinancialPayload\":\"raw-financial-data\",\"code\":\"OK\"}]}";
+                await context.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO administration.audit_logs
+                        (id, actor_id, action, target_type, target_id,
+                         correlation_id, occurred_at, redacted_changes)
+                    VALUES ({auditId}, {actorId}, {"A04.Adversarial"}, {"PaymentOrder"},
+                            {targetId}, {"a04-adversarial"}, {DateTimeOffset.UtcNow},
+                            CAST({payload} AS jsonb));
+                    """);
+            }
+
+            var response = await admin.GetAsync(
+                "/api/v1/admin/audit?action=A04.Adversarial&page=1&pageSize=30");
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var changes = body.RootElement.GetProperty("items")[0]
+                .GetProperty("redactedChanges").GetString();
+            using var safe = JsonDocument.Parse(changes!);
+            Assert.Equal("Succeeded", safe.RootElement.GetProperty("status").GetString());
+            Assert.True(safe.RootElement.GetProperty("nested").GetProperty("safe").GetBoolean());
+            Assert.Equal("OK", safe.RootElement.GetProperty("items")[0]
+                .GetProperty("code").GetString());
+            foreach (var forbidden in new[]
+                     {
+                         "0123456789", "NGUYEN VAN A", "secret-key", "raw-provider-data",
+                         "protected-cipher", "password-value", "access-token-value",
+                         "raw-financial-data", "accountNumber", "recipientAccountHolder",
+                         "Api-Key", "providerPayload", "CipherText", "Password", "AccessToken",
+                         "rawFinancialPayload",
+                     })
+                Assert.DoesNotContain(forbidden, changes, StringComparison.OrdinalIgnoreCase);
         }
     }
 

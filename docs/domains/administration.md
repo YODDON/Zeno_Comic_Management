@@ -4,6 +4,8 @@ Admin UI always Light. Navigation Dashboard; Content (Comics, Chapters, Genres, 
 
 Advanced dashboard: verified VND payments, TopUp/VIP revenues, refunds, coins sourced Paid vs Bonus, readers/missions activity. Do not treat Bonus Coins as VND revenues or Paid Coins nominal value as revenue. Provide exact metric definitions/date range/timezone.
 
+A04 uses `Asia/Ho_Chi_Minh` calendar dates and an inclusive 30-day default, with a maximum of 366 days. Each request converts `[from 00:00,to+1 00:00)` to UTC and reads all totals/series from one PostgreSQL RepeatableRead snapshot. TopUp and VIP gross use fulfilled orders and `verified_paid_at`; completed refunds remain separate original/fee/net metrics. Paid issuance comes from fulfilled TopUp lots, Bonus issuance from Granted Mission rewards, reading comes from one-time `ChapterReadQualified` outbox events, and Mission activity separates receipts, Granted decisions and DeniedDailyCap decisions. Audit lists use the same date semantics, deterministic `(occurred_at DESC,id DESC)` ordering, one snapshot for count/items, and expose only `redacted_changes`. Audit changes pass through one recursive case-insensitive policy before persistence and again on exposure so nested/array banking fields, recipient values, ciphertext, credentials and raw provider/financial payloads cannot leak; malformed legacy JSON fails closed without logging the stored value.
+
 ## Permissions
 All Admin endpoints have server role checks; first Admin provision out-of-band, no Admin grant/revoke UI. Users can be disabled according to audit policy, never directly edit Wallet balances. Moderation Hide/Delete/Restore Hidden comments with audit. Restore Deleted disallowed.
 

@@ -34,13 +34,19 @@ test("admin shell remains light, accessible and keyboard navigable", async ({ pa
     headers: { "X-CSRF-TOKEN": "shell-csrf" },
     json: { id: "11111111-1111-4111-8111-111111111111", displayName: "Admin", email: "admin@example.test", avatarUrl: null, role: "Admin", status: "Active" },
   }));
+  await page.route("**/api/v1/admin/dashboard**", (route) => route.fulfill({ json: {
+    range: { from: "2026-10-01", to: "2026-10-30", startsAtUtc: "2026-09-30T17:00:00Z", endsAtUtc: "2026-10-30T17:00:00Z" },
+    revenue: { topUpGrossVnd: 0, vipGrossVnd: 0 }, refunds: { completedCount: 0, originalAmountVnd: 0, feeVnd: 0, netRefundVnd: 0 },
+    coinsIssued: { paidCoins: 0, bonusCoins: 0 }, reading: { qualifiedSessionCount: 0, distinctReaderCount: 0 },
+    missions: { actionReceiptCount: 0, grantedRewardCount: 0, deniedDailyCapCount: 0, grantedBonusCoins: 0 }, dailySeries: [],
+  } }));
   await page.goto("/");
   await page.getByRole("button", { name: "Chuyển sang giao diện sáng" }).click();
   await page.getByRole("button", { name: "Chuyển sang giao diện tối" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.goto("/admin");
   await expect(page.getByRole("heading", { name: "Tổng quan" })).toBeVisible();
-  await expect(page.getByText("Chưa kết nối dữ liệu quản trị")).toBeVisible();
+  await expect(page.getByText("Báo cáo quản trị")).toBeVisible();
   await expect(page.locator(".admin-shell")).toHaveCSS("color-scheme", "light");
   if (testInfo.project.name === "mobile-chrome") {
     const menuButton = page.getByRole("button", { name: "Mở menu quản trị" });
