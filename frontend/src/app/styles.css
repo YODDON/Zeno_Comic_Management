@@ -536,6 +536,7 @@ svg {
 
 .admin-sidebar-note {
   margin: auto 0.8rem 0;
+  background: var(--surface);
   color: var(--text-muted);
   font-size: 0.72rem;
   line-height: 1.6;
