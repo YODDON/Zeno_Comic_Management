@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>
+      FullyQualifiedName~TopUpFulfillmentWorkflowTests|
+      FullyQualifiedName~ProviderVerification.UnitTests|
+      FullyQualifiedName~Sepay_webhook_requires_valid_hmac_and_persists_normalized_evidence|
+      FullyQualifiedName~Sepay_webhook_exact_topup_fulfills_real_wallet_transaction|
+      FullyQualifiedName~Sepay_retry_is_acknowledged_and_deduplicated_by_financial_transaction_id|
+      FullyQualifiedName~Sepay_same_identity_with_changed_payload_is_held_for_reconciliation|
+      FullyQualifiedName~Sepay_invalid_hmac_and_stale_timestamp_are_rejected_without_persistence|
+      FullyQualifiedName~SePayWebhookPersistenceTests|
+      FullyQualifiedName~TopUpFulfillmentPersistenceTests|
+      FullyQualifiedName~CloudinaryChapterPageAssetStoreTests|
+      FullyQualifiedName~CloudinaryChapterPageContentProviderTests|
+      FullyQualifiedName~ChapterAccessHandlerTests
+    </TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

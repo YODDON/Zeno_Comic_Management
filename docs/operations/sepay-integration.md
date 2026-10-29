@@ -16,3 +16,10 @@ Secrets backend only; minimal logs with redaction; signed endpoint should reject
 
 ## Release gate
 No money-bearing production TopUp/VIP until payment matching and idempotent fulfillment verified against actual SePay sandbox/test and live configuration.
+
+The Q02 Test-mode simulation, Replay and database reconciliation procedure is
+defined in [Q02 provider verification](../testing/q02-provider-security-poc.md).
+The verifier records separate success/replay/unknown/mismatch/late/invalid-auth
+and retry outcomes with zero-financial-side-effect checks where required.
+Fixture tests and self-generated HMAC requests remain supplementary evidence,
+not provider verification.

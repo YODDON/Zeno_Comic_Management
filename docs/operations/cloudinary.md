@@ -24,3 +24,10 @@ R01 therefore uses ordinary signed authenticated-asset URLs only for Free Chapte
 
 ## Release gate
 No paid content production until access tests and accepted exposure window are documented with real account/configuration.
+
+The disposable real-account probe and the required browser/API authorization
+drill are defined in [Q02 provider verification](../testing/q02-provider-security-poc.md).
+The probe never enables protected delivery. It accepts only `401`/`403`/`404`
+as verified denial, treats provider/network failures as inconclusive, and
+enforces that redacted evidence is written outside the repository without
+provider identifiers or signed URLs.
