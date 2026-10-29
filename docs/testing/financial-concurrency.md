@@ -34,3 +34,6 @@
 | M04 | Retry after worker crash | No duplicate Bonus ledger/grant |
 
 Test actual locks/uniques using concurrent PostgreSQL sessions, not just in-memory mock. Include assertion that `SUM(lotAvailable)=wallet.paid_available` and `SUM(lotReserved)=wallet.paid_reserved` after every high-risk scenario.
+
+The executable Q01 profile, exact test traceability and cross-workflow recovery
+evidence are maintained in [q01-postgresql-race-recovery.md](q01-postgresql-race-recovery.md).

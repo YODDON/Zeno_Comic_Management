@@ -214,6 +214,7 @@ public sealed class A04AdministrationReportingPersistenceTests : IAsyncLifetime
         var secondReader = Guid.NewGuid();
         var includedTopUpId = Guid.NewGuid();
         var refundTopUpId = Guid.NewGuid();
+        var outsideRangeTopUpId = Guid.NewGuid();
         var pendingOrderId = Guid.NewGuid();
         var completedRefundId = Guid.NewGuid();
         await using (var writerScope = _services.CreateAsyncScope())
@@ -228,6 +229,8 @@ public sealed class A04AdministrationReportingPersistenceTests : IAsyncLifetime
                 100_000, lower);
             AddFulfilledTopUp(db, refundTopUpId, $"A04-REF-{Guid.NewGuid():N}",
                 100_000, lower.AddMinutes(1));
+            AddFulfilledTopUp(db, outsideRangeTopUpId, $"A04-OUTSIDE-{Guid.NewGuid():N}",
+                100_000, lower.AddDays(-1));
             AddFulfilledVip(db, Guid.NewGuid(), $"A04-VIP-{Guid.NewGuid():N}",
                 29_000, justBeforeUpper);
             AddFulfilledVip(db, Guid.NewGuid(), $"A04-VIP-OUT-{Guid.NewGuid():N}",
@@ -271,11 +274,13 @@ public sealed class A04AdministrationReportingPersistenceTests : IAsyncLifetime
             wallet.CreditPaid(10_000, lower);
             wallet.CreditPaid(10_000, lower.AddTicks(10));
             wallet.CreditPaid(10_000, lower.AddTicks(20));
+            wallet.CreditPaid(10_000, lower.AddTicks(30));
             wallet.CreditBonus(25, lower.AddMinutes(2));
             db.Set<WalletAccount>().Add(wallet);
             AddTopUpLedger(db, initialOrderId, lower);
             AddTopUpLedger(db, includedTopUpId, lower.AddTicks(10));
             AddTopUpLedger(db, refundTopUpId, lower.AddTicks(20));
+            AddTopUpLedger(db, outsideRangeTopUpId, lower.AddTicks(30));
 
             AddMissionObservations(db, lower, exactUpper);
             db.Set<ActionReceipt>().AddRange(

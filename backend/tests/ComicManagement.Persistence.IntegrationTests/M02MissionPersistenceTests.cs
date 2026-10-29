@@ -169,6 +169,7 @@ public sealed class M02MissionPersistenceTests : IAsyncLifetime
         Assert.Equal(200, await context.WalletEntries
             .Where(item => item.CoinType == WalletCoinTypes.Bonus)
             .SumAsync(item => item.DeltaCoins));
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, userId);
         Assert.Single(await context.WalletOperations.Where(item =>
             item.OperationType == WalletOperationTypes.MissionReward &&
             item.SourceType == WalletOperationSourceTypes.RewardGrant).ToArrayAsync());
@@ -196,6 +197,103 @@ public sealed class M02MissionPersistenceTests : IAsyncLifetime
             1);
         Assert.Single(secondPage);
         Assert.NotEqual(firstReward.RewardGrantId, secondPage[0].RewardGrantId);
+    }
+
+    [Fact]
+    [Trait("Q01", "PostgreSqlRaceRecovery")]
+    public async Task Daily_cap_denies_the_whole_60_coin_reward_after_250_was_granted()
+    {
+        var userId = await SeedUserAsync();
+        await SeedSingleActiveMissionAsync(
+            MissionActionTypes.ChapterReadQualified,
+            BaseTime,
+            1,
+            250,
+            "q01-cap-prior-250");
+        var priorReceiptId = await AddReceiptAsync(
+            userId,
+            BaseTime.AddHours(1),
+            Guid.NewGuid());
+        await DrainAsync();
+
+        await using (var priorScope = Services.CreateAsyncScope())
+        {
+            var priorContext = priorScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            Assert.Equal(250, await priorContext.MissionDailyCounters
+                .Where(item => item.UserId == userId)
+                .Select(item => item.GrantedTotal)
+                .SingleAsync());
+            Assert.Equal(250, await priorContext.Wallets
+                .Where(item => item.UserId == userId)
+                .Select(item => item.BonusAvailable)
+                .SingleAsync());
+        }
+
+        await SeedSingleActiveMissionAsync(
+            MissionActionTypes.ComicFollowed,
+            BaseTime,
+            1,
+            60,
+            "q01-cap-proposed-60");
+        var deniedReceiptId = await AddReceiptAsync(
+            userId,
+            BaseTime.AddHours(2),
+            Guid.NewGuid(),
+            ReadingEventTypes.ComicFollowed);
+        await DrainAsync();
+
+        await using var scope = Services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var grants = await context.MissionRewardGrants.AsNoTracking()
+            .Where(item => item.UserId == userId)
+            .OrderBy(item => item.BonusCoins)
+            .ToArrayAsync();
+        var granted = Assert.Single(grants, item =>
+            item.Outcome == MissionRewardOutcomes.Granted);
+        var denied = Assert.Single(grants, item =>
+            item.Outcome == MissionRewardOutcomes.DeniedDailyCap);
+        Assert.Equal(250, granted.BonusCoins);
+        Assert.Equal(60, denied.BonusCoins);
+        Assert.Null(denied.WalletOperationId);
+        Assert.Equal(250, await context.MissionDailyCounters
+            .Where(item => item.UserId == userId)
+            .Select(item => item.GrantedTotal)
+            .SingleAsync());
+        Assert.Equal(250, await context.Wallets
+            .Where(item => item.UserId == userId)
+            .Select(item => item.BonusAvailable)
+            .SingleAsync());
+        Assert.Equal(250, await context.WalletEntries
+            .Where(item => item.UserId == userId &&
+                item.CoinType == WalletCoinTypes.Bonus &&
+                item.Bucket == WalletBuckets.Available)
+            .SumAsync(item => item.DeltaCoins));
+        Assert.Single(await context.WalletOperations
+            .Where(item => item.UserId == userId &&
+                item.OperationType == WalletOperationTypes.MissionReward)
+            .ToArrayAsync());
+        Assert.Single(await context.OutboxMessages
+            .Where(item => item.EventType == MissionEventTypes.RewardGranted)
+            .ToArrayAsync());
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, userId);
+
+        var grantsBeforeReplay = grants.Length;
+        var operationsBeforeReplay = await context.WalletOperations.CountAsync(item =>
+            item.UserId == userId && item.OperationType == WalletOperationTypes.MissionReward);
+        var entriesBeforeReplay = await context.WalletEntries.CountAsync(item => item.UserId == userId);
+        Assert.Equal(
+            MissionReceiptProcessingOutcome.Processed,
+            await scope.ServiceProvider.GetRequiredService<MissionReceiptProcessor>()
+                .ProcessAsync(deniedReceiptId));
+        Assert.Equal(grantsBeforeReplay, await context.MissionRewardGrants.CountAsync(item =>
+            item.UserId == userId));
+        Assert.Equal(operationsBeforeReplay, await context.WalletOperations.CountAsync(item =>
+            item.UserId == userId && item.OperationType == WalletOperationTypes.MissionReward));
+        Assert.Equal(entriesBeforeReplay, await context.WalletEntries.CountAsync(item =>
+            item.UserId == userId));
+        Assert.Equal(
+            ActionReceiptStatuses.Processed,
+            (await context.ActionReceipts.FindAsync(priorReceiptId))!.ProcessingStatus);
     }
 
     [Fact]

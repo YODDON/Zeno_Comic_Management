@@ -108,6 +108,7 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
         Assert.Equal(1, await context.WebhookDeliveries.CountAsync(delivery =>
             delivery.ProviderTransactionId == first.ProviderTransactionId &&
             delivery.ProcessingResult == WebhookDeliveryProcessingResults.Duplicate));
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, seeded.UserId);
     }
 
     [Fact]
@@ -255,6 +256,7 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
             candidate.MatchedOrderId == seeded.OrderId &&
             candidate.ReconciliationReason ==
                 SePayReconciliationReasons.OrderAlreadyFulfilled));
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, seeded.UserId);
     }
 
     [Fact]
@@ -295,6 +297,7 @@ public sealed class TopUpFulfillmentPersistenceTests : IAsyncLifetime
             operation.SourceId == seeded.OrderId));
         Assert.Equal(1, await context.OutboxMessages.CountAsync(message =>
             message.EventType == BillingEventTypes.WalletTopUpCompleted));
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, seeded.UserId);
     }
 
     [Fact]
