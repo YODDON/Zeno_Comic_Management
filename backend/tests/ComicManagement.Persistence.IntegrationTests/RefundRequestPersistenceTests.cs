@@ -1,8 +1,12 @@
 using ComicManagement.Billing.Payments;
 using ComicManagement.Billing.Events;
 using ComicManagement.Billing.Refunds;
+using ComicManagement.Catalog.Chapters;
+using ComicManagement.Catalog.Comics;
 using ComicManagement.Identity.Users;
 using ComicManagement.Persistence;
+using ComicManagement.Reading.Events;
+using ComicManagement.Reading.Unlocks;
 using ComicManagement.Wallet.Lots;
 using ComicManagement.Wallet.Ledger;
 using ComicManagement.Wallet.Reservations;
@@ -30,6 +34,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
     private readonly BlockingRefundObserver _observer = new();
     private readonly BlockingRefundApprovalObserver _approvalObserver = new();
     private readonly BlockingRefundPayoutObserver _payoutObserver = new();
+    private readonly BlockingChapterUnlockObserver _chapterUnlockObserver = new();
     private readonly TestFingerprintService _fingerprints = new();
     private ServiceProvider _services = null!;
     private Guid _userId;
@@ -45,6 +50,8 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         services.AddSingleton<IRefundApprovalCriticalSectionObserver>(_approvalObserver);
         services.RemoveAll<IRefundPayoutCriticalSectionObserver>();
         services.AddSingleton<IRefundPayoutCriticalSectionObserver>(_payoutObserver);
+        services.RemoveAll<IChapterUnlockCriticalSectionObserver>();
+        services.AddSingleton<IChapterUnlockCriticalSectionObserver>(_chapterUnlockObserver);
         services.AddSingleton<IRefundRecipientProtector, TestRecipientProtector>();
         services.AddSingleton<IRefundRequestFingerprintService>(_fingerprints);
         _services = services.BuildServiceProvider(validateScopes: true);
@@ -134,6 +141,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             $"WHERE id = '{reservation.Id:D}'");
         await AssertImmutableViolationAsync(
             $"DELETE FROM wallet.coin_reservations WHERE id = '{reservation.Id:D}'");
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, _userId);
     }
 
     [Fact]
@@ -192,6 +200,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         await AssertImmutableViolationAsync(
             $"DELETE FROM billing.refund_transfer_records " +
             $"WHERE id='{completed.State.TransferRecordId!.Value:D}'");
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, _userId);
     }
 
     [Fact]
@@ -243,6 +252,7 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
             StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("account", releaseOutbox.Payload,
             StringComparison.OrdinalIgnoreCase);
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, _userId);
     }
 
     [Fact]
@@ -639,6 +649,90 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         Assert.Equal(1, await context.CoinReservations.CountAsync());
         Assert.Equal(1, await context.OutboxMessages.CountAsync(message =>
             message.EventType == BillingEventTypes.RefundRecoveryReserved));
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, _userId);
+    }
+
+    [Fact]
+    [Trait("Q01", "PostgreSqlRaceRecovery")]
+    public async Task Chapter_unlock_holding_original_lot_makes_refund_approval_wait_and_fail_closed()
+    {
+        var orderId = await SeedFundedTopUpAsync(DateTimeOffset.UtcNow.AddDays(-1));
+        var created = await CreateAsync(
+            orderId,
+            "q01-unlock-refund-race",
+            "original lot must remain whole");
+        var review = await ReviewAsync(created.State!.RefundId);
+        var unlockSeed = await SeedLockedChapterQuoteAsync(price: 1_000);
+        var releaseUnlock = _chapterUnlockObserver.BlockNext();
+
+        Task<UnlockChapterResult>? unlockTask = null;
+        Task<RefundAdministrationResult>? approvalTask = null;
+        try
+        {
+            unlockTask = UnlockChapterAsync(unlockSeed, "q01-cross-workflow-unlock");
+            await _chapterUnlockObserver.WaitUntilBlockedAsync();
+
+            approvalTask = ApproveAsync(
+                created.State.RefundId,
+                review.State!.Version,
+                "Original lot verified before contention",
+                "q01-cross-workflow-refund");
+            await WaitForDatabaseLockWaiterAsync();
+            Assert.False(
+                approvalTask.IsCompleted,
+                "Refund approval must wait for the Wallet/original-lot critical section.");
+        }
+        finally
+        {
+            releaseUnlock();
+        }
+
+        var unlock = await unlockTask!;
+        var approval = await approvalTask!;
+
+        Assert.Equal(UnlockChapterOutcome.Succeeded, unlock.Outcome);
+        Assert.Equal(RefundAdministrationOutcome.RecoveryInsufficient, approval.Outcome);
+
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var wallet = await context.Wallets.AsNoTracking()
+            .SingleAsync(candidate => candidate.UserId == _userId);
+        var lot = await context.PaidCoinLots.AsNoTracking()
+            .SingleAsync(candidate => candidate.TopUpOrderId == orderId);
+        var refund = await context.RefundRequests.AsNoTracking()
+            .SingleAsync(candidate => candidate.Id == created.State.RefundId);
+
+        Assert.Equal(9_000, wallet.PaidAvailable);
+        Assert.Equal(0, wallet.PaidReserved);
+        Assert.Equal(1_000, lot.SpentCoins);
+        Assert.Equal(0, lot.ReservedCoins);
+        Assert.Equal(9_000, lot.AvailableCoins);
+        Assert.Equal(RefundRequestStatuses.UnderReview, refund.Status);
+        Assert.Empty(await context.CoinReservations.AsNoTracking().ToArrayAsync());
+        Assert.Single(await context.ChapterUnlocks.AsNoTracking().ToArrayAsync());
+        Assert.Single(await context.WalletOperations.AsNoTracking()
+            .Where(operation => operation.OperationType == WalletOperationTypes.ChapterUnlock)
+            .ToArrayAsync());
+        Assert.Empty(await context.WalletOperations.AsNoTracking()
+            .Where(operation => operation.OperationType == WalletOperationTypes.RefundReserve)
+            .ToArrayAsync());
+        Assert.Single(await context.OutboxMessages.AsNoTracking()
+            .Where(message => message.EventType == ReadingEventTypes.ChapterUnlocked)
+            .ToArrayAsync());
+        Assert.Empty(await context.OutboxMessages.AsNoTracking()
+            .Where(message => message.EventType == BillingEventTypes.RefundRecoveryReserved)
+            .ToArrayAsync());
+
+        var lotAvailable = await context.PaidCoinLots.AsNoTracking()
+            .Where(candidate => candidate.UserId == _userId)
+            .SumAsync(candidate => candidate.GrantedCoins - candidate.SpentCoins -
+                candidate.RefundedCoins - candidate.ReservedCoins);
+        var lotReserved = await context.PaidCoinLots.AsNoTracking()
+            .Where(candidate => candidate.UserId == _userId)
+            .SumAsync(candidate => candidate.ReservedCoins);
+        Assert.Equal(wallet.PaidAvailable, lotAvailable);
+        Assert.Equal(wallet.PaidReserved, lotReserved);
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, _userId);
     }
 
     [Fact]
@@ -1402,6 +1496,68 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         await context.SaveChangesAsync();
     }
 
+    private async Task<ChapterUnlockSeed> SeedLockedChapterQuoteAsync(long price)
+    {
+        var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var comicId = Guid.NewGuid();
+        var chapterId = Guid.NewGuid();
+        var comic = Comic.Create(
+            comicId,
+            $"q01-race-{comicId:N}",
+            "Q01 cross-workflow race",
+            string.Empty,
+            ComicSeriesStatuses.Ongoing,
+            null,
+            price,
+            false,
+            now);
+        var chapter = Chapter.Create(
+            chapterId,
+            comicId,
+            "Q01 locked chapter",
+            1,
+            null,
+            null,
+            now);
+        var page = ChapterPage.CreatePending(
+            Guid.NewGuid(),
+            chapterId,
+            1,
+            $"q01/{chapterId:N}/1",
+            $"sha256:{new string('c', 64)}",
+            now);
+        page.MarkReady(1200, 1800);
+        chapter.Publish(true, 1, now.AddSeconds(1));
+        comic.Publish(true, 1, now.AddSeconds(2));
+        var quote = ChapterUnlockQuote.Create(
+            Guid.NewGuid(),
+            _userId,
+            chapterId,
+            price,
+            vipDiscountPercent: 0,
+            bonusAvailable: 0,
+            paidAvailable: price,
+            createdAt: DateTimeOffset.UtcNow);
+
+        await using var scope = _services.CreateAsyncScope();
+        var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        context.Comics.Add(comic);
+        context.Chapters.Add(chapter);
+        context.ChapterPages.Add(page);
+        context.ChapterUnlockQuotes.Add(quote);
+        await context.SaveChangesAsync();
+        return new ChapterUnlockSeed(chapterId, quote.Id);
+    }
+
+    private async Task<UnlockChapterResult> UnlockChapterAsync(
+        ChapterUnlockSeed seed,
+        string idempotencyKey)
+    {
+        await using var scope = _services.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<ChapterUnlockHandler>()
+            .UnlockAsync(_userId, seed.ChapterId, seed.QuoteId, idempotencyKey);
+    }
+
     private async Task AssertCheckViolationAsync(string sql)
     {
         await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
@@ -1834,6 +1990,54 @@ public sealed class RefundRequestPersistenceTests : IAsyncLifetime
         public async Task AfterFinancialLocksAcquiredAsync(
             Guid refundRequestId,
             CancellationToken cancellationToken)
+        {
+            Task? release = null;
+            lock (_sync)
+            {
+                if (_blocked is not null && !_blocked.Task.IsCompleted)
+                {
+                    _blocked.TrySetResult();
+                    release = _release!.Task;
+                }
+            }
+
+            if (release is not null)
+            {
+                await release.WaitAsync(cancellationToken);
+            }
+        }
+    }
+
+    private sealed record ChapterUnlockSeed(Guid ChapterId, Guid QuoteId);
+
+    private sealed class BlockingChapterUnlockObserver : IChapterUnlockCriticalSectionObserver
+    {
+        private readonly object _sync = new();
+        private TaskCompletionSource? _blocked;
+        private TaskCompletionSource? _release;
+
+        public Action BlockNext()
+        {
+            lock (_sync)
+            {
+                _blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return () => _release.TrySetResult();
+            }
+        }
+
+        public async Task WaitUntilBlockedAsync()
+        {
+            Task blocked;
+            lock (_sync)
+            {
+                blocked = _blocked?.Task ?? throw new InvalidOperationException();
+            }
+
+            await blocked.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        public async Task AfterWalletLockedAsync(CancellationToken cancellationToken)
         {
             Task? release = null;
             lock (_sync)

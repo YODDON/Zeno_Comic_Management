@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>
+      FullyQualifiedName~WalletPersistenceTests|
+      FullyQualifiedName~WalletSpendingPersistenceTests|
+      FullyQualifiedName~ChapterAccessProjectionPersistenceTests|
+      FullyQualifiedName~ChapterUnlockPersistenceTests|
+      FullyQualifiedName~TopUpOrderPersistenceTests|
+      FullyQualifiedName~SePayWebhookPersistenceTests|
+      FullyQualifiedName~TopUpFulfillmentPersistenceTests|
+      FullyQualifiedName~VipMembershipPersistenceTests|
+      FullyQualifiedName~RefundRequestPersistenceTests|
+      FullyQualifiedName~MissionPersistenceTests|
+      FullyQualifiedName~M02MissionPersistenceTests|
+      FullyQualifiedName~OutboxProcessingTests
+    </TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

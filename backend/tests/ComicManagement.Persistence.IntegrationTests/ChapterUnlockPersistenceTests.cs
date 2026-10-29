@@ -106,6 +106,7 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
             ChapterAccessPolicy.Resolve(
                 accessProjection[seed.ChapterId],
                 isAuthenticated: true).AccessType);
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, seed.UserId);
 
         context.ChapterUnlocks.Remove(unlock);
         var appendOnly = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -360,6 +361,7 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
             .Where(value => value.OperationType == WalletOperationTypes.ChapterUnlock)
             .ToArrayAsync());
         Assert.Equal(40, (await context.Wallets.SingleAsync()).PaidAvailable);
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, seed.UserId);
     }
 
     [Fact]
@@ -385,6 +387,7 @@ public sealed class ChapterUnlockPersistenceTests : IAsyncLifetime
         Assert.Empty(await context.ChapterUnlocks.ToArrayAsync());
         Assert.False(await context.WalletOperations.AnyAsync(value =>
             value.OperationType == WalletOperationTypes.ChapterUnlock));
+        await FinancialReconciliationAssertions.AssertWalletAndLotsAsync(context, seed.UserId);
     }
 
     [Fact]
