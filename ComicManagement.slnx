@@ -24,10 +24,14 @@
     <Project Path="backend/tests/ComicManagement.Membership.UnitTests/ComicManagement.Membership.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Missions.UnitTests/ComicManagement.Missions.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Persistence.IntegrationTests/ComicManagement.Persistence.IntegrationTests.csproj" />
+    <Project Path="backend/tests/ComicManagement.ProviderVerification.UnitTests/ComicManagement.ProviderVerification.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.R03.E2EHost/ComicManagement.R03.E2EHost.csproj" />
     <Project Path="backend/tests/ComicManagement.Reading.UnitTests/ComicManagement.Reading.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Shared.UnitTests/ComicManagement.Shared.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Wallet.UnitTests/ComicManagement.Wallet.UnitTests.csproj" />
     <Project Path="backend/tests/ComicManagement.Workflows.UnitTests/ComicManagement.Workflows.UnitTests.csproj" />
+  </Folder>
+  <Folder Name="/backend/tools/">
+    <Project Path="backend/tools/ComicManagement.ProviderVerification/ComicManagement.ProviderVerification.csproj" />
   </Folder>
 </Solution>

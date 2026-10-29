@@ -53,6 +53,11 @@ public sealed class SePayWebhookPersistenceTests : IAsyncLifetime
         Assert.Equal(
             WebhookDeliveryProcessingResults.ReconciliationRequired,
             delivery.ProcessingResult);
+        Assert.Empty(await context.Wallets.AsNoTracking().ToListAsync());
+        Assert.Empty(await context.PaidCoinLots.AsNoTracking().ToListAsync());
+        Assert.Empty(await context.WalletOperations.AsNoTracking().ToListAsync());
+        Assert.Empty(await context.WalletEntries.AsNoTracking().ToListAsync());
+        Assert.Empty(await context.OutboxMessages.AsNoTracking().ToListAsync());
     }
 
     [Fact]

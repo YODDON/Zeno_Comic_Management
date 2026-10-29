@@ -3,10 +3,10 @@
 | Gate | Status before implementation | Evidence needed |
 |---|---|---|
 | SePay checkout/QR | VERIFICATION REQUIRED | Actual product choice & tested instructions |
-| SePay webhook HMAC/payload/retry | VERIFICATION REQUIRED | Redacted real fixture + signature and contract tests |
-| SePay reconciliation | VERIFICATION REQUIRED | Duplicate/unmatched/late-payment drills |
-| Cloudinary protected media | VERIFICATION REQUIRED | Unauthorized/cached/transformed URL access POC |
-| Cloudinary token/URL expiry | VERIFICATION REQUIRED | Supported tier and observed expiry/revocation |
+| SePay webhook HMAC/payload/retry | HARNESS READY / VERIFICATION REQUIRED | Project Test-mode delivery + Replay, redacted trace and signature/ack evidence; see `docs/testing/q02-provider-security-poc.md` |
+| SePay reconciliation | HARNESS READY / VERIFICATION REQUIRED | Project Test-mode duplicate/unmatched/mismatch/late-payment drills |
+| Cloudinary protected media | HARNESS READY / VERIFICATION REQUIRED | Project-account unsigned/guessed/tampered denial plus authorized same-origin browser/API drill |
+| Cloudinary token/URL expiry | DESIGN NOT SELECTED / VERIFICATION REQUIRED | The candidate server proxy exposes no provider URL; record tier/cache/revocation behavior before accepting it |
 | OAuth production redirects | NOT TESTED | HTTPS auth, cookie and CSRF E2E |
 | PostgreSQL migrations/recovery | NOT TESTED | Fresh & upgraded DB plus backup restore |
 | VPS capacity and metrics | NOT TESTED | Load/perf tests and alarms |
