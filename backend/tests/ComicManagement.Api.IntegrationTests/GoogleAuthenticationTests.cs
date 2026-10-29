@@ -47,7 +47,9 @@ using ComicManagement.Membership.Subscriptions;
 using ComicManagement.Interaction.Ratings;
 using ComicManagement.Workflows.Interaction;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.Antiforgery;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.DataProtection;
@@ -121,6 +123,67 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
 
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<UploadChapterPageHandler>());
         Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChapterPageAssetStore>());
+    }
+
+    [Fact]
+    public async Task Production_authentication_configuration_keeps_cookie_antiforgery_and_oidc_hardening()
+    {
+        await using var scope = _factory.Services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+
+        var authentication = services
+            .GetRequiredService<IOptions<AuthenticationOptions>>()
+            .Value;
+        Assert.Equal("ComicManagement.Session", authentication.DefaultAuthenticateScheme);
+        Assert.Equal("ComicManagement.Session", authentication.DefaultSignInScheme);
+        Assert.Equal("ComicManagement.Session", authentication.DefaultChallengeScheme);
+
+        var session = services
+            .GetRequiredService<IOptionsMonitor<CookieAuthenticationOptions>>()
+            .Get("ComicManagement.Session");
+        Assert.Equal("__Host-ComicManagement.Session", session.Cookie.Name);
+        Assert.True(session.Cookie.HttpOnly);
+        Assert.Equal(CookieSecurePolicy.Always, session.Cookie.SecurePolicy);
+        Assert.Equal(SameSiteMode.Lax, session.Cookie.SameSite);
+        Assert.Equal("/", session.Cookie.Path);
+        Assert.True(session.Cookie.IsEssential);
+        Assert.False(session.SlidingExpiration);
+        Assert.Equal(typeof(SessionCookieEvents), session.EventsType);
+
+        var antiforgery = services
+            .GetRequiredService<IOptions<AntiforgeryOptions>>()
+            .Value;
+        Assert.Equal("X-CSRF-TOKEN", antiforgery.HeaderName);
+        Assert.Equal("__Host-ComicManagement.Antiforgery", antiforgery.Cookie.Name);
+        Assert.True(antiforgery.Cookie.HttpOnly);
+        Assert.Equal(CookieSecurePolicy.Always, antiforgery.Cookie.SecurePolicy);
+        Assert.Equal(SameSiteMode.Strict, antiforgery.Cookie.SameSite);
+        Assert.Equal("/", antiforgery.Cookie.Path);
+        Assert.True(antiforgery.Cookie.IsEssential);
+
+        var google = services
+            .GetRequiredService<IOptionsMonitor<OpenIdConnectOptions>>()
+            .Get("Google");
+        Assert.Equal("ComicManagement.Session", google.SignInScheme);
+        Assert.Equal(OpenIdConnectResponseType.Code, google.ResponseType);
+        Assert.Equal(OpenIdConnectResponseMode.Query, google.ResponseMode);
+        Assert.True(google.UsePkce);
+        Assert.False(google.SaveTokens);
+        Assert.True(google.RequireHttpsMetadata);
+        Assert.Contains("openid", google.Scope);
+        Assert.Contains("profile", google.Scope);
+        Assert.Contains("email", google.Scope);
+        Assert.True(google.CorrelationCookie.HttpOnly);
+        Assert.Equal(CookieSecurePolicy.Always, google.CorrelationCookie.SecurePolicy);
+        Assert.Equal(SameSiteMode.None, google.CorrelationCookie.SameSite);
+        Assert.True(google.NonceCookie.HttpOnly);
+        Assert.Equal(CookieSecurePolicy.Always, google.NonceCookie.SecurePolicy);
+        Assert.Equal(SameSiteMode.None, google.NonceCookie.SameSite);
+        Assert.True(google.TokenValidationParameters.ValidateIssuer);
+        Assert.True(google.TokenValidationParameters.ValidateAudience);
+        Assert.True(google.TokenValidationParameters.ValidateLifetime);
+        Assert.True(google.TokenValidationParameters.ValidateIssuerSigningKey);
+        Assert.Equal(typeof(GoogleOpenIdConnectEvents), google.EventsType);
     }
 
     [Fact]

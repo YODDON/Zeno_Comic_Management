@@ -199,7 +199,10 @@ internal static class Program
             topUpOrder.Id,
             "a04-e2e-seed",
             createdAt.AddMinutes(5),
-            "{\"status\":\"Succeeded\"}"));
+            "{\"status\":\"Succeeded\",\"safeMarker\":\"Q03 browser-safe metadata\"," +
+            "\"accountNumber\":\"0123456789\",\"ciphertext\":\"protected-cipher\"," +
+            "\"token\":\"token-value\",\"nested\":{" +
+            "\"secret\":\"nested-secret-value\",\"safe\":true}}"));
         await dbContext.SaveChangesAsync();
         await dbContext.Database.ExecuteSqlInterpolatedAsync(
             $"UPDATE identity.users SET role = 'Admin' WHERE id = {R03E2EData.AdminId}");

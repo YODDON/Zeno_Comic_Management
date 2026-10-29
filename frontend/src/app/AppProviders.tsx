@@ -16,7 +16,6 @@ export function AppProviders({ children }: AppProvidersProps) {
   useEffect(
     () => subscribeToApiUnauthorized(() => {
       queryClient.removeQueries({ queryKey: ["interaction", "rating"] });
-      queryClient.removeQueries({ queryKey: ["catalog", "comic"] });
       queryClient.setQueryData(profileQueryKey, null);
     }),
     [queryClient],

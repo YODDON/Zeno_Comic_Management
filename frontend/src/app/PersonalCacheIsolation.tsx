@@ -28,7 +28,6 @@ export function PersonalCacheIsolation() {
 
       previousIdentity = nextIdentity;
       queryClient.removeQueries({ queryKey: ["interaction", "rating"] });
-      queryClient.removeQueries({ queryKey: ["catalog", "comic"] });
     });
   }, [queryClient]);
 

@@ -110,6 +110,16 @@ jobs:
         env:
           CI: "true"
 
+      - name: Set up .NET for real integration E2E
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Run real browser API PostgreSQL E2E
+        run: npm run test:e2e:integration
+        env:
+          CI: "true"
+
       - name: Upload Playwright evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v5
@@ -119,5 +129,6 @@ jobs:
             frontend/artifacts/
             frontend/playwright-report/
             frontend/test-results/
+            frontend/test-results-integration/
           if-no-files-found: ignore
           retention-days: 14

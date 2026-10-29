@@ -2,8 +2,10 @@ import { expect, test } from "@playwright/test";
 
 const comicTitle = "Hành trình R03 thật";
 const chapterId = "2744b2b6-f009-4122-b574-1dad21740301";
+const userId = "a713606c-d008-4f76-a6e7-d83829303001";
 
 test("persists follow and reading progress through the real API and PostgreSQL", async ({ page }) => {
+  await page.setExtraHTTPHeaders({ "X-R03-E2E-User": userId });
   await page.goto("/comics");
   await page.getByRole("link", { name: `Mở ${comicTitle}` }).click();
 
