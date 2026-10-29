@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>
+      FullyQualifiedName~Public_catalog_is_anonymous_hides_private_content_and_paginates_thirty_chapters|
+      FullyQualifiedName~Reader_access_and_manifest_allow_free_and_deny_locked_or_hidden_content|
+      FullyQualifiedName~Production_authentication_configuration_keeps_cookie_antiforgery_and_oidc_hardening|
+      FullyQualifiedName~Authenticated_mutations_require_global_csrf_validation|
+      FullyQualifiedName~Unauthenticated_admin_route_returns_unauthorized_problem_details|
+      FullyQualifiedName~User_is_forbidden_from_admin_route_and_admin_is_authorized_after_new_login|
+      FullyQualifiedName~Comment_mutations_require_auth_csrf_and_are_rate_limited_per_principal|
+      FullyQualifiedName~A01_admin_catalog_returns_standardized_forbidden_and_rate_limited_errors|
+      FullyQualifiedName~A02_admin_finance_reads_enforce_authorization_and_validation|
+      FullyQualifiedName~A03_admin_users_enforces_auth_csrf_version_and_revokes_disabled_session
+    </TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

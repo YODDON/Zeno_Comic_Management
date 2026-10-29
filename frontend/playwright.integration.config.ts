@@ -3,6 +3,7 @@ import { defineConfig } from "@playwright/test";
 const frontendPort = 4174;
 const apiPort = 5180;
 const apiUrl = `http://127.0.0.1:${apiPort}`;
+const dotnetHost = process.env.DOTNET_HOST_PATH?.trim() || "dotnet";
 
 export default defineConfig({
   testDir: "./src/test/integration",
@@ -16,17 +17,40 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${frontendPort}`,
     channel: "chrome",
-    extraHTTPHeaders: {
-      "X-R03-E2E-User": "a713606c-d008-4f76-a6e7-d83829303001",
-    },
     locale: "vi-VN",
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
-    viewport: { width: 1_440, height: 900 },
   },
+  projects: [
+    {
+      name: "integration-desktop-chrome",
+      grepInvert: /@q03-reduced-motion/,
+      use: { viewport: { width: 1_440, height: 900 } },
+    },
+    {
+      name: "integration-mobile-chrome",
+      grep: /@q03-responsive-security/,
+      use: { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true },
+    },
+    {
+      name: "integration-tablet-chrome",
+      grep: /@q03-responsive-security/,
+      use: { viewport: { width: 720, height: 900 }, isMobile: true, hasTouch: true },
+    },
+    {
+      name: "integration-mobile-reduced-motion-chrome",
+      grep: /@q03-reduced-motion/,
+      use: {
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+        reducedMotion: "reduce",
+      },
+    },
+  ],
   webServer: [
     {
-      command: `dotnet run --project ../backend/tests/ComicManagement.R03.E2EHost/ComicManagement.R03.E2EHost.csproj -- --port ${apiPort}`,
+      command: `"${dotnetHost}" run --project ../backend/tests/ComicManagement.R03.E2EHost/ComicManagement.R03.E2EHost.csproj -- --port ${apiPort}`,
       url: `${apiUrl}/__r03-e2e/ready`,
       reuseExistingServer: false,
       timeout: 120_000,

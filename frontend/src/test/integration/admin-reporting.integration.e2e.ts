@@ -28,7 +28,11 @@ test("reads authoritative dashboard and redacted audit through ASP.NET Core and 
   expect((await auditResponse).status()).toBe(200);
   await expect(page.getByText("Dashboard.SeedVerified")).toBeVisible();
   await expect(page.getByText(/"status": "Succeeded"/)).toBeVisible();
+  await expect(page.getByText(/"safeMarker": "Q03 browser-safe metadata"/)).toBeVisible();
+  await expect(page.getByText(/"safe": true/)).toBeVisible();
   await expect(
-    page.getByRole("table").getByText(/accountNumber|ciphertext|secret/i),
+    page.getByRole("table").getByText(
+      /0123456789|protected-cipher|token-value|nested-secret-value/,
+    ),
   ).toHaveCount(0);
 });
