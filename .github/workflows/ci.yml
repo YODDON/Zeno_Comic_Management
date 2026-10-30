@@ -160,9 +160,9 @@ jobs:
             -inkey secrets/data-protection.key \
             -in secrets/data-protection.crt \
             -passout pass:ci-data-protection-password
-          age-keygen -o secrets/backup-age.key 2> secrets/backup-age-keygen.log
+          age-keygen -o secrets/backup-age.key 2> /dev/null
           age-keygen -o secrets/wrong-backup-age.key 2> /dev/null
-          backup_age_recipient="$(sed -n 's/^# public key: //p' secrets/backup-age-keygen.log)"
+          backup_age_recipient="$(age-keygen -y secrets/backup-age.key)"
           cat > .env.ci <<'EOF'
           APP_ADDRESS=http://localhost
           HTTP_PORT=18080
@@ -306,7 +306,7 @@ jobs:
           test "$(cat deployment-state/current-image-tag)" = "$current_tag"
 
       - name: Upload encrypted recovery evidence
-        if: ${{ !cancelled() }}
+        if: ${{ success() }}
         uses: actions/upload-artifact@v5
         with:
           name: deployment-recovery-evidence
@@ -318,8 +318,8 @@ jobs:
 
       - name: Show deployment logs on failure
         if: ${{ failure() }}
-        run: docker compose --env-file .env.ci --profile ops logs --no-color
+        run: docker compose --env-file .env.ci --profile ops logs --no-color || true
 
       - name: Tear down isolated deployment
         if: ${{ always() }}
-        run: docker compose --env-file .env.ci --profile ops down --volumes --remove-orphans
+        run: docker compose --env-file .env.ci --profile ops down --volumes --remove-orphans || true
