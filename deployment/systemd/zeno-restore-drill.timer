@@ -1,0 +1,11 @@
+[Unit]
+Description=Monthly Comic Management isolated restore drill
+
+[Timer]
+OnCalendar=monthly
+Persistent=true
+RandomizedDelaySec=1h
+Unit=zeno-restore-drill.service
+
+[Install]
+WantedBy=timers.target

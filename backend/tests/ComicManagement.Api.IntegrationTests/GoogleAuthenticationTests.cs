@@ -117,6 +117,96 @@ public sealed class GoogleAuthenticationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Deployment_health_endpoints_are_anonymous_no_store_and_database_aware()
+    {
+        using var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        using var live = await client.GetAsync("/health/live");
+        Assert.Equal(HttpStatusCode.OK, live.StatusCode);
+        Assert.Contains("no-store", live.Headers.CacheControl?.ToString());
+        var livePayload = await live.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Healthy", livePayload.GetProperty("status").GetString());
+
+        using var ready = await client.GetAsync("/health/ready");
+        Assert.Equal(HttpStatusCode.OK, ready.StatusCode);
+        Assert.Contains("no-store", ready.Headers.CacheControl?.ToString());
+        var readyPayload = await ready.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("Healthy", readyPayload.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task Deployment_readiness_is_fail_closed_and_redacted_when_postgresql_is_unavailable()
+    {
+        var unavailable = new NpgsqlConnectionStringBuilder(_postgres.GetConnectionString())
+        {
+            Host = "127.0.0.1",
+            Port = 1,
+            Timeout = 1,
+            CommandTimeout = 1,
+        };
+
+        await using var factory = new AuthenticationApplicationFactory(
+            unavailable.ConnectionString,
+            _securityDirectory);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        using var response = await client.GetAsync("/health/ready");
+
+        await AssertRedactedUnhealthyReadinessAsync(response);
+    }
+
+    [Fact]
+    public async Task Deployment_readiness_is_fail_closed_and_redacted_when_migrations_are_pending()
+    {
+        var databaseName = $"d01_pending_{Guid.NewGuid():N}";
+        await using (var connection = new NpgsqlConnection(_postgres.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                $"CREATE DATABASE \"{databaseName}\"",
+                connection);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var pending = new NpgsqlConnectionStringBuilder(_postgres.GetConnectionString())
+        {
+            Database = databaseName,
+        };
+        await using var factory = new AuthenticationApplicationFactory(
+            pending.ConnectionString,
+            _securityDirectory);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false,
+        });
+
+        using var response = await client.GetAsync("/health/ready");
+
+        await AssertRedactedUnhealthyReadinessAsync(response);
+    }
+
+    private static async Task AssertRedactedUnhealthyReadinessAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Contains("no-store", response.Headers.CacheControl?.ToString());
+        var rawPayload = await response.Content.ReadAsStringAsync();
+        using var payload = JsonDocument.Parse(rawPayload);
+        var properties = payload.RootElement.EnumerateObject().ToArray();
+        Assert.Single(properties);
+        Assert.Equal("status", properties[0].Name);
+        Assert.Equal("Unhealthy", properties[0].Value.GetString());
+        Assert.DoesNotContain("PostgreSQL", rawPayload, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("migration", rawPayload, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("connection", rawPayload, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Production_composition_registers_the_chapter_page_upload_slice()
     {
         await using var scope = _factory.Services.CreateAsyncScope();

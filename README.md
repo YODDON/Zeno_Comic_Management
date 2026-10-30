@@ -6,6 +6,19 @@ Frozen MVP decisions originated from the user's approved planning rounds. Detail
 
 Run task-by-task using [`.agent/PLANS.md`](.agent/PLANS.md).
 
+## Local Docker deployment
+
+After configuring project-owned credentials, copy [`.env.example`](.env.example) to `.env`, create the Data Protection PKCS#12 file referenced there, then run:
+
+```sh
+sh deployment/scripts/validate-env.sh .env
+docker compose --env-file .env -f compose.yml -f compose.build.yml --profile ops build
+docker compose --env-file .env up --detach --wait
+BASE_URL=http://localhost sh deployment/scripts/smoke.sh
+```
+
+See [`docs/operations/deployment.md`](docs/operations/deployment.md) and [`docs/operations/backup-and-recovery.md`](docs/operations/backup-and-recovery.md). Local startup does not remove the SePay/Cloudinary production verification gates.
+
 ## Backend foundation
 
 The backend is one ASP.NET Core modular monolith composed from 13 production projects under `backend/src`. Project-reference boundaries are enforced by `ComicManagement.ArchitectureTests`.

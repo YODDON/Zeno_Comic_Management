@@ -1,0 +1,9 @@
+[Unit]
+Description=Check Comic Management backup freshness
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=DEPLOYMENT_ROOT=/opt/zeno-comic-management
+ExecStart=/bin/sh /opt/zeno-comic-management/deployment/scripts/check-backup-freshness.sh

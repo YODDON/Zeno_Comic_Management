@@ -1,0 +1,11 @@
+[Unit]
+Description=Comic Management authenticated PostgreSQL backup and offsite copy
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/zeno-comic-management
+Environment=DEPLOYMENT_ROOT=/opt/zeno-comic-management
+ExecStart=/bin/sh /opt/zeno-comic-management/deployment/scripts/run-backup-job.sh

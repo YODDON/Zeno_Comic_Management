@@ -19,8 +19,10 @@ using ComicManagement.Membership.Memberships;
 using ComicManagement.Billing.Refunds;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using System.Net;
 using System.Globalization;
+using ComicManagement.Api.Deployment;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -46,6 +48,11 @@ builder.Services.AddOpenApi(options =>
 });
 builder.Services.AddProblemDetails();
 builder.Services.AddPersistence(databaseConnectionString);
+builder.Services
+    .AddHealthChecks()
+    .AddCheck<DatabaseReadinessHealthCheck>(
+        "postgresql-and-migrations",
+        tags: [DatabaseReadinessHealthCheck.ReadinessTag]);
 builder.Services.AddOptions<TopUpOrderOptions>()
     .Bind(builder.Configuration.GetSection(TopUpOrderOptions.SectionName))
     .Validate(
@@ -186,6 +193,17 @@ app.UseRateLimiter();
 app.UseAuthorization();
 app.MapOpenApi();
 app.MapControllers();
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false,
+    ResponseWriter = DeploymentHealthResponseWriter.WriteAsync,
+});
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = registration => registration.Tags.Contains(
+        DatabaseReadinessHealthCheck.ReadinessTag),
+    ResponseWriter = DeploymentHealthResponseWriter.WriteAsync,
+});
 
 app.Run();
 

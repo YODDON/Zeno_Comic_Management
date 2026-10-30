@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Comic Management backup schedule
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=zeno-backup.service
+
+[Install]
+WantedBy=timers.target

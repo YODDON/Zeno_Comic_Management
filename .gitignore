@@ -14,4 +14,13 @@ frontend/test-results/
 frontend/test-results-integration/
 .dotnet/
 .dotnet-home/
+.dotnet-tools/
 .nuget/
+
+# Local deployment secrets and generated evidence
+.env
+.env.*
+!.env.example
+secrets/
+backups/
+deployment-state/

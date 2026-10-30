@@ -132,3 +132,194 @@ jobs:
             frontend/test-results-integration/
           if-no-files-found: ignore
           retention-days: 14
+
+  deployment:
+    name: Deployment build, smoke and restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Create isolated CI deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes age
+          mkdir -p secrets backups
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 2 -nodes \
+            -subj "/CN=Comic Management CI Data Protection" \
+            -keyout secrets/data-protection.key \
+            -out secrets/data-protection.crt
+          openssl pkcs12 -export \
+            -out secrets/data-protection.pfx \
+            -inkey secrets/data-protection.key \
+            -in secrets/data-protection.crt \
+            -passout pass:ci-data-protection-password
+          age-keygen -o secrets/backup-age.key 2> secrets/backup-age-keygen.log
+          age-keygen -o secrets/wrong-backup-age.key 2> /dev/null
+          backup_age_recipient="$(sed -n 's/^# public key: //p' secrets/backup-age-keygen.log)"
+          cat > .env.ci <<'EOF'
+          APP_ADDRESS=http://localhost
+          HTTP_PORT=18080
+          HTTPS_PORT=18443
+          COMPOSE_SUBNET=172.30.0.0/24
+          ASPNETCORE_ENVIRONMENT=Production
+          IMAGE_REGISTRY=local/zeno-comic-management
+          IMAGE_TAG=ci-placeholder
+          POSTGRES_DB=comic_management
+          POSTGRES_USER=comic_management
+          POSTGRES_PASSWORD=ci-postgres-password-long-random-value
+          GOOGLE_CLIENT_ID=ci-client.apps.googleusercontent.com
+          GOOGLE_CLIENT_SECRET=ci-google-client-secret
+          AUTH_SESSION_LIFETIME=08:00:00
+          DATA_PROTECTION_CERTIFICATE_FILE=./secrets/data-protection.pfx
+          DATA_PROTECTION_CERTIFICATE_PASSWORD=ci-data-protection-password
+          ERROR_DOCUMENTATION_BASE_URI=https://example.invalid/docs/errors/
+          CLOUDINARY_CLOUD_NAME=ci-not-a-provider-verification
+          CLOUDINARY_API_KEY=ci-api-key
+          CLOUDINARY_API_SECRET=ci-api-secret
+          REFUND_FINGERPRINT_VERSION=v1
+          REFUND_FINGERPRINT_KEY_V1=Y2ktcmFuZG9tLWZpbmdlcnByaW50LWtleS1hdC1sZWFzdC0zMi1ieXRlcw==
+          REFUND_PROTECTION_VERSION=v1
+          SEPAY_WEBHOOK_ENABLED=false
+          BACKUP_DIRECTORY=./backups
+          BACKUP_AGE_IDENTITY_FILE=./secrets/backup-age.key
+          RESTORE_DESTRUCTIVE_CONFIRMATION=CONFIRM_ISOLATED_RESTORE_DROP
+          EOF
+          sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=ci-${GITHUB_SHA}/" .env.ci
+          printf 'BACKUP_AGE_RECIPIENT=%s\n' "$backup_age_recipient" >> .env.ci
+          chmod 0600 .env.ci secrets/data-protection.* secrets/*backup-age.key
+
+      - name: Validate Compose and shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n deployment/scripts/*.sh backend/docker/migrate-entrypoint.sh
+          sh deployment/scripts/test-restore-target-guard.sh
+          sh deployment/scripts/test-release-tag.sh
+          sh deployment/scripts/test-operations-schedule.sh
+          sh deployment/scripts/validate-env.sh .env.ci
+          docker compose --env-file .env.ci config --quiet
+          cat > .env.operations.ci <<'EOF'
+          LOCAL_RETENTION_DAYS=14
+          OFFSITE_RETENTION_DAYS=90
+          BACKUP_STALE_AFTER_HOURS=36
+          OFFSITE_REMOTE=immutable-ci-evidence:comic-management
+          ALERT_WEBHOOK_URL=https://alerts.example.invalid/d01
+          EOF
+          DEPLOYMENT_ROOT="$PWD" \
+            DEPLOYMENT_ENVIRONMENT="$PWD/.env.ci" \
+            OPERATIONS_ENVIRONMENT="$PWD/.env.operations.ci" \
+            BACKUP_JOB_DRY_RUN=true \
+            sh deployment/scripts/run-backup-job.sh
+
+      - name: Build deployment images
+        run: >-
+          docker compose
+          --env-file .env.ci
+          -f compose.yml
+          -f compose.build.yml
+          --profile ops build
+
+      - name: Start application and run smoke checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env.ci up --detach --wait
+          BASE_URL=http://localhost:18080 sh deployment/scripts/smoke.sh
+
+      - name: Seed deterministic financial recovery fixture
+        shell: bash
+        run: |
+          docker compose --env-file .env.ci exec -T postgres \
+            psql --username comic_management --dbname comic_management \
+            < deployment/scripts/d01-recovery-fixture.sql
+
+      - name: Create encrypted backup and restore into isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env.ci --profile ops run --rm backup
+          backup_path="$(find backups -maxdepth 1 -type f -name '*.dump.age' -print -quit)"
+          backup_file="$(basename "$backup_path")"
+          test -n "$backup_file"
+
+          age --decrypt --identity secrets/backup-age.key \
+            --output /tmp/d01-valid.dump "$backup_path"
+          if age --decrypt --identity secrets/wrong-backup-age.key \
+              --output /tmp/d01-wrong-key.dump "$backup_path"; then
+            echo 'Wrong age identity unexpectedly decrypted the backup.' >&2
+            exit 1
+          fi
+          cp "$backup_path" /tmp/d01-tampered-ciphertext.dump.age
+          printf '\001' | dd of=/tmp/d01-tampered-ciphertext.dump.age \
+            bs=1 seek=256 count=1 conv=notrunc status=none
+          if age --decrypt --identity secrets/backup-age.key \
+              --output /tmp/d01-tampered.dump /tmp/d01-tampered-ciphertext.dump.age; then
+            echo 'Tampered age ciphertext unexpectedly authenticated.' >&2
+            exit 1
+          fi
+          cp "$backup_path" /tmp/d01-tampered-header.dump.age
+          printf 'X' | dd of=/tmp/d01-tampered-header.dump.age \
+            bs=1 seek=0 count=1 conv=notrunc status=none
+          if age --decrypt --identity secrets/backup-age.key \
+              --output /tmp/d01-tampered-header.dump /tmp/d01-tampered-header.dump.age; then
+            echo 'Tampered age header unexpectedly authenticated.' >&2
+            exit 1
+          fi
+
+          docker compose --env-file .env.ci --profile ops up --detach --wait restore-postgres
+          docker compose --env-file .env.ci --profile ops run --rm \
+            -e "BACKUP_FILE=$backup_file" restore-drill
+          docker compose --env-file .env.ci --profile ops exec -T restore-postgres \
+            psql --username comic_management --dbname comic_management_restore \
+            < deployment/scripts/d01-recovery-assertions.sql
+
+      - name: Prove immutable-tag rollback switching
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_tag="ci-${GITHUB_SHA}"
+          rollback_tag="rollback-${GITHUB_SHA}"
+          for component in api migrator web ops; do
+            docker tag \
+              "local/zeno-comic-management/${component}:${current_tag}" \
+              "local/zeno-comic-management/${component}:${rollback_tag}"
+          done
+          SKIP_IMAGE_PULL=true SMOKE_BASE_URL=http://localhost:18080 \
+            sh deployment/scripts/switch-release.sh .env.ci "$rollback_tag"
+          api_container="$(docker compose --env-file .env.ci ps -q api)"
+          test "$(docker inspect --format '{{.Config.Image}}' "$api_container")" = \
+            "local/zeno-comic-management/api:${rollback_tag}"
+          test "$(cat deployment-state/current-image-tag)" = "$rollback_tag"
+
+          SKIP_IMAGE_PULL=true SMOKE_BASE_URL=http://localhost:18080 \
+            sh deployment/scripts/switch-release.sh .env.ci "$current_tag"
+          api_container="$(docker compose --env-file .env.ci ps -q api)"
+          test "$(docker inspect --format '{{.Config.Image}}' "$api_container")" = \
+            "local/zeno-comic-management/api:${current_tag}"
+          test "$(cat deployment-state/current-image-tag)" = "$current_tag"
+
+      - name: Upload encrypted recovery evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: deployment-recovery-evidence
+          path: |
+            backups/*.dump.age
+            deployment-state/current-image-tag
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Show deployment logs on failure
+        if: ${{ failure() }}
+        run: docker compose --env-file .env.ci --profile ops logs --no-color
+
+      - name: Tear down isolated deployment
+        if: ${{ always() }}
+        run: docker compose --env-file .env.ci --profile ops down --volumes --remove-orphans
