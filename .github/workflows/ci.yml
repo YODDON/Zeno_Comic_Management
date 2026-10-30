@@ -230,7 +230,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          docker compose --env-file .env.ci up --detach --wait
+          if ! docker compose --env-file .env.ci up --detach --wait; then
+            container_status="$({
+              docker compose --env-file .env.ci ps --all \
+                --format 'table {{.Name}}\t{{.Service}}\t{{.State}}\t{{.Status}}\t{{.ExitCode}}'
+            } 2>&1 | tr '\n' ';')"
+            echo "::error title=D01 deployment startup failure::$container_status"
+            docker compose --env-file .env.ci --profile ops logs --no-color || true
+            exit 1
+          fi
           BASE_URL=http://localhost:18080 sh deployment/scripts/smoke.sh
 
       - name: Seed deterministic financial recovery fixture
