@@ -23,7 +23,10 @@ openssl pkcs12 -export -out secrets/data-protection.pfx \
 age-keygen -o secrets/backup-age.key
 cp .env.example .env
 chmod 0600 .env secrets/data-protection.* secrets/backup-age.key
+chmod 0644 secrets/data-protection.pfx
 ```
+
+`secrets/data-protection.pfx` is the password-encrypted PKCS#12 bundle mounted into the non-root API container (`uid 1654`). Keep the plaintext `.key` file, age identity, and `.env` at `0600`, but ensure the `.pfx` bundle is readable by the container user (`0644`).
 
 Use a password manager or host secret store to generate the database, certificate, backup and provider secrets. `REFUND_FINGERPRINT_KEY_V1` is Base64 for at least 32 random bytes and is independent from Data Protection.
 

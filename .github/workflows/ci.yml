@@ -194,6 +194,7 @@ jobs:
           sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=ci-${GITHUB_SHA}/" .env.ci
           printf 'BACKUP_AGE_RECIPIENT=%s\n' "$backup_age_recipient" >> .env.ci
           chmod 0600 .env.ci secrets/data-protection.* secrets/*backup-age.key
+          chmod 0644 secrets/data-protection.pfx
 
       - name: Validate Compose and shell scripts
         shell: bash

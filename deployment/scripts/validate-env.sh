@@ -78,6 +78,9 @@ if [ -z "$certificate_file" ] || [ ! -f "$certificate_file" ]; then
   echo "DATA_PROTECTION_CERTIFICATE_FILE must identify an existing PKCS#12 file." >&2
   exit 66
 fi
+if [ -w "$certificate_file" ]; then
+  chmod 0644 "$certificate_file" 2>/dev/null || true
+fi
 
 age_identity_file="$(read_value BACKUP_AGE_IDENTITY_FILE)"
 if [ ! -f "$age_identity_file" ]; then
