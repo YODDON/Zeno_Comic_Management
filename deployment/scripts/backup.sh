@@ -47,7 +47,7 @@ age --encrypt \
   --recipient "$BACKUP_AGE_RECIPIENT" \
   --output "$encrypted_archive" \
   "$archive"
-chmod 0600 "$encrypted_archive"
+chmod 0644 "$encrypted_archive"
 
 echo "Encrypted PostgreSQL backup created: $(basename "$encrypted_archive")"
 echo "Copy the authenticated encrypted archive to the approved immutable offsite target."
