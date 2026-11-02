@@ -61,13 +61,25 @@ if [ -z "$newest_backup" ]; then
   echo "No authenticated encrypted backup was produced." >&2
   exit 1
 fi
+newest_manifest="${newest_backup}.manifest"
+newest_signature="${newest_manifest}.sig"
+if [ ! -f "$newest_manifest" ] || [ ! -f "$newest_signature" ]; then
+  echo "The backup provenance manifest/signature was not produced." >&2
+  exit 1
+fi
 
-rclone copyto "$newest_backup" "$OFFSITE_REMOTE/$(basename "$newest_backup")" \
-  --immutable
+for artifact in "$newest_backup" "$newest_manifest" "$newest_signature"; do
+  rclone copyto "$artifact" "$OFFSITE_REMOTE/$(basename "$artifact")" \
+    --immutable
+done
 rclone delete "$OFFSITE_REMOTE" \
   --include '*.dump.age' \
+  --include '*.dump.age.manifest' \
+  --include '*.dump.age.manifest.sig' \
   --min-age "${OFFSITE_RETENTION_DAYS}d"
-find "$backup_directory" -maxdepth 1 -type f -name '*.dump.age' \
+find "$backup_directory" -maxdepth 1 -type f \
+  \( -name '*.dump.age' -o -name '*.dump.age.manifest' -o \
+     -name '*.dump.age.manifest.sig' \) \
   -mtime "+$LOCAL_RETENTION_DAYS" -delete
 
 mkdir -p "$status_directory"

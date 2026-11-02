@@ -2,13 +2,13 @@
 
 ## Encrypted backup
 
-The `ops` profile runs `pg_dump` in custom format, verifies its catalog and encrypts it with authenticated `age` X25519 encryption. Plaintext dumps are removed on every exit path. Authentication is intrinsic to the age payload: a modified header or ciphertext, or the wrong identity, fails before PostgreSQL is touched.
+The `ops` profile runs `pg_dump` in custom format, verifies its catalog and encrypts it with authenticated `age` X25519 encryption. Plaintext dumps are removed on every exit path. It also signs a manifest with a backup-only RSA private key. The manifest binds ciphertext hash, source environment/database, Git SHA, API/web/migrator digests, migration ID, creation time and format. Restore verifies the signature and ciphertext identity before decryption and before destructive SQL.
 
 ```sh
 docker compose --env-file .env --profile ops run --rm backup
 ```
 
-The daily systemd timer invokes `run-backup-job.sh`, uploads `*.dump.age` with `rclone --immutable`, enforces local/offsite retention, records a success timestamp and alerts on failure. A separate hourly timer alerts when that timestamp is stale; the monthly timer runs the isolated restore drill. Install the units from `deployment/systemd/`, copy `.env.operations.example` to a host-only `.env.operations`, and validate with `BACKUP_JOB_DRY_RUN=true` before enabling timers.
+The daily systemd timer invokes `run-backup-job.sh`, uploads the archive, manifest and signature with `rclone --immutable`, enforces local/offsite retention, records a success timestamp and alerts on failure. A separate hourly timer alerts when that timestamp is stale; the monthly timer runs the isolated restore drill. Install the units from `deployment/systemd/`, copy `.env.operations.example` to a host-only `.env.operations`, and validate with `BACKUP_JOB_DRY_RUN=true` before enabling timers.
 
 The age identity, Data Protection certificate/key ring and refund HMAC keys must be backed up through a separate secret-management channel. A database backup alone is insufficient to decrypt historical sessions or refund recipient data. The production offsite target, its object-lock/immutability policy, alert delivery and restore cadence remain release gates until exercised in the selected vendor account.
 
@@ -16,18 +16,19 @@ The age identity, Data Protection certificate/key ring and refund HMAC keys must
 
 Create a new age identity offline, retain the old identity in the recovery secret store for every retained backup encrypted to it, and change `BACKUP_AGE_RECIPIENT` plus `BACKUP_AGE_IDENTITY_FILE` together during a controlled release. Produce and restore-test a backup using the new recipient before retiring an old identity. Never overwrite an identity while backups that require it remain inside retention.
 
+Rotate the provenance signing key independently: generate a new private/public pair offline, retain every old public key for the corresponding retained manifests, deploy the new private key only to backup creation and the public key only to restore consumers, then produce and restore-test a signed backup. Never place the private signing key beside offsite backup consumers or in the repository.
+
 ## Isolated restore drill
 
 Never test a restore over the live database. Start the isolated restore database and select an encrypted filename under `BACKUP_DIRECTORY`:
 
 ```sh
-docker compose --env-file .env --profile ops up --detach --wait restore-postgres
-BACKUP_FILE=comic-management-YYYYMMDDTHHMMSSZ.dump.age \
-RESTORE_DESTRUCTIVE_CONFIRMATION=CONFIRM_ISOLATED_RESTORE_DROP \
-  docker compose --env-file .env --profile ops run --rm restore-drill
+DEPLOYMENT_ROOT="$PWD" DEPLOYMENT_ENVIRONMENT="$PWD/.env" \
+  RESTORE_BACKUP_FILE=comic-management-YYYYMMDDTHHMMSSZ.dump.age \
+  sh deployment/scripts/run-restore-drill-job.sh
 ```
 
-The restore command is fail-closed: the script accepts only host `restore-postgres`, database `comic_management_restore`, and the exact explicit confirmation token. `localhost`, the primary service/database and arbitrary targets remain forbidden even when the token is supplied. It prints only the sanitized allowlisted target.
+The job uses a separate Compose project and internal restore-only network. Only `restore-postgres` and `restore-drill` join it; primary PostgreSQL, API and web cannot resolve the restore hostname, and no restore port is published. A trap tears down containers, network and ephemeral volume after success, failure or interruption while preserving the original failure code. The restore command itself accepts only host `restore-postgres`, database `comic_management_restore`, and the exact explicit confirmation token.
 
 The drill authenticates/decrypts the age payload and verifies the archive before recreating only `comic_management_restore`. It then restores with ownership/ACL disabled and fails unless:
 
@@ -38,7 +39,7 @@ The drill authenticates/decrypts the age payload and verifies the archive before
 - the immutable RefundRequest/recipient snapshot links to the exact original PaidCoinLot;
 - active refund reservations, Wallet/lot counters, immutable ledger, audit and outbox evidence reconcile.
 
-Record the artifact identity, source commit/image tag, start/end time and verification output. The automated D01 fixture covers the high-risk financial graph, but a staging drill using retained production-like data and the configured offsite target remains mandatory evidence.
+Generic production verification reports checked row counts for provider/payment/webhook, refund/recipient, reservation, outbox and audit evidence and reconciles every Wallet against lots and immutable ledger. Separate fixture-specific CI assertions prove exact known IDs and amounts; they are not a substitute for the generic checks. Record artifact identity, signed manifest, source commit/digests, start/end time and verification output. A staging drill using retained production-like data and the configured offsite target remains mandatory evidence.
 
 ## Recovery and incident rules
 

@@ -40,10 +40,12 @@ BEGIN
         SELECT 1
         FROM infrastructure.outbox_messages
         WHERE id = 'd0100000-0000-4000-8000-000000000006'
-          AND event_type = 'TopUpFulfilled'
-          AND payload ->> 'orderId' = 'd0100000-0000-4000-8000-000000000002'
+          AND event_type = 'Billing.WalletTopUpCompleted.v1'
+          AND payload ->> 'paymentOrderId' = 'd0100000-0000-4000-8000-000000000002'
+          AND payload ->> 'providerTransactionId' = 'd0100000-0000-4000-8000-000000000007'
+          AND payload ->> 'userId' = 'd0100000-0000-4000-8000-000000000001'
           AND payload ->> 'amountVnd' = '10000'
-          AND payload ->> 'creditedPaidCoins' = '1000'
+          AND payload ->> 'paidCoins' = '1000'
     ) THEN
         RAISE EXCEPTION 'D01 restored outbox fixture does not match';
     END IF;
@@ -148,8 +150,10 @@ BEGIN
         FROM infrastructure.outbox_messages
         WHERE id = 'd0100000-0000-4000-8000-000000000010'
           AND event_type = 'Billing.RefundRecoveryReserved.v1'
-          AND payload ->> 'reservationId' = 'd0100000-0000-4000-8000-00000000000e'
-          AND payload ->> 'amountCoins' = '1000'
+          AND payload ->> 'refundRequestId' = 'd0100000-0000-4000-8000-000000000009'
+          AND payload ->> 'paidCoinLotId' = 'd0100000-0000-4000-8000-000000000004'
+          AND payload ->> 'walletOperationId' = 'd0100000-0000-4000-8000-00000000000b'
+          AND payload ->> 'reservedCoins' = '1000'
     ) THEN
         RAISE EXCEPTION 'D01 restored refund audit/outbox evidence does not match';
     END IF;

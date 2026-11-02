@@ -32,16 +32,29 @@ no claim that provider, legal/privacy or production OAuth gates are verified.
 3. Add API liveness and database/migration-aware readiness without automatic
    application startup migration.
 4. Add a non-secret environment template and fail-fast deployment validation.
-5. Add backup, checksum, isolated restore verification and rollback/runbook
-   documentation. Offsite storage remains operator-selected.
-6. Add automated tests for health behavior and deployment artifact invariants;
-   run solution, PostgreSQL, frontend, Compose, smoke and restore gates.
+5. Publish API, web, migrator and operations images through a protected release
+   workflow. Generate a release manifest containing immutable OCI digests,
+   Git SHA, migration identity and timestamp; deploy and roll back by digest.
+6. Produce age-encrypted backups with an independently signed provenance
+   manifest. Verify provenance before decryption or destructive SQL, restore on
+   a separate internal Compose project/network, and clean its containers,
+   network and volume on both success and failure.
+7. Strengthen generic recovery checks for provider/payment, Wallet/ledger/lots,
+   refunds/reservations, outbox and audit state, while retaining separate
+   fixture-specific assertions as deterministic CI evidence.
+8. Add automated tests for permission, provenance, isolation, two-distinct-image
+   rollback, health and deployment invariants; run solution, PostgreSQL,
+   frontend, Compose, smoke and restore gates.
 
 ## Migration and transaction impact
 
 No EF model/schema change is planned. The deploy migrator is a single controlled
 job and the API waits for its successful completion. Existing financial
 transaction, idempotency, ledger and outbox semantics remain unchanged.
+
+The only new persisted metadata is external deployment/backup metadata (release
+manifest and signed backup manifest); no application schema or migration is
+added.
 
 ## Verification blockers retained
 

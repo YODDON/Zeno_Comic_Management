@@ -9,10 +9,10 @@ The CI job `Deployment build, smoke and restore drill` performs the following ag
 3. builds the API, EF migration, React/Caddy and backup images;
 4. starts private PostgreSQL, executes the one-shot migration bundle, waits for API readiness and checks the same-origin web route, OpenAPI, liveness and readiness;
 5. seeds a deterministic financial fixture spanning fulfilled TopUp, provider transaction/webhook delivery, Wallet, exact PaidCoinLot, immutable ledger, outbox, RefundRequest/recipient, exact-lot CoinReservation and audit evidence;
-6. creates an authenticated age-encrypted PostgreSQL custom-format archive, proves valid decryption, and proves wrong-key/header/ciphertext tampering fails;
-7. proves unsafe restore targets and missing confirmation are rejected, then restores only into the allowlisted PostgreSQL volume and runs exact graph/reconciliation assertions;
+6. creates an authenticated age-encrypted archive plus signed provenance manifest; proves wrong age key, ciphertext tampering, manifest tampering, wrong provenance key and replacement-ciphertext/forged-checksum attacks fail;
+7. proves the restore project has a restore-only network that primary API/PostgreSQL cannot resolve, restores into its ephemeral volume, runs generic recovery verification plus separate exact fixture assertions, and proves cleanup after success and failure;
 8. proves backup scheduling/retention/offsite configuration in dry-run mode and verifies systemd unit syntax;
-9. retags all application images with a previous immutable tag, switches/health-checks the release, then switches back and verifies the running image names;
+9. pushes two genuinely different local-registry builds, asserts their OCI digests differ, deploys B, rolls back to A by digest, verifies labels/health and switches back to B;
 10. tears down all CI containers and volumes.
 
 The normal backend, PostgreSQL/Testcontainers, frontend and real-browser jobs remain independent required evidence. The deployment job does not replace those suites.
@@ -24,7 +24,7 @@ The normal backend, PostgreSQL/Testcontainers, frontend and real-browser jobs re
 - Secrets and generated recovery artifacts are ignored by Git. CI recovery artifacts have short retention and contain only CI fixture data.
 - Liveness does not query dependencies. Readiness tests cover healthy, unavailable and pending-migration states and expose only the aggregate status.
 - Authenticated backup decryption and archive verification occur before destructive SQL; a hard allowlist prevents restoring over primary/localhost/arbitrary targets.
-- Release compose requires immutable tags for API/web/migrator/ops and contains no production build path.
+- Release Compose accepts digest-pinned image references from a validated release manifest and contains no production build path. A separate protected GHCR workflow produces real publishable artifacts and an SBOM/provenance-enabled manifest artifact.
 
 ## Evidence that remains external
 

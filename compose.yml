@@ -10,7 +10,7 @@ x-application-connection: &application-connection
 
 services:
   postgres:
-    image: postgres:18.0-alpine3.22
+    image: postgres:18.0-alpine3.22@sha256:48c8ad3a7284b82be4482a52076d47d879fd6fb084a1cbfccbd551f9331b0e40
     environment: *database-environment
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
@@ -25,7 +25,7 @@ services:
     restart: unless-stopped
 
   migrate:
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/migrator:${IMAGE_TAG:?Set immutable IMAGE_TAG}
+    image: ${MIGRATOR_IMAGE_REFERENCE:-${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/migrator:${IMAGE_TAG:?Set immutable IMAGE_TAG}}
     environment: *application-connection
     depends_on:
       postgres:
@@ -35,19 +35,25 @@ services:
     restart: "no"
 
   data-protection-init:
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/api:${IMAGE_TAG:?Set immutable IMAGE_TAG}
+    image: ${API_IMAGE_REFERENCE:-${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/api:${IMAGE_TAG:?Set immutable IMAGE_TAG}}
     user: "0:0"
     entrypoint:
       - /bin/sh
       - -ec
-      - install -d -o "$${APP_UID:-1654}" -g "$${APP_UID:-1654}" -m 0700 /var/lib/comic-management/data-protection
+      - |
+        install -d -o "$${APP_UID:-1654}" -g "$${APP_UID:-1654}" -m 0700 /var/lib/comic-management/data-protection
+        install -d -o "$${APP_UID:-1654}" -g "$${APP_UID:-1654}" -m 0700 /var/lib/comic-management/certificate
+        install -o "$${APP_UID:-1654}" -g "$${APP_UID:-1654}" -m 0400 /run/secrets/data_protection_certificate /var/lib/comic-management/certificate/data-protection.pfx
+    secrets:
+      - data_protection_certificate
     volumes:
       - data_protection_keys:/var/lib/comic-management/data-protection
+      - data_protection_certificate:/var/lib/comic-management/certificate
     network_mode: none
     restart: "no"
 
   api:
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/api:${IMAGE_TAG:?Set immutable IMAGE_TAG}
+    image: ${API_IMAGE_REFERENCE:-${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/api:${IMAGE_TAG:?Set immutable IMAGE_TAG}}
     environment:
       <<: *application-connection
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
@@ -55,7 +61,7 @@ services:
       Authentication__Google__ClientSecret: ${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET}
       Authentication__SessionLifetime: ${AUTH_SESSION_LIFETIME:-08:00:00}
       Authentication__DataProtectionKeysPath: /var/lib/comic-management/data-protection
-      Authentication__DataProtectionCertificatePath: /run/secrets/data_protection_certificate
+      Authentication__DataProtectionCertificatePath: /var/lib/comic-management/certificate/data-protection.pfx
       Authentication__DataProtectionCertificatePassword: ${DATA_PROTECTION_CERTIFICATE_PASSWORD:?Set DATA_PROTECTION_CERTIFICATE_PASSWORD}
       Authentication__LoginRateLimit__PermitLimit: ${LOGIN_RATE_LIMIT_PERMIT_LIMIT:-10}
       Authentication__LoginRateLimit__Window: ${LOGIN_RATE_LIMIT_WINDOW:-00:01:00}
@@ -77,10 +83,9 @@ services:
       Billing__SePayWebhook__MaximumBodyBytes: ${SEPAY_MAXIMUM_BODY_BYTES:-65536}
       Billing__SePayWebhook__PermitLimitPerMinute: ${SEPAY_PERMIT_LIMIT_PER_MINUTE:-120}
       ReverseProxy__KnownNetworks__0: ${COMPOSE_SUBNET:-172.30.0.0/24}
-    secrets:
-      - data_protection_certificate
     volumes:
       - data_protection_keys:/var/lib/comic-management/data-protection
+      - data_protection_certificate:/var/lib/comic-management/certificate:ro
     tmpfs:
       - /tmp:size=64m,mode=1777
     depends_on:
@@ -103,7 +108,7 @@ services:
       - no-new-privileges:true
 
   web:
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/web:${IMAGE_TAG:?Set immutable IMAGE_TAG}
+    image: ${WEB_IMAGE_REFERENCE:-${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/web:${IMAGE_TAG:?Set immutable IMAGE_TAG}}
     environment:
       APP_ADDRESS: ${APP_ADDRESS:-http://localhost}
     ports:
@@ -127,13 +132,21 @@ services:
 
   backup:
     profiles: ["ops"]
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/ops:${IMAGE_TAG:?Set immutable IMAGE_TAG}
+    image: ${OPS_IMAGE_REFERENCE:-${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/ops:${IMAGE_TAG:?Set immutable IMAGE_TAG}}
     environment:
       DATABASE_HOST: postgres
       DATABASE_NAME: ${POSTGRES_DB:-comic_management}
       DATABASE_USER: ${POSTGRES_USER:-comic_management}
       PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?Set BACKUP_AGE_RECIPIENT}
+      BACKUP_SOURCE_ENVIRONMENT: ${DEPLOYMENT_ENVIRONMENT_ID:?Set DEPLOYMENT_ENVIRONMENT_ID}
+      BACKUP_GIT_SHA: ${RELEASE_GIT_SHA:?Set RELEASE_GIT_SHA}
+      BACKUP_API_IMAGE_DIGEST: ${API_IMAGE_DIGEST:?Set API_IMAGE_DIGEST}
+      BACKUP_WEB_IMAGE_DIGEST: ${WEB_IMAGE_DIGEST:?Set WEB_IMAGE_DIGEST}
+      BACKUP_MIGRATOR_IMAGE_DIGEST: ${MIGRATOR_IMAGE_DIGEST:?Set MIGRATOR_IMAGE_DIGEST}
+      BACKUP_MIGRATION_ID: ${CURRENT_MIGRATION_ID:?Set CURRENT_MIGRATION_ID}
+    secrets:
+      - backup_provenance_private_key
     volumes:
       - ${BACKUP_DIRECTORY:-./backups}:/backups
     depends_on:
@@ -146,7 +159,7 @@ services:
 
   restore-postgres:
     profiles: ["ops"]
-    image: postgres:18.0-alpine3.22
+    image: postgres:18.0-alpine3.22@sha256:48c8ad3a7284b82be4482a52076d47d879fd6fb084a1cbfccbd551f9331b0e40
     environment:
       POSTGRES_DB: comic_management_restore
       POSTGRES_USER: ${POSTGRES_USER:-comic_management}
@@ -159,12 +172,12 @@ services:
     volumes:
       - restore_postgres_data:/var/lib/postgresql
     networks:
-      - backend
+      - restore
     restart: "no"
 
   restore-drill:
     profiles: ["ops"]
-    image: ${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/ops:${IMAGE_TAG:?Set immutable IMAGE_TAG}
+    image: ${OPS_IMAGE_REFERENCE:-${IMAGE_REGISTRY:?Set IMAGE_REGISTRY}/ops:${IMAGE_TAG:?Set immutable IMAGE_TAG}}
     environment:
       TARGET_DATABASE_HOST: restore-postgres
       TARGET_DATABASE_NAME: comic_management_restore
@@ -174,13 +187,14 @@ services:
       RESTORE_DESTRUCTIVE_CONFIRMATION: ${RESTORE_DESTRUCTIVE_CONFIRMATION:-}
     secrets:
       - backup_age_identity
+      - backup_provenance_public_key
     volumes:
       - ${BACKUP_DIRECTORY:-./backups}:/backups:ro
     depends_on:
       restore-postgres:
         condition: service_healthy
     networks:
-      - backend
+      - restore
     entrypoint: ["/opt/comic-management/restore-drill.sh"]
     restart: "no"
 
@@ -189,11 +203,16 @@ secrets:
     file: ${DATA_PROTECTION_CERTIFICATE_FILE:?Set DATA_PROTECTION_CERTIFICATE_FILE}
   backup_age_identity:
     file: ${BACKUP_AGE_IDENTITY_FILE:?Set BACKUP_AGE_IDENTITY_FILE}
+  backup_provenance_private_key:
+    file: ${BACKUP_PROVENANCE_PRIVATE_KEY_FILE:?Set BACKUP_PROVENANCE_PRIVATE_KEY_FILE}
+  backup_provenance_public_key:
+    file: ${BACKUP_PROVENANCE_PUBLIC_KEY_FILE:?Set BACKUP_PROVENANCE_PUBLIC_KEY_FILE}
 
 volumes:
   postgres_data:
   restore_postgres_data:
   data_protection_keys:
+  data_protection_certificate:
   caddy_data:
   caddy_config:
 
@@ -204,3 +223,5 @@ networks:
     ipam:
       config:
         - subnet: ${COMPOSE_SUBNET:-172.30.0.0/24}
+  restore:
+    internal: true

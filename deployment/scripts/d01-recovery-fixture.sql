@@ -104,8 +104,8 @@ INSERT INTO infrastructure.outbox_messages (
     status, attempt_count, locked_until, last_error_redacted)
 VALUES (
     'd0100000-0000-4000-8000-000000000006',
-    'TopUpFulfilled',
-    '{"orderId":"d0100000-0000-4000-8000-000000000002","amountVnd":10000,"creditedPaidCoins":1000}'::jsonb,
+    'Billing.WalletTopUpCompleted.v1',
+    '{"paymentOrderId":"d0100000-0000-4000-8000-000000000002","providerTransactionId":"d0100000-0000-4000-8000-000000000007","userId":"d0100000-0000-4000-8000-000000000001","amountVnd":10000,"paidCoins":1000,"fulfilledAt":"2026-01-01T00:01:00+00:00"}'::jsonb,
     '2026-01-01T00:01:00Z',
     '2026-01-01T00:01:00Z',
     'Completed',
@@ -277,7 +277,7 @@ INSERT INTO infrastructure.outbox_messages (
 VALUES (
     'd0100000-0000-4000-8000-000000000010',
     'Billing.RefundRecoveryReserved.v1',
-    '{"refundId":"d0100000-0000-4000-8000-000000000009","reservationId":"d0100000-0000-4000-8000-00000000000e","paidCoinLotId":"d0100000-0000-4000-8000-000000000004","walletOperationId":"d0100000-0000-4000-8000-00000000000b","amountCoins":1000}'::jsonb,
+    '{"refundRequestId":"d0100000-0000-4000-8000-000000000009","userId":"d0100000-0000-4000-8000-000000000001","paymentOrderId":"d0100000-0000-4000-8000-000000000002","paidCoinLotId":"d0100000-0000-4000-8000-000000000004","walletOperationId":"d0100000-0000-4000-8000-00000000000b","reservedCoins":1000,"reservedAt":"2026-01-02T00:02:00+00:00"}'::jsonb,
     '2026-01-02T00:02:00Z',
     '2026-01-02T00:02:00Z',
     'Pending',

@@ -40,7 +40,10 @@ for required_key in \
   CLOUDINARY_CLOUD_NAME CLOUDINARY_API_KEY CLOUDINARY_API_SECRET \
   REFUND_FINGERPRINT_VERSION REFUND_FINGERPRINT_KEY_V1 \
   REFUND_PROTECTION_VERSION IMAGE_REGISTRY IMAGE_TAG \
-  BACKUP_AGE_RECIPIENT BACKUP_AGE_IDENTITY_FILE
+  BACKUP_AGE_RECIPIENT BACKUP_AGE_IDENTITY_FILE \
+  DEPLOYMENT_ENVIRONMENT_ID RELEASE_GIT_SHA API_IMAGE_DIGEST \
+  WEB_IMAGE_DIGEST MIGRATOR_IMAGE_DIGEST CURRENT_MIGRATION_ID \
+  BACKUP_PROVENANCE_PRIVATE_KEY_FILE BACKUP_PROVENANCE_PUBLIC_KEY_FILE
 do
   require_environment_value "$required_key"
 done
@@ -78,8 +81,46 @@ if [ -z "$certificate_file" ] || [ ! -f "$certificate_file" ]; then
   echo "DATA_PROTECTION_CERTIFICATE_FILE must identify an existing PKCS#12 file." >&2
   exit 66
 fi
-if [ -w "$certificate_file" ]; then
-  chmod 0644 "$certificate_file" 2>/dev/null || true
+certificate_mode="$(stat -c '%a' "$certificate_file" 2>/dev/null || true)"
+platform="$(uname -s 2>/dev/null || true)"
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  platform=WSL
+fi
+case "$platform" in
+  MINGW*|MSYS*|CYGWIN*|WSL)
+    echo "WARNING: Windows cannot provide the Linux owner-only PKCS#12 permission gate; CI/VPS must prove mode 0400/0600." >&2
+    ;;
+  *)
+    case "$certificate_mode" in
+      400|600) ;;
+      *)
+        echo "DATA_PROTECTION_CERTIFICATE_FILE must be owner-only (0400 or 0600); actual mode is ${certificate_mode:-unknown}." >&2
+        exit 64
+        ;;
+    esac
+    ;;
+esac
+
+for provenance_key_name in BACKUP_PROVENANCE_PRIVATE_KEY_FILE BACKUP_PROVENANCE_PUBLIC_KEY_FILE; do
+  provenance_key_file="$(read_value "$provenance_key_name")"
+  if [ ! -f "$provenance_key_file" ]; then
+    echo "$provenance_key_name must identify an existing key file." >&2
+    exit 66
+  fi
+done
+
+for digest_key in API_IMAGE_DIGEST WEB_IMAGE_DIGEST MIGRATOR_IMAGE_DIGEST; do
+  digest_value="$(read_value "$digest_key")"
+  if ! printf '%s' "$digest_value" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+    echo "$digest_key must be a sha256 OCI digest." >&2
+    exit 64
+  fi
+done
+
+release_git_sha="$(read_value RELEASE_GIT_SHA)"
+if ! printf '%s' "$release_git_sha" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
+  echo "RELEASE_GIT_SHA must be a full lowercase Git object ID." >&2
+  exit 64
 fi
 
 age_identity_file="$(read_value BACKUP_AGE_IDENTITY_FILE)"
