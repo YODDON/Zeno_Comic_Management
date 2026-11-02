@@ -415,6 +415,7 @@ jobs:
           test -z "$(docker network ls -q --filter "label=com.docker.compose.project=$restore_project")"
 
           DEPLOYMENT_ROOT="$PWD" DEPLOYMENT_ENVIRONMENT="$PWD/.env.ci" \
+            DEPLOYMENT_RELEASE_MANIFEST="$PWD/release/release-b.env" \
             RESTORE_COMPOSE_PROJECT=d01-restore-success \
             sh deployment/scripts/run-restore-drill-job.sh
           test -z "$(docker ps -aq --filter 'label=com.docker.compose.project=d01-restore-success')"
@@ -426,6 +427,7 @@ jobs:
           cp "$manifest" "backups/$failure_file.manifest"
           cp "$signature" "backups/$failure_file.manifest.sig"
           if DEPLOYMENT_ROOT="$PWD" DEPLOYMENT_ENVIRONMENT="$PWD/.env.ci" \
+              DEPLOYMENT_RELEASE_MANIFEST="$PWD/release/release-b.env" \
               RESTORE_COMPOSE_PROJECT=d01-restore-failure RESTORE_BACKUP_FILE="$failure_file" \
               sh deployment/scripts/run-restore-drill-job.sh; then
             echo 'Restore job unexpectedly accepted mismatched signed artifact identity.' >&2

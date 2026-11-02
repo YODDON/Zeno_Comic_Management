@@ -3,12 +3,25 @@ set -eu
 
 deployment_root="${DEPLOYMENT_ROOT:-/opt/zeno-comic-management}"
 deployment_environment="${DEPLOYMENT_ENVIRONMENT:-$deployment_root/.env}"
+deployment_release_manifest="${DEPLOYMENT_RELEASE_MANIFEST:-$deployment_root/deployment-state/current-release.env}"
 restore_project="${RESTORE_COMPOSE_PROJECT:-zeno-comic-management-restore-drill}"
 cd "$deployment_root"
 
+if [ -n "${DEPLOYMENT_RELEASE_MANIFEST:-}" ] && [ ! -f "$deployment_release_manifest" ]; then
+  echo "Deployment release manifest not found: $deployment_release_manifest" >&2
+  exit 66
+fi
+
 restore_compose() {
-  docker compose -p "$restore_project" \
-    --env-file "$deployment_environment" --profile ops "$@"
+  if [ -f "$deployment_release_manifest" ]; then
+    docker compose -p "$restore_project" \
+      --env-file "$deployment_environment" \
+      --env-file "$deployment_release_manifest" \
+      --profile ops "$@"
+  else
+    docker compose -p "$restore_project" \
+      --env-file "$deployment_environment" --profile ops "$@"
+  fi
 }
 
 cleanup() {

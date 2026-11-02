@@ -41,7 +41,7 @@ actual_migration="$(compose exec -T postgres psql \
   --username "$(sed -n 's/^POSTGRES_USER=//p' "$environment_file" | tail -n 1 | tr -d '\r')" \
   --dbname "$(sed -n 's/^POSTGRES_DB=//p' "$environment_file" | tail -n 1 | tr -d '\r')" \
   --tuples-only --no-align \
-  --command 'SELECT migration_id FROM infrastructure.__ef_migrations_history ORDER BY migration_id DESC LIMIT 1;' \
+  --command 'SELECT "MigrationId" FROM infrastructure.__ef_migrations_history ORDER BY "MigrationId" DESC LIMIT 1;' \
   | tr -d '\r')"
 if [ "$actual_migration" != "$expected_migration" ]; then
   echo "Database migration $actual_migration does not match release manifest migration $expected_migration." >&2

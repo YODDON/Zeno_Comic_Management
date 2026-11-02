@@ -28,7 +28,7 @@ DEPLOYMENT_ROOT="$PWD" DEPLOYMENT_ENVIRONMENT="$PWD/.env" \
   sh deployment/scripts/run-restore-drill-job.sh
 ```
 
-The job uses a separate Compose project and internal restore-only network. Only `restore-postgres` and `restore-drill` join it; primary PostgreSQL, API and web cannot resolve the restore hostname, and no restore port is published. A trap tears down containers, network and ephemeral volume after success, failure or interruption while preserving the original failure code. The restore command itself accepts only host `restore-postgres`, database `comic_management_restore`, and the exact explicit confirmation token.
+The job uses a separate Compose project and internal restore-only network. Only `restore-postgres` and `restore-drill` join it; primary PostgreSQL, API and web cannot resolve the restore hostname, and no restore port is published. It reuses the digest-pinned operations image from `deployment-state/current-release.env`; an explicit `DEPLOYMENT_RELEASE_MANIFEST` may be supplied for pre-release verification. A trap tears down containers, network and ephemeral volume after success, failure or interruption while preserving the original failure code. The restore command itself accepts only host `restore-postgres`, database `comic_management_restore`, and the exact explicit confirmation token.
 
 The drill authenticates/decrypts the age payload and verifies the archive before recreating only `comic_management_restore`. It then restores with ownership/ACL disabled and fails unless:
 
