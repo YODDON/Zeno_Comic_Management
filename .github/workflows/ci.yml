@@ -582,9 +582,18 @@ jobs:
           sed -i "s/^COMPATIBLE_SCHEMA_IDS=.*/COMPATIBLE_SCHEMA_IDS=$previous_schema,$current_schema/" \
             release/release-a-compatible.env
           sh deployment/scripts/validate-release-manifest.sh release/release-a-compatible.env
+          migrate_before_compatible="$(docker compose --env-file .env.ci --env-file release/release-b.env ps -aq migrate)"
           SMOKE_BASE_URL=http://localhost:18080 \
             sh deployment/scripts/switch-release.sh .env.ci release/release-a-compatible.env
+          migrate_after_compatible="$(docker compose --env-file .env.ci --env-file release/release-a-compatible.env ps -aq migrate)"
+          test "$migrate_after_compatible" = "$migrate_before_compatible"
           grep -Fx "ACTIVE_SCHEMA_ID=$current_schema" deployment-state/current-release.env
+          actual_schema_after_rollback="$(docker compose --env-file .env.ci --env-file release/release-a-compatible.env \
+            exec -T postgres psql --username comic_management --dbname comic_management \
+            --tuples-only --no-align --command \
+            'SELECT "MigrationId" FROM infrastructure.__ef_migrations_history ORDER BY "MigrationId" DESC LIMIT 1;' \
+            | tr -d '\r')"
+          test "$actual_schema_after_rollback" = "$current_schema"
           api_container="$(docker compose --env-file .env.ci --env-file release/release-a-compatible.env ps -q api)"
           test "$(docker inspect --format '{{.Config.Image}}' "$api_container")" = \
             "$(sed -n 's/^API_IMAGE_REFERENCE=//p' release/release-a-compatible.env)"

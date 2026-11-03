@@ -54,7 +54,7 @@ docker compose --env-file .env up --detach --wait
 BASE_URL=http://localhost sh deployment/scripts/smoke.sh
 ```
 
-`migrate` is a one-shot EF migration bundle pinned to `CURRENT_MIGRATION_ID` from the validated release manifest. The API cannot start until PostgreSQL is healthy and that exact target succeeds. A compatible application rollback runs the bundle as a no-op at the already-active schema and never invokes an EF `Down` migration. Do not run migrations independently from two application instances. `data-protection-init` only establishes ownership on the persistent key-ring volume.
+`migrate` is a one-shot EF migration bundle pinned to `CURRENT_MIGRATION_ID` from the validated release manifest. The API cannot start until PostgreSQL is healthy and that exact target succeeds. A compatible application rollback never starts the older migration bundle: it retains the already-active forward schema and switches only API/web after compatibility preflight. It never invokes an EF `Down` migration. Do not run migrations independently from two application instances. `data-protection-init` only establishes ownership on the persistent key-ring volume.
 
 Health endpoints are anonymous but return no application data:
 

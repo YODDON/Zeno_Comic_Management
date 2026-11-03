@@ -44,6 +44,7 @@ target_compatibility="$(manifest_value COMPATIBLE_SCHEMA_IDS "$release_manifest"
 active_release="$state_directory/current-release.env"
 preflight_schema=''
 migration_execution_target="$target_migration"
+is_application_rollback=false
 
 if [ -f "$active_release" ]; then
   sh deployment/scripts/validate-release-manifest.sh "$active_release"
@@ -81,9 +82,11 @@ if [ -f "$active_release" ]; then
     exit 1
   fi
   if [ "$target_sequence" -lt "$current_sequence" ]; then
-    # A compatible application rollback is forward-schema-only. Run the
-    # bundle as a no-op against the already active schema; never invoke Down.
-    migration_execution_target="$preflight_schema"
+    # A compatible application rollback is forward-schema-only. The older
+    # release bundle cannot know a future migration ID, so never start it.
+    # Keep the already-running database/schema and switch only application
+    # workloads after the compatibility declaration has passed.
+    is_application_rollback=true
   fi
 else
   if docker volume inspect zeno-comic-management_postgres_data >/dev/null 2>&1 || \
@@ -102,10 +105,14 @@ for manifest_key in API_IMAGE_REFERENCE WEB_IMAGE_REFERENCE MIGRATOR_IMAGE_REFER
   docker image inspect "$reference" >/dev/null
 done
 
-export MIGRATION_TARGET="$migration_execution_target"
-compose up --detach --wait --no-build \
-  postgres migrate data-protection-init api web
-unset MIGRATION_TARGET
+if [ "$is_application_rollback" = "true" ]; then
+  compose up --detach --wait --no-build --no-deps api web
+else
+  export MIGRATION_TARGET="$migration_execution_target"
+  compose up --detach --wait --no-build \
+    postgres migrate data-protection-init api web
+  unset MIGRATION_TARGET
+fi
 
 actual_migration="$(compose exec -T postgres psql \
   --username "$(sed -n 's/^POSTGRES_USER=//p' "$environment_file" | tail -n 1 | tr -d '\r')" \

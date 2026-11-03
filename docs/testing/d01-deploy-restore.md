@@ -12,7 +12,7 @@ The CI job `Deployment build, smoke and restore drill` performs the following ag
 6. creates an authenticated age-encrypted archive plus signed provenance manifest; proves wrong age key, ciphertext tampering, manifest tampering, wrong provenance key and replacement-ciphertext/forged-checksum attacks fail;
 7. proves the restore project has a restore-only network that primary API/PostgreSQL cannot resolve, restores into its ephemeral volume, runs generic recovery verification plus separate exact fixture assertions, and proves cleanup after success and failure;
 8. proves strict non-executable operations configuration, backup scheduling/retention/offsite configuration in dry-run mode and verifies systemd unit syntax;
-9. pushes two genuinely different local-registry builds, asserts their OCI digests differ, proves an older incompatible schema rollback is rejected before image pull/workload switch with active state unchanged, then proves an explicitly compatible digest rollback keeps the B schema (no EF down migration) and switches back to B;
+9. pushes two genuinely different local-registry builds, asserts their OCI digests differ, proves an older incompatible schema rollback is rejected before image pull/workload switch with active state unchanged, then proves an explicitly compatible digest rollback skips A's migrator, keeps the B schema (no EF down migration) and switches back to B;
 10. tears down all CI containers and volumes.
 
 The normal backend, PostgreSQL/Testcontainers, frontend and real-browser jobs remain independent required evidence. The deployment job does not replace those suites.
