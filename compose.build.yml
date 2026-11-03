@@ -1,0 +1,39 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: migrator
+      args:
+        RELEASE_REVISION: ${RELEASE_REVISION:-development}
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      target: api
+      args:
+        RELEASE_REVISION: ${RELEASE_REVISION:-development}
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      target: web
+      args:
+        VITE_API_BASE_URL: ""
+        RELEASE_REVISION: ${RELEASE_REVISION:-development}
+
+  backup:
+    build:
+      context: .
+      dockerfile: deployment/ops/Dockerfile
+      args:
+        RELEASE_REVISION: ${RELEASE_REVISION:-development}
+
+  restore-drill:
+    build:
+      context: .
+      dockerfile: deployment/ops/Dockerfile
+      args:
+        RELEASE_REVISION: ${RELEASE_REVISION:-development}

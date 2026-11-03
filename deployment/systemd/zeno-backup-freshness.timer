@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic Comic Management backup freshness alert
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+Unit=zeno-backup-freshness.service
+
+[Install]
+WantedBy=timers.target

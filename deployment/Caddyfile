@@ -1,0 +1,31 @@
+{$APP_ADDRESS:http://localhost} {
+	encode zstd gzip
+
+	@backend path /api/* /openapi/* /health/*
+	route {
+		handle @backend {
+			reverse_proxy api:8080
+		}
+
+		handle {
+			@assets path /assets/*
+			header @assets Cache-Control "public, max-age=31536000, immutable"
+			root * /srv
+			try_files {path} /index.html
+			file_server
+		}
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self'; form-action 'self' https://accounts.google.com"
+	}
+
+	@secure protocol https
+	header @secure Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+}

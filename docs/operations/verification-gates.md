@@ -8,7 +8,7 @@
 | Cloudinary protected media | HARNESS READY / VERIFICATION REQUIRED | Project-account unsigned/guessed/tampered denial plus authorized same-origin browser/API drill |
 | Cloudinary token/URL expiry | DESIGN NOT SELECTED / VERIFICATION REQUIRED | The candidate server proxy exposes no provider URL; record tier/cache/revocation behavior before accepting it |
 | OAuth production redirects | NOT TESTED | HTTPS auth, cookie and CSRF E2E |
-| PostgreSQL migrations/recovery | NOT TESTED | Fresh & upgraded DB plus backup restore |
+| PostgreSQL migrations/recovery | LOCAL COMPOSE VERIFIED / STAGING DRILL REQUIRED | D01 fresh migration, encrypted backup and isolated restore pass locally; repeat with production-like financial fixtures and retained offsite artifact in staging |
 | VPS capacity and metrics | NOT TESTED | Load/perf tests and alarms |
 | Refund 5%/7d legal/privacy | REVIEW REQUIRED | Appropriate legal/compliance check |
 | Manual payout evidence | PROCESS VALIDATION REQUIRED | Transfer approval/reconciliation runbook |
