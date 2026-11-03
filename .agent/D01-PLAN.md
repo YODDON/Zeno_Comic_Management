@@ -32,9 +32,11 @@ no claim that provider, legal/privacy or production OAuth gates are verified.
 3. Add API liveness and database/migration-aware readiness without automatic
    application startup migration.
 4. Add a non-secret environment template and fail-fast deployment validation.
-5. Publish API, web, migrator and operations images through a protected release
-   workflow. Generate a release manifest containing immutable OCI digests,
-   Git SHA, migration identity and timestamp; deploy and roll back by digest.
+5. Publish API, web, migrator and operations images through the
+   `production-release` Environment after its repository protections are
+   verified. Generate and attest a release manifest containing immutable OCI
+   digests, Git SHA, migration identity/compatibility and timestamp; deploy and
+   roll back by digest.
 6. Produce age-encrypted backups with an independently signed provenance
    manifest. Verify provenance before decryption or destructive SQL, restore on
    a separate internal Compose project/network, and clean its containers,
@@ -42,9 +44,10 @@ no claim that provider, legal/privacy or production OAuth gates are verified.
 7. Strengthen generic recovery checks for provider/payment, Wallet/ledger/lots,
    refunds/reservations, outbox and audit state, while retaining separate
    fixture-specific assertions as deterministic CI evidence.
-8. Add automated tests for permission, provenance, isolation, two-distinct-image
-   rollback, health and deployment invariants; run solution, PostgreSQL,
-   frontend, Compose, smoke and restore gates.
+8. Add automated tests for permission, provenance, isolation, real M1-to-M2
+   deployment with two distinct image sets, pre-switch rollback rejection,
+   forward-schema-compatible rollback, health and deployment invariants; run
+   solution, PostgreSQL, frontend, Compose, smoke and restore gates.
 
 ## Migration and transaction impact
 

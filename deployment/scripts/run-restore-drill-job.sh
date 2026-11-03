@@ -7,21 +7,17 @@ deployment_release_manifest="${DEPLOYMENT_RELEASE_MANIFEST:-$deployment_root/dep
 restore_project="${RESTORE_COMPOSE_PROJECT:-zeno-comic-management-restore-drill}"
 cd "$deployment_root"
 
-if [ -n "${DEPLOYMENT_RELEASE_MANIFEST:-}" ] && [ ! -f "$deployment_release_manifest" ]; then
+if [ ! -f "$deployment_release_manifest" ]; then
   echo "Deployment release manifest not found: $deployment_release_manifest" >&2
   exit 66
 fi
+sh deployment/scripts/validate-release-manifest.sh "$deployment_release_manifest"
 
 restore_compose() {
-  if [ -f "$deployment_release_manifest" ]; then
-    docker compose -p "$restore_project" \
-      --env-file "$deployment_environment" \
-      --env-file "$deployment_release_manifest" \
-      --profile ops "$@"
-  else
-    docker compose -p "$restore_project" \
-      --env-file "$deployment_environment" --profile ops "$@"
-  fi
+  docker compose -p "$restore_project" \
+    --env-file "$deployment_environment" \
+    --env-file "$deployment_release_manifest" \
+    --profile ops "$@"
 }
 
 cleanup() {

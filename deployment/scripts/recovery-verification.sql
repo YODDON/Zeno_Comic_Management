@@ -7,6 +7,7 @@ DECLARE
     webhook_count bigint;
     refund_count bigint;
     reservation_count bigint;
+    transfer_count bigint;
     outbox_count bigint;
     audit_count bigint;
 BEGIN
@@ -32,12 +33,20 @@ BEGIN
                 AND payment.amount_vnd = provider.amount_vnd
                 AND payment.order_status = 'Succeeded'
                 AND payment.fulfillment_status = 'Fulfilled'))
-    ) OR EXISTS (
+    ) THEN
+        RAISE EXCEPTION 'Restored fulfilled provider transaction does not reconcile with its payment order';
+    END IF;
+
+    IF EXISTS (
         SELECT provider, provider_transaction_id
         FROM billing.provider_transactions
         GROUP BY provider, provider_transaction_id
         HAVING count(*) <> 1
-    ) OR EXISTS (
+     ) THEN
+        RAISE EXCEPTION 'Restored provider transaction identity is not unique';
+    END IF;
+
+    IF EXISTS (
         SELECT 1
         FROM billing.payment_orders payment
         WHERE payment.fulfillment_status = 'Fulfilled'
@@ -46,7 +55,11 @@ BEGIN
               FROM billing.provider_transactions provider
               WHERE provider.matched_order_id = payment.id
                 AND provider.processing_status = 'Fulfilled')
-    ) OR EXISTS (
+     ) THEN
+        RAISE EXCEPTION 'Restored fulfilled payment order lacks matching fulfilled provider evidence';
+    END IF;
+
+    IF EXISTS (
         SELECT 1
         FROM billing.webhook_deliveries delivery
         WHERE NOT delivery.auth_verified
@@ -140,45 +153,130 @@ BEGIN
     IF EXISTS (
         SELECT 1
         FROM wallet.coin_reservations reservation
-        WHERE reservation.status = 'Reserved'
-          AND NOT EXISTS (
-              SELECT 1
-              FROM billing.refund_requests refund
-              JOIN wallet.paid_coin_lots lot
-                ON lot.id = reservation.paid_coin_lot_id
-               AND lot.user_id = reservation.user_id
-               AND lot.topup_order_id = refund.payment_order_id
-              JOIN wallet.wallet_operations operation
-                ON operation.id = reservation.wallet_operation_id
-               AND operation.user_id = reservation.user_id
-               AND operation.operation_type = 'RefundReserve'
-               AND operation.source_type = 'RefundRequest'
-               AND operation.source_id = refund.id
-              WHERE refund.id = reservation.refund_request_id
-                AND refund.user_id = reservation.user_id
-                AND refund.status IN (
-                    'RecoveryReserved',
-                    'TransferPending',
-                    'NeedsReconciliation',
-                    'TransferConfirmedFailed')
-                AND refund.required_recovery_coins = reservation.amount_coins
-                AND lot.granted_coins = reservation.amount_coins
-                AND lot.reserved_coins >= reservation.amount_coins
-                AND (SELECT count(*)
-                     FROM wallet.wallet_entries entry
-                     WHERE entry.operation_id = operation.id
-                       AND entry.user_id = reservation.user_id) = 2
-                AND (SELECT coalesce(sum(entry.delta_coins), 0)
-                     FROM wallet.wallet_entries entry
-                     WHERE entry.operation_id = operation.id
-                       AND entry.coin_type = 'Paid'
-                       AND entry.bucket = 'Available') = -reservation.amount_coins
-                AND (SELECT coalesce(sum(entry.delta_coins), 0)
-                     FROM wallet.wallet_entries entry
-                     WHERE entry.operation_id = operation.id
-                       AND entry.coin_type = 'Paid'
-                       AND entry.bucket = 'Reserved') = reservation.amount_coins))
-       OR EXISTS (
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM billing.refund_requests refund
+            JOIN billing.refund_recipients recipient
+              ON recipient.refund_request_id = refund.id
+            JOIN wallet.paid_coin_lots lot
+              ON lot.id = reservation.paid_coin_lot_id
+             AND lot.user_id = reservation.user_id
+             AND lot.topup_order_id = refund.payment_order_id
+            JOIN wallet.wallet_operations reserve_operation
+              ON reserve_operation.id = reservation.wallet_operation_id
+             AND reserve_operation.user_id = reservation.user_id
+             AND reserve_operation.operation_type = 'RefundReserve'
+             AND reserve_operation.source_type = 'RefundRequest'
+             AND reserve_operation.source_id = refund.id
+            WHERE refund.id = reservation.refund_request_id
+              AND refund.user_id = reservation.user_id
+              AND refund.required_recovery_coins = reservation.amount_coins
+              AND lot.granted_coins = reservation.amount_coins
+              AND (SELECT count(*) FROM wallet.wallet_entries entry
+                   WHERE entry.operation_id = reserve_operation.id
+                     AND entry.user_id = reservation.user_id) = 2
+              AND (SELECT coalesce(sum(entry.delta_coins), 0)
+                   FROM wallet.wallet_entries entry
+                   WHERE entry.operation_id = reserve_operation.id
+                     AND entry.coin_type = 'Paid' AND entry.bucket = 'Available') = -reservation.amount_coins
+              AND (SELECT coalesce(sum(entry.delta_coins), 0)
+                   FROM wallet.wallet_entries entry
+                   WHERE entry.operation_id = reserve_operation.id
+                      AND entry.coin_type = 'Paid' AND entry.bucket = 'Reserved') = reservation.amount_coins)
+    ) THEN
+        RAISE EXCEPTION 'Restored RF03 reservation does not link to the refund, recipient, exact lot and reserve ledger';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM wallet.coin_reservations reservation
+        JOIN billing.refund_requests refund ON refund.id = reservation.refund_request_id
+        WHERE (reservation.status = 'Reserved' AND (
+                   refund.status NOT IN ('RecoveryReserved','TransferPending','NeedsReconciliation','TransferConfirmedFailed')
+                   OR reservation.resolved_at IS NOT NULL))
+           OR (reservation.status = 'Consumed' AND (
+                   refund.status <> 'Completed' OR reservation.resolved_at IS NULL
+                   OR NOT EXISTS (
+                       SELECT 1
+                       FROM billing.refund_transfer_records transfer
+                       JOIN wallet.wallet_operations operation
+                         ON operation.id = transfer.resolution_operation_id
+                        AND operation.user_id = reservation.user_id
+                        AND operation.operation_type = 'RefundComplete'
+                        AND operation.source_type = 'RefundRequest'
+                        AND operation.source_id = refund.id
+                       WHERE transfer.refund_request_id = refund.id
+                         AND transfer.user_id = refund.user_id
+                         AND transfer.status = 'VerifiedSucceeded'
+                         AND (SELECT count(*) FROM wallet.wallet_entries entry
+                              WHERE entry.operation_id = operation.id) = 1
+                         AND (SELECT coalesce(sum(entry.delta_coins), 0)
+                              FROM wallet.wallet_entries entry
+                              WHERE entry.operation_id = operation.id
+                                AND entry.coin_type = 'Paid' AND entry.bucket = 'Reserved') = -reservation.amount_coins
+                         AND EXISTS (
+                             SELECT 1 FROM infrastructure.outbox_messages message
+                             WHERE message.event_type = 'Billing.RefundCompleted.v1'
+                               AND message.payload ->> 'refundRequestId' = refund.id::text
+                               AND message.payload ->> 'walletOperationId' = operation.id::text
+                               AND message.payload ->> 'transferRecordId' = transfer.id::text))))
+           OR (reservation.status = 'Released' AND (
+                   refund.status <> 'ReservationReleased' OR reservation.resolved_at IS NULL
+                   OR NOT EXISTS (
+                       SELECT 1
+                       FROM billing.refund_transfer_records transfer
+                       JOIN wallet.wallet_operations operation
+                         ON operation.id = transfer.resolution_operation_id
+                        AND operation.user_id = reservation.user_id
+                        AND operation.operation_type = 'RefundRelease'
+                        AND operation.source_type = 'RefundRequest'
+                        AND operation.source_id = refund.id
+                       WHERE transfer.refund_request_id = refund.id
+                         AND transfer.user_id = refund.user_id
+                         AND transfer.status = 'VerifiedFailed'
+                         AND (SELECT count(*) FROM wallet.wallet_entries entry
+                              WHERE entry.operation_id = operation.id) = 2
+                         AND (SELECT coalesce(sum(entry.delta_coins), 0)
+                              FROM wallet.wallet_entries entry
+                              WHERE entry.operation_id = operation.id
+                                AND entry.coin_type = 'Paid' AND entry.bucket = 'Reserved') = -reservation.amount_coins
+                         AND (SELECT coalesce(sum(entry.delta_coins), 0)
+                              FROM wallet.wallet_entries entry
+                              WHERE entry.operation_id = operation.id
+                                AND entry.coin_type = 'Paid' AND entry.bucket = 'Available') = reservation.amount_coins
+                         AND EXISTS (
+                             SELECT 1 FROM infrastructure.outbox_messages message
+                             WHERE message.event_type = 'Billing.RefundReservationReleased.v1'
+                               AND message.payload ->> 'refundRequestId' = refund.id::text
+                               AND message.payload ->> 'walletOperationId' = operation.id::text
+                               AND message.payload ->> 'transferRecordId' = transfer.id::text))))
+           OR reservation.status NOT IN ('Reserved','Consumed','Released')
+     ) THEN
+        RAISE EXCEPTION 'Restored RF03 reservation lifecycle is inconsistent with its terminal operation, ledger and outbox';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM billing.refund_transfer_records transfer
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM billing.refund_requests refund
+            JOIN billing.refund_recipients recipient ON recipient.refund_request_id = refund.id
+            JOIN wallet.coin_reservations reservation ON reservation.refund_request_id = refund.id
+            WHERE refund.id = transfer.refund_request_id
+              AND refund.user_id = transfer.user_id
+              AND transfer.amount_vnd = refund.net_refund_vnd
+              AND reservation.user_id = refund.user_id)
+           OR (transfer.status IN ('ReportedSucceeded','ReportedFailed','NeedsReconciliation')
+               AND NOT EXISTS (
+                   SELECT 1 FROM wallet.coin_reservations reservation
+                   WHERE reservation.refund_request_id = transfer.refund_request_id
+                      AND reservation.status = 'Reserved'))
+     ) THEN
+        RAISE EXCEPTION 'Restored RF03 transfer does not reconcile with refund, recipient and reservation state';
+    END IF;
+
+    IF EXISTS (
            SELECT 1
            FROM wallet.paid_coin_lots lot
            LEFT JOIN (
@@ -189,10 +287,12 @@ BEGIN
            ) reservation ON reservation.paid_coin_lot_id = lot.id
            WHERE lot.reserved_coins <> coalesce(reservation.amount_coins, 0))
     THEN
-        RAISE EXCEPTION 'Restored refund reservations do not reconcile with exact refund, operation, ledger and lot state';
+        RAISE EXCEPTION 'Restored RF03 transfer/reservation lifecycle does not reconcile with refund, recipient, exact lot, operations, ledger and outbox';
     END IF;
     SELECT count(*) INTO reservation_count FROM wallet.coin_reservations;
-    RAISE NOTICE 'reservation evidence checked: coin_reservations=%', reservation_count;
+    SELECT count(*) INTO transfer_count FROM billing.refund_transfer_records;
+    RAISE NOTICE 'RF03 evidence checked: coin_reservations=%, transfer_records=%',
+        reservation_count, transfer_count;
 
     SELECT count(*) INTO outbox_count FROM infrastructure.outbox_messages;
     IF EXISTS (

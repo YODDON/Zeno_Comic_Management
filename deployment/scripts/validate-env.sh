@@ -41,8 +41,9 @@ for required_key in \
   REFUND_FINGERPRINT_VERSION REFUND_FINGERPRINT_KEY_V1 \
   REFUND_PROTECTION_VERSION IMAGE_REGISTRY IMAGE_TAG \
   BACKUP_AGE_RECIPIENT BACKUP_AGE_IDENTITY_FILE \
-  DEPLOYMENT_ENVIRONMENT_ID RELEASE_GIT_SHA API_IMAGE_DIGEST \
+  DEPLOYMENT_ENVIRONMENT_ID RELEASE_GIT_SHA RELEASE_CREATED_AT API_IMAGE_DIGEST \
   WEB_IMAGE_DIGEST MIGRATOR_IMAGE_DIGEST CURRENT_MIGRATION_ID \
+  COMPATIBLE_SCHEMA_IDS \
   BACKUP_PROVENANCE_PRIVATE_KEY_FILE BACKUP_PROVENANCE_PUBLIC_KEY_FILE
 do
   require_environment_value "$required_key"
@@ -120,6 +121,13 @@ done
 release_git_sha="$(read_value RELEASE_GIT_SHA)"
 if ! printf '%s' "$release_git_sha" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
   echo "RELEASE_GIT_SHA must be a full lowercase Git object ID." >&2
+  exit 64
+fi
+
+release_created_at="$(read_value RELEASE_CREATED_AT)"
+if ! printf '%s' "$release_created_at" | grep -Eq \
+  '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+  echo "RELEASE_CREATED_AT must be an RFC 3339 UTC timestamp without fractions." >&2
   exit 64
 fi
 

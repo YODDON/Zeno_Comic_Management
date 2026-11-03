@@ -2,13 +2,13 @@
 
 ## Encrypted backup
 
-The `ops` profile runs `pg_dump` in custom format, verifies its catalog and encrypts it with authenticated `age` X25519 encryption. Plaintext dumps are removed on every exit path. It also signs a manifest with a backup-only RSA private key. The manifest binds ciphertext hash, source environment/database, Git SHA, API/web/migrator digests, migration ID, creation time and format. Restore verifies the signature and ciphertext identity before decryption and before destructive SQL.
+The `ops` profile runs `pg_dump` in custom format, verifies its catalog and encrypts it with authenticated `age` X25519 encryption. Plaintext dumps are removed on every exit path. It also signs a manifest with a backup-only RSA private key. The manifest binds ciphertext hash, source environment/database, Git SHA, authoritative release timestamp, API/web/migrator digests, migration ID, backup creation time and format. Restore verifies the signature and ciphertext identity before decryption and before destructive SQL.
 
 ```sh
 docker compose --env-file .env --profile ops run --rm backup
 ```
 
-The daily systemd timer invokes `run-backup-job.sh`, uploads the archive, manifest and signature with `rclone --immutable`, enforces local/offsite retention, records a success timestamp and alerts on failure. A separate hourly timer alerts when that timestamp is stale; the monthly timer runs the isolated restore drill. Install the units from `deployment/systemd/`, copy `.env.operations.example` to a host-only `.env.operations`, and validate with `BACKUP_JOB_DRY_RUN=true` before enabling timers.
+The daily systemd timer invokes `run-backup-job.sh`, requires `deployment-state/current-release.env`, verifies the running API digest and actual database schema against that authoritative state, uploads the archive, manifest and signature with `rclone --immutable`, enforces local/offsite retention, records a success timestamp and alerts on failure. The operations file is parsed as a strict allowlisted `KEY=VALUE` document; it is never executed as shell, must be a non-symlink regular file with mode `0400`/`0600`, and must be root-owned when the job runs as root. A separate hourly timer alerts when the success timestamp is stale; the monthly timer runs the isolated restore drill. Install the units from `deployment/systemd/`, copy `.env.operations.example` to a root-owned host-only `.env.operations` with mode `0600`, and validate with `BACKUP_JOB_DRY_RUN=true` before enabling timers.
 
 The age identity, Data Protection certificate/key ring and refund HMAC keys must be backed up through a separate secret-management channel. A database backup alone is insufficient to decrypt historical sessions or refund recipient data. The production offsite target, its object-lock/immutability policy, alert delivery and restore cadence remain release gates until exercised in the selected vendor account.
 
@@ -28,7 +28,7 @@ DEPLOYMENT_ROOT="$PWD" DEPLOYMENT_ENVIRONMENT="$PWD/.env" \
   sh deployment/scripts/run-restore-drill-job.sh
 ```
 
-The job uses a separate Compose project and internal restore-only network. Only `restore-postgres` and `restore-drill` join it; primary PostgreSQL, API and web cannot resolve the restore hostname, and no restore port is published. It reuses the digest-pinned operations image from `deployment-state/current-release.env`; an explicit `DEPLOYMENT_RELEASE_MANIFEST` may be supplied for pre-release verification. A trap tears down containers, network and ephemeral volume after success, failure or interruption while preserving the original failure code. The restore command itself accepts only host `restore-postgres`, database `comic_management_restore`, and the exact explicit confirmation token.
+The job uses a separate Compose project and internal restore-only network. Only `restore-postgres` and `restore-drill` join it; primary PostgreSQL, API and web cannot resolve the restore hostname, and no restore port is published. It requires the digest-pinned operations image from `deployment-state/current-release.env`; an explicit validated `DEPLOYMENT_RELEASE_MANIFEST` may be supplied for pre-release verification, but missing state never falls back to `.env` tags. A trap tears down containers, network and ephemeral volume after success, failure or interruption while preserving the original failure code. The restore command itself accepts only host `restore-postgres`, database `comic_management_restore`, and the exact explicit confirmation token.
 
 The drill authenticates/decrypts the age payload and verifies the archive before recreating only `comic_management_restore`. It then restores with ownership/ACL disabled and fails unless:
 
@@ -37,7 +37,10 @@ The drill authenticates/decrypts the age payload and verifies the archive before
 - Paid/Bonus Wallet balances reconcile with immutable ledger entries;
 - provider transaction and webhook delivery evidence remains linked to its fulfilled order;
 - the immutable RefundRequest/recipient snapshot links to the exact original PaidCoinLot;
-- active refund reservations, Wallet/lot counters, immutable ledger, audit and outbox evidence reconcile.
+- RF03 Reserved, Consumed and Released reservations reconcile with transfer evidence, recipient snapshot, exact original lot, resolution operation, immutable ledger and completion/release outbox;
+- Wallet/lot counters, audit and outbox evidence reconcile.
+
+Build reproducibility limitation: release OCI digests are immutable and attested after publish, but `apt`/`apk` packages installed during image builds are not yet sourced from snapshot repositories or pinned by package version. Rebuilding the same source later may therefore produce a different digest; strict bit-for-bit reproducibility requires distro snapshots or vendored tooling.
 
 Generic production verification reports checked row counts for provider/payment/webhook, refund/recipient, reservation, outbox and audit evidence and reconciles every Wallet against lots and immutable ledger. Separate fixture-specific CI assertions prove exact known IDs and amounts; they are not a substitute for the generic checks. Record artifact identity, signed manifest, source commit/digests, start/end time and verification output. A staging drill using retained production-like data and the configured offsite target remains mandatory evidence.
 

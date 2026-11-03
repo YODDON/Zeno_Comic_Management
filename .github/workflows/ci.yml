@@ -144,7 +144,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Create isolated CI deployment configuration
         shell: bash
@@ -183,10 +183,12 @@ jobs:
           IMAGE_TAG=ci-placeholder
           DEPLOYMENT_ENVIRONMENT_ID=github-ci-d01
           RELEASE_GIT_SHA=0000000000000000000000000000000000000000
+          RELEASE_CREATED_AT=2026-01-01T00:00:00Z
           API_IMAGE_DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
           WEB_IMAGE_DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
           MIGRATOR_IMAGE_DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
           CURRENT_MIGRATION_ID=ci-pending-build
+          COMPATIBLE_SCHEMA_IDS=20261028080430_AddAdminAuditOrderingIndex
           POSTGRES_DB=comic_management
           POSTGRES_USER=comic_management
           POSTGRES_PASSWORD=ci-postgres-password-long-random-value
@@ -223,6 +225,9 @@ jobs:
           sh -n deployment/scripts/*.sh backend/docker/migrate-entrypoint.sh
           sh deployment/scripts/test-restore-target-guard.sh
           sh deployment/scripts/test-release-tag.sh
+          sh deployment/scripts/test-migration-target.sh
+          sudo sh deployment/scripts/test-operations-config.sh
+          sh deployment/scripts/test-release-state-guards.sh
           sh deployment/scripts/test-operations-schedule.sh
           sh deployment/scripts/validate-env.sh .env.ci
           docker compose --env-file .env.ci config --quiet
@@ -233,6 +238,7 @@ jobs:
           OFFSITE_REMOTE=immutable-ci-evidence:comic-management
           ALERT_WEBHOOK_URL=https://alerts.example.invalid/d01
           EOF
+          chmod 0600 .env.operations.ci
           DEPLOYMENT_ROOT="$PWD" \
             DEPLOYMENT_ENVIRONMENT="$PWD/.env.ci" \
             OPERATIONS_ENVIRONMENT="$PWD/.env.operations.ci" \
@@ -245,23 +251,48 @@ jobs:
           set -euo pipefail
           docker run --detach --name d01-registry --publish 5000:5000 \
             registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
-          release_a="$(git rev-parse HEAD^)"
+          latest_migration_file="$(find backend/src/ComicManagement.Persistence/Migrations -maxdepth 1 \
+            -type f -name '[0-9]*_*.cs' ! -name '*.Designer.cs' -printf '%f\n' | sort | tail -n 1)"
+          latest_migration_commit="$(git log -1 --format=%H -- \
+            "backend/src/ComicManagement.Persistence/Migrations/$latest_migration_file")"
           release_b="${GITHUB_SHA}"
           registry=localhost:5000/zeno-comic-management
-          git worktree add --detach /tmp/d01-release-a "$release_a"
+          git worktree add --detach /tmp/d01-release-a "$release_b"
+          rm "/tmp/d01-release-a/backend/src/ComicManagement.Persistence/Migrations/$latest_migration_file"
+          rm "/tmp/d01-release-a/backend/src/ComicManagement.Persistence/Migrations/${latest_migration_file%.cs}.Designer.cs"
+          git show "$latest_migration_commit^:backend/src/ComicManagement.Persistence/Migrations/AppDbContextModelSnapshot.cs" \
+            > /tmp/d01-release-a/backend/src/ComicManagement.Persistence/Migrations/AppDbContextModelSnapshot.cs
+          git -C /tmp/d01-release-a add \
+            backend/src/ComicManagement.Persistence/Migrations
+          release_a_tree="$(git -C /tmp/d01-release-a write-tree)"
+          release_a_date="$(git show -s --format=%aI "$release_b")"
+          release_a="$(printf 'D01 synthetic schema-A release for rollback evidence\n' | \
+            GIT_AUTHOR_NAME='D01 CI' GIT_AUTHOR_EMAIL='d01-ci@example.invalid' \
+            GIT_AUTHOR_DATE="$release_a_date" \
+            GIT_COMMITTER_NAME='D01 CI' GIT_COMMITTER_EMAIL='d01-ci@example.invalid' \
+            GIT_COMMITTER_DATE="$release_a_date" \
+            git -C /tmp/d01-release-a commit-tree "$release_a_tree" -p "$release_b")"
+          git -C /tmp/d01-release-a reset --hard "$release_a"
+          mkdir -p release
+          git update-ref refs/d01-ci/release-a "$release_a"
+          git bundle create release/release-a.bundle refs/d01-ci/release-a
           build_release() {
-            release="$1"
+            image_tag="$1"
             context="$2"
             docker build --file "$context/backend/Dockerfile" --target api \
-              --build-arg "RELEASE_REVISION=$release" --tag "$registry/api:$release" "$context"
+              --build-arg "RELEASE_REVISION=$image_tag" \
+              --tag "$registry/api:$image_tag" "$context"
             docker build --file "$context/backend/Dockerfile" --target migrator \
-              --build-arg "RELEASE_REVISION=$release" --tag "$registry/migrator:$release" "$context"
+              --build-arg "RELEASE_REVISION=$image_tag" \
+              --tag "$registry/migrator:$image_tag" "$context"
             docker build --file "$context/frontend/Dockerfile" --target web \
-              --build-arg "RELEASE_REVISION=$release" --tag "$registry/web:$release" "$context"
+              --build-arg "RELEASE_REVISION=$image_tag" \
+              --tag "$registry/web:$image_tag" "$context"
             docker build --file "$context/deployment/ops/Dockerfile" \
-              --build-arg "RELEASE_REVISION=$release" --tag "$registry/ops:$release" "$context"
+              --build-arg "RELEASE_REVISION=$image_tag" \
+              --tag "$registry/ops:$image_tag" "$context"
             for component in api migrator web ops; do
-              docker push "$registry/$component:$release"
+              docker push "$registry/$component:$image_tag"
             done
           }
           build_release "$release_a" /tmp/d01-release-a
@@ -271,21 +302,22 @@ jobs:
             -type f -name '[0-9]*_*.cs' ! -name '*.Designer.cs' -printf '%f\n' | sort | tail -n 1 | sed 's/\.cs$//')"
           migration_id_b="$(find backend/src/ComicManagement.Persistence/Migrations -maxdepth 1 \
             -type f -name '[0-9]*_*.cs' ! -name '*.Designer.cs' -printf '%f\n' | sort | tail -n 1 | sed 's/\.cs$//')"
-          test "$migration_id_a" = "$migration_id_b"
-          mkdir -p release
+          test -n "$migration_id_a"
+          test "$migration_id_a" != "$migration_id_b"
           make_manifest() {
-            release="$1"
+            image_tag="$1"
             manifest="$2"
             migration_id="$3"
             created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            API_DIGEST="$(docker buildx imagetools inspect "$registry/api:$release" --format '{{.Manifest.Digest}}')"
-            WEB_DIGEST="$(docker buildx imagetools inspect "$registry/web:$release" --format '{{.Manifest.Digest}}')"
-            MIGRATOR_DIGEST="$(docker buildx imagetools inspect "$registry/migrator:$release" --format '{{.Manifest.Digest}}')"
-            OPS_DIGEST="$(docker buildx imagetools inspect "$registry/ops:$release" --format '{{.Manifest.Digest}}')"
+            API_DIGEST="$(docker buildx imagetools inspect "$registry/api:$image_tag" --format '{{.Manifest.Digest}}')"
+            WEB_DIGEST="$(docker buildx imagetools inspect "$registry/web:$image_tag" --format '{{.Manifest.Digest}}')"
+            MIGRATOR_DIGEST="$(docker buildx imagetools inspect "$registry/migrator:$image_tag" --format '{{.Manifest.Digest}}')"
+            OPS_DIGEST="$(docker buildx imagetools inspect "$registry/ops:$image_tag" --format '{{.Manifest.Digest}}')"
             cat >"$manifest" <<EOF
-          RELEASE_GIT_SHA=$release
+          RELEASE_GIT_SHA=$image_tag
           RELEASE_CREATED_AT=$created_at
           CURRENT_MIGRATION_ID=$migration_id
+          COMPATIBLE_SCHEMA_IDS=$migration_id
           API_IMAGE_REFERENCE=$registry/api@$API_DIGEST
           API_IMAGE_DIGEST=$API_DIGEST
           WEB_IMAGE_REFERENCE=$registry/web@$WEB_DIGEST
@@ -313,19 +345,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! docker compose --env-file .env.ci --env-file release/release-b.env up --detach --wait; then
+          if ! docker compose --env-file .env.ci --env-file release/release-a.env up --detach --wait; then
             container_status="$({
-              docker compose --env-file .env.ci --env-file release/release-b.env ps --all \
+              docker compose --env-file .env.ci --env-file release/release-a.env ps --all \
                 --format 'table {{.Name}}\t{{.Service}}\t{{.State}}\t{{.Status}}\t{{.ExitCode}}'
             } 2>&1 | tr '\n' ';')"
             echo "::error title=D01 deployment startup failure::$container_status"
-            docker compose --env-file .env.ci --env-file release/release-b.env --profile ops logs --no-color || true
+            docker compose --env-file .env.ci --env-file release/release-a.env --profile ops logs --no-color || true
             exit 1
           fi
           BASE_URL=http://localhost:18080 sh deployment/scripts/smoke.sh
-          certificate_mode="$(docker compose --env-file .env.ci --env-file release/release-b.env \
+          certificate_mode="$(docker compose --env-file .env.ci --env-file release/release-a.env \
             exec -T api stat -c '%a:%u:%g' /var/lib/comic-management/certificate/data-protection.pfx)"
           test "$certificate_mode" = "400:1654:1654"
+          mkdir -p deployment-state
+          cp release/release-a.env deployment-state/current-release.env
+          printf 'ACTIVE_SCHEMA_ID=%s\n' \
+            "$(sed -n 's/^CURRENT_MIGRATION_ID=//p' release/release-a.env)" \
+            >> deployment-state/current-release.env
+          chmod 0600 deployment-state/current-release.env
+          actual_schema_a="$(docker compose --env-file .env.ci --env-file release/release-a.env exec -T postgres \
+            psql --username comic_management --dbname comic_management --tuples-only --no-align \
+            --command 'SELECT "MigrationId" FROM infrastructure.__ef_migrations_history ORDER BY "MigrationId" DESC LIMIT 1;' | tr -d '\r')"
+          test "$actual_schema_a" = "$(sed -n 's/^CURRENT_MIGRATION_ID=//p' release/release-a.env)"
+
+          SMOKE_BASE_URL=http://localhost:18080 \
+            sh deployment/scripts/switch-release.sh .env.ci release/release-b.env
+          actual_schema_b="$(docker compose --env-file .env.ci --env-file release/release-b.env exec -T postgres \
+            psql --username comic_management --dbname comic_management --tuples-only --no-align \
+            --command 'SELECT "MigrationId" FROM infrastructure.__ef_migrations_history ORDER BY "MigrationId" DESC LIMIT 1;' | tr -d '\r')"
+          test "$actual_schema_b" = "$(sed -n 's/^CURRENT_MIGRATION_ID=//p' release/release-b.env)"
 
       - name: Seed deterministic financial recovery fixture
         shell: bash
@@ -333,6 +382,52 @@ jobs:
           docker compose --env-file .env.ci --env-file release/release-b.env exec -T postgres \
             psql --username comic_management --dbname comic_management \
             < deployment/scripts/d01-recovery-fixture.sql
+          docker compose --env-file .env.ci --env-file release/release-b.env exec -T postgres \
+            psql --username comic_management --dbname comic_management \
+            < deployment/scripts/d01-rf03-recovery-fixtures.sql
+
+      - name: Reject scheduled-backup release provenance drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >.env.operations-guard.ci <<'EOF'
+          LOCAL_RETENTION_DAYS=7
+          OFFSITE_RETENTION_DAYS=30
+          BACKUP_STALE_AFTER_HOURS=36
+          OFFSITE_REMOTE=unused:guard
+          ALERT_WEBHOOK_URL=
+          EOF
+          chmod 0600 .env.operations-guard.ci
+
+          cp deployment-state/current-release.env release/active-api-mismatch.env
+          sed -i "s#^API_IMAGE_REFERENCE=.*#API_IMAGE_REFERENCE=$(sed -n 's/^API_IMAGE_REFERENCE=//p' release/release-a.env)#" \
+            release/active-api-mismatch.env
+          sed -i "s#^API_IMAGE_DIGEST=.*#API_IMAGE_DIGEST=$(sed -n 's/^API_IMAGE_DIGEST=//p' release/release-a.env)#" \
+            release/active-api-mismatch.env
+          sh deployment/scripts/validate-release-manifest.sh release/active-api-mismatch.env
+          if DEPLOYMENT_ROOT="$PWD" DEPLOYMENT_ENVIRONMENT="$PWD/.env.ci" \
+              OPERATIONS_ENVIRONMENT="$PWD/.env.operations-guard.ci" \
+              DEPLOYMENT_RELEASE_MANIFEST="$PWD/release/active-api-mismatch.env" \
+              sh deployment/scripts/run-backup-job.sh; then
+            echo 'Scheduled backup accepted active API digest drift.' >&2
+            exit 1
+          fi
+
+          current_schema="$(sed -n 's/^ACTIVE_SCHEMA_ID=//p' deployment-state/current-release.env)"
+          previous_schema="$(sed -n 's/^CURRENT_MIGRATION_ID=//p' release/release-a.env)"
+          cp deployment-state/current-release.env release/active-schema-mismatch.env
+          sed -i "s/^COMPATIBLE_SCHEMA_IDS=.*/COMPATIBLE_SCHEMA_IDS=$previous_schema,$current_schema/" \
+            release/active-schema-mismatch.env
+          sed -i "s/^ACTIVE_SCHEMA_ID=.*/ACTIVE_SCHEMA_ID=$previous_schema/" \
+            release/active-schema-mismatch.env
+          sh deployment/scripts/validate-release-manifest.sh release/active-schema-mismatch.env
+          if DEPLOYMENT_ROOT="$PWD" DEPLOYMENT_ENVIRONMENT="$PWD/.env.ci" \
+              OPERATIONS_ENVIRONMENT="$PWD/.env.operations-guard.ci" \
+              DEPLOYMENT_RELEASE_MANIFEST="$PWD/release/active-schema-mismatch.env" \
+              sh deployment/scripts/run-backup-job.sh; then
+            echo 'Scheduled backup accepted active database schema drift.' >&2
+            exit 1
+          fi
 
       - name: Create encrypted backup and restore into isolation
         shell: bash
@@ -388,6 +483,14 @@ jobs:
 
           restore_project=d01-restore-evidence
           restore_compose="docker compose -p $restore_project --env-file .env.ci --env-file release/release-b.env --profile ops"
+          cleanup_direct_restore() {
+            docker rm --force d01-restore-network-probe >/dev/null 2>&1 || true
+            $restore_compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+          }
+          trap cleanup_direct_restore EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           $restore_compose up --detach --wait restore-postgres
           $restore_compose run --detach --name d01-restore-network-probe \
             --entrypoint sh restore-drill -c 'sleep 30'
@@ -409,7 +512,11 @@ jobs:
           $restore_compose exec -T restore-postgres \
             psql --username comic_management --dbname comic_management_restore \
             < deployment/scripts/d01-recovery-assertions.sql
-          $restore_compose down --volumes --remove-orphans
+          $restore_compose exec -T restore-postgres \
+            psql --username comic_management --dbname comic_management_restore \
+            < deployment/scripts/d01-rf03-recovery-assertions.sql
+          cleanup_direct_restore
+          trap - EXIT HUP INT TERM
           test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$restore_project")"
           test -z "$(docker volume ls -q --filter "label=com.docker.compose.project=$restore_project")"
           test -z "$(docker network ls -q --filter "label=com.docker.compose.project=$restore_project")"
@@ -441,15 +548,46 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          current_schema="$(sed -n 's/^CURRENT_MIGRATION_ID=//p' release/release-b.env)"
+          previous_schema="$(find backend/src/ComicManagement.Persistence/Migrations -maxdepth 1 \
+            -type f -name '[0-9]*_*.cs' ! -name '*.Designer.cs' -printf '%f\n' \
+            | sort | tail -n 2 | head -n 1 | sed 's/\.cs$//')"
+          test -n "$previous_schema"
+          test "$previous_schema" != "$current_schema"
+
           SMOKE_BASE_URL=http://localhost:18080 \
             sh deployment/scripts/switch-release.sh .env.ci release/release-b.env
-          cmp release/release-b.env deployment-state/current-release.env
+          grep -v '^ACTIVE_SCHEMA_ID=' deployment-state/current-release.env | \
+            cmp release/release-b.env -
+
+          cp release/release-a.env release/release-a-incompatible.env
+          sed -i "s/^CURRENT_MIGRATION_ID=.*/CURRENT_MIGRATION_ID=$previous_schema/" \
+            release/release-a-incompatible.env
+          sed -i "s/^COMPATIBLE_SCHEMA_IDS=.*/COMPATIBLE_SCHEMA_IDS=$previous_schema/" \
+            release/release-a-incompatible.env
+          sh deployment/scripts/validate-release-manifest.sh release/release-a-incompatible.env
+          state_before_rejection="$(sha256sum deployment-state/current-release.env)"
+          api_before_rejection="$(docker compose --env-file .env.ci --env-file release/release-b.env ps -q api)"
+          api_image_before_rejection="$(docker inspect --format '{{.Config.Image}}' "$api_before_rejection")"
+          if SMOKE_BASE_URL=http://localhost:18080 \
+              sh deployment/scripts/switch-release.sh .env.ci release/release-a-incompatible.env; then
+            echo 'Incompatible rollback unexpectedly succeeded.' >&2
+            exit 1
+          fi
+          test "$(sha256sum deployment-state/current-release.env)" = "$state_before_rejection"
+          test "$(docker inspect --format '{{.Config.Image}}' "$api_before_rejection")" = \
+            "$api_image_before_rejection"
+
+          cp release/release-a-incompatible.env release/release-a-compatible.env
+          sed -i "s/^COMPATIBLE_SCHEMA_IDS=.*/COMPATIBLE_SCHEMA_IDS=$previous_schema,$current_schema/" \
+            release/release-a-compatible.env
+          sh deployment/scripts/validate-release-manifest.sh release/release-a-compatible.env
           SMOKE_BASE_URL=http://localhost:18080 \
-            sh deployment/scripts/switch-release.sh .env.ci release/release-a.env
-          cmp release/release-a.env deployment-state/current-release.env
-          api_container="$(docker compose --env-file .env.ci --env-file release/release-a.env ps -q api)"
+            sh deployment/scripts/switch-release.sh .env.ci release/release-a-compatible.env
+          grep -Fx "ACTIVE_SCHEMA_ID=$current_schema" deployment-state/current-release.env
+          api_container="$(docker compose --env-file .env.ci --env-file release/release-a-compatible.env ps -q api)"
           test "$(docker inspect --format '{{.Config.Image}}' "$api_container")" = \
-            "$(sed -n 's/^API_IMAGE_REFERENCE=//p' release/release-a.env)"
+            "$(sed -n 's/^API_IMAGE_REFERENCE=//p' release/release-a-compatible.env)"
           SMOKE_BASE_URL=http://localhost:18080 \
             sh deployment/scripts/switch-release.sh .env.ci release/release-b.env
 
@@ -464,6 +602,7 @@ jobs:
             backups/*.dump.age.manifest.sig
             release/release-a.env
             release/release-b.env
+            release/release-a.bundle
             deployment-state/current-release.env
           if-no-files-found: error
           retention-days: 3

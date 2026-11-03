@@ -18,6 +18,7 @@ require_value PGPASSWORD
 require_value BACKUP_AGE_RECIPIENT
 require_value BACKUP_SOURCE_ENVIRONMENT
 require_value BACKUP_GIT_SHA
+require_value BACKUP_RELEASE_CREATED_AT
 require_value BACKUP_API_IMAGE_DIGEST
 require_value BACKUP_WEB_IMAGE_DIGEST
 require_value BACKUP_MIGRATOR_IMAGE_DIGEST
@@ -38,6 +39,11 @@ for digest_name in BACKUP_API_IMAGE_DIGEST BACKUP_WEB_IMAGE_DIGEST BACKUP_MIGRAT
 done
 if ! printf '%s' "$BACKUP_GIT_SHA" | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
   echo "BACKUP_GIT_SHA must be a full lowercase Git object ID." >&2
+  exit 64
+fi
+if ! printf '%s' "$BACKUP_RELEASE_CREATED_AT" | grep -Eq \
+  '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+  echo "BACKUP_RELEASE_CREATED_AT must be an RFC 3339 UTC timestamp without fractions." >&2
   exit 64
 fi
 for metadata_value in "$BACKUP_SOURCE_ENVIRONMENT" "$DATABASE_NAME" "$BACKUP_MIGRATION_ID"; do
@@ -92,6 +98,7 @@ ciphertext_sha256=$ciphertext_sha256
 source_environment=$BACKUP_SOURCE_ENVIRONMENT
 database=$DATABASE_NAME
 git_sha=$BACKUP_GIT_SHA
+release_created_at=$BACKUP_RELEASE_CREATED_AT
 api_image_digest=$BACKUP_API_IMAGE_DIGEST
 web_image_digest=$BACKUP_WEB_IMAGE_DIGEST
 migrator_image_digest=$BACKUP_MIGRATOR_IMAGE_DIGEST

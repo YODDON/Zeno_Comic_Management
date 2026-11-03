@@ -12,8 +12,10 @@ if [ ! -f "$deployment_environment" ] || [ ! -f "$operations_environment" ]; the
   exit 66
 fi
 
-# shellcheck disable=SC1090
-. "$operations_environment"
+script_directory="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# shellcheck disable=SC1091
+. "$script_directory/load-operations-config.sh"
+load_operations_config "$operations_environment"
 
 require_value() {
   variable_name="$1"
@@ -52,7 +54,45 @@ notify_failure() {
 trap notify_failure EXIT HUP INT TERM
 
 cd "$deployment_root"
-docker compose --env-file "$deployment_environment" --profile ops run --rm backup
+active_release="${DEPLOYMENT_RELEASE_MANIFEST:-$deployment_root/deployment-state/current-release.env}"
+if [ ! -f "$active_release" ]; then
+  echo "Authoritative active release state is required for scheduled backup." >&2
+  exit 66
+fi
+sh deployment/scripts/validate-release-manifest.sh "$active_release"
+
+compose() {
+  docker compose --env-file "$deployment_environment" \
+    --env-file "$active_release" "$@"
+}
+
+api_container="$(compose ps -q api)"
+if [ -z "$api_container" ]; then
+  echo "The active API container is not running; backup provenance cannot be established." >&2
+  exit 1
+fi
+expected_api_reference="$(sed -n 's/^API_IMAGE_REFERENCE=//p' "$active_release" | tail -n 1 | tr -d '\r')"
+actual_api_reference="$(docker inspect --format '{{.Config.Image}}' "$api_container")"
+if [ "$actual_api_reference" != "$expected_api_reference" ]; then
+  echo "The running API image does not match authoritative active release state." >&2
+  exit 1
+fi
+
+database_user="$(sed -n 's/^POSTGRES_USER=//p' "$deployment_environment" | tail -n 1 | tr -d '\r')"
+database_name="$(sed -n 's/^POSTGRES_DB=//p' "$deployment_environment" | tail -n 1 | tr -d '\r')"
+actual_schema_id="$(compose exec -T postgres psql \
+  --username "$database_user" --dbname "$database_name" \
+  --tuples-only --no-align \
+  --command 'SELECT "MigrationId" FROM infrastructure.__ef_migrations_history ORDER BY "MigrationId" DESC LIMIT 1;' \
+  | tr -d '\r')"
+recorded_schema_id="$(sed -n 's/^ACTIVE_SCHEMA_ID=//p' "$active_release" | tail -n 1 | tr -d '\r')"
+if [ -z "$actual_schema_id" ] || [ "$actual_schema_id" != "$recorded_schema_id" ]; then
+  echo "The running database schema does not match authoritative active release state." >&2
+  exit 1
+fi
+
+compose --profile ops run --rm \
+  -e "BACKUP_MIGRATION_ID=$actual_schema_id" backup
 
 backup_directory="$(sed -n 's/^BACKUP_DIRECTORY=//p' "$deployment_environment" | tail -n 1 | tr -d '\r')"
 backup_directory="${backup_directory:-./backups}"

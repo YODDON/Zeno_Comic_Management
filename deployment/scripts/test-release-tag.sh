@@ -9,6 +9,7 @@ cat >"$temporary_directory/release.env" <<EOF
 RELEASE_GIT_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 RELEASE_CREATED_AT=2026-11-02T00:00:00Z
 CURRENT_MIGRATION_ID=20261031120000_D01
+COMPATIBLE_SCHEMA_IDS=20261031120000_D01
 API_IMAGE_REFERENCE=registry.example/api@$digest
 API_IMAGE_DIGEST=$digest
 WEB_IMAGE_REFERENCE=registry.example/web@$digest

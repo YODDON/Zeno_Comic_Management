@@ -70,7 +70,7 @@ if [ "$expected_sha256" != "$actual_sha256" ]; then
 fi
 
 for required_manifest_key in \
-  source_environment database git_sha api_image_digest web_image_digest \
+    source_environment database git_sha release_created_at api_image_digest web_image_digest \
   migrator_image_digest migration_id created_at
 do
   if [ -z "$(manifest_value "$required_manifest_key")" ]; then
@@ -92,6 +92,11 @@ if ! manifest_value git_sha | grep -Eq '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
 fi
 if ! manifest_value created_at | grep -Eq '^[0-9]{8}T[0-9]{6}Z$'; then
   echo "Backup provenance creation timestamp is invalid." >&2
+  exit 65
+fi
+if ! manifest_value release_created_at | grep -Eq \
+  '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+  echo "Backup provenance release timestamp is invalid." >&2
   exit 65
 fi
 

@@ -28,6 +28,7 @@ cleanup() { rm -rf "$temporary_directory"; }
 trap cleanup EXIT HUP INT TERM
 printf 'BACKUP_STALE_AFTER_HOURS=36\nALERT_WEBHOOK_URL=\n' \
   >"$temporary_directory/operations.env"
+chmod 0600 "$temporary_directory/operations.env"
 mkdir -p "$temporary_directory/state"
 date -u +%s >"$temporary_directory/state/last-backup-success.epoch"
 DEPLOYMENT_ROOT="$temporary_directory" \
